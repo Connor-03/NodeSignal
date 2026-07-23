@@ -1,3 +1,5 @@
+This project is fully vibe-coded for the Toronto Bitcoin++ Hackathon. All brainstorming is human
+
 Has an informational visual area showing your peer connections, what they're signaling for, node implementation, and more! 
 Allows you to import your node's connections and send messages. If your peer also has NodeSignal, messages will show up on their end and can be exchanged over clearnet. 
 Ideally, this would be adapted to Tor for obvious security, but clearnet was easier to implement in this short time. 
