@@ -1,0 +1,1374 @@
+<!--
+  NodeSignal — encrypted operator-to-operator chat for Bitcoin nodes
+  ===================================================================
+  This page is SERVED BY THE DAEMON (nodesignald.js), normally running on the
+  node box itself. Open http://<host>:8789 and it connects straight back to
+  the WebSocket API on the same origin — no configuration, no local files.
+
+  The Bitcoin P2P protocol cannot carry chat (nodes drop peers that send
+  unknown messages), so the work is split honestly:
+
+    discovery : the daemon reads getpeerinfo from YOUR node, so the peers on
+                the map are your node's real peers
+    identify  : the daemon dials a peer's :8333 and reads its version message
+                — user agent, version, height, service bits, declared BIPs
+    transport : messages travel daemon-to-daemon on :8788, PIN-encrypted
+                (PBKDF2 -> AES-256-GCM)
+
+  Ports: 8789 web app + /ws API · 8788 peer messaging · 8333 outbound identify.
+
+  Opened directly from disk (file://) it falls back to a daemon on localhost
+  and otherwise runs a demo constellation (PIN 2013) so the UI can be explored.
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>NodeSignal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#070a0f;
+    --panel:#0e131c;
+    --panel-2:#141b26;
+    --elev:#1a2230;
+    --line:rgba(120,200,170,.10);
+    --line-strong:rgba(140,210,180,.20);
+    --ink:#dde7e2;
+    --ink-dim:#90a49b;
+    --ink-faint:#5d7069;
+    --btc:#f7931a;
+    --btc-bright:#ffb454;
+    --signal:#39e08a;
+    --cyan:#4dd2ff;
+    --violet:#b48cff;
+    --pink:#ff7ab8;
+    --amber:#ffd166;
+    --unread:#ff453a;
+    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --display:"Space Grotesk",system-ui,sans-serif;
+    --body:"Inter",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);-webkit-font-smoothing:antialiased;overflow:hidden}
+  #app{display:flex;flex-direction:column;height:100vh}
+
+  /* ---------- Top bar ---------- */
+  .topbar{display:flex;align-items:center;gap:18px;padding:0 18px;height:56px;flex:none;border-bottom:1px solid var(--line);background:var(--panel)}
+  .brand{display:flex;align-items:center;gap:10px;user-select:none}
+  .brand .mark{width:28px;height:28px;border-radius:7px;flex:none;background:var(--btc);display:grid;place-items:center;
+    font-family:var(--mono);font-weight:700;color:#150d02;font-size:15px;box-shadow:0 0 0 1px rgba(255,255,255,.12) inset}
+  .brand b{font-family:var(--display);font-weight:600;font-size:16px;letter-spacing:-.2px}
+  .brand span{color:var(--ink-faint);font-size:10.5px;font-family:var(--mono)}
+  .brand .stack{display:flex;flex-direction:column;line-height:1.1}
+  .tabs{display:flex;gap:3px;background:var(--bg);padding:3px;border-radius:9px;border:1px solid var(--line)}
+  .tab{appearance:none;border:0;cursor:pointer;color:var(--ink-dim);font-family:var(--mono);font-weight:500;font-size:12.5px;
+    padding:7px 14px;border-radius:7px;background:transparent;display:flex;align-items:center;gap:7px;transition:.15s}
+  .tab:hover{color:var(--ink)}
+  .tab.active{background:var(--elev);color:var(--ink)}
+  .tab-count{font-family:var(--mono);font-size:10.5px;background:var(--unread);color:#fff;border-radius:20px;padding:1px 6px;min-width:17px;text-align:center}
+  .spacer{flex:1}
+  .selfnode{display:flex;align-items:center;gap:9px;padding:6px 11px;border:1px solid var(--line);border-radius:9px;background:var(--bg)}
+  .selfnode .pulse{width:8px;height:8px;border-radius:50%;background:var(--signal);box-shadow:0 0 7px var(--signal)}
+  .selfnode .meta{line-height:1.15}
+  .selfnode .meta .t{font-size:11.5px;font-weight:600}
+  .selfnode .meta .s{font-size:10px;color:var(--ink-faint);font-family:var(--mono)}
+  .icon-btn{appearance:none;border:1px solid var(--line);background:var(--bg);color:var(--ink-dim);width:36px;height:36px;
+    border-radius:9px;cursor:pointer;display:grid;place-items:center;transition:.15s;font-size:15px}
+  .icon-btn:hover{color:var(--ink);border-color:var(--line-strong)}
+  .icon-btn.on{color:var(--btc);border-color:rgba(247,147,26,.45)}
+
+  .views{flex:1;position:relative;overflow:hidden}
+  .view{position:absolute;inset:0;display:none}
+  .view.active{display:flex}
+
+  /* ---------- Peers ---------- */
+  #view-peers{flex-direction:column}
+  .radar-head{display:flex;align-items:baseline;gap:12px;padding:13px 22px 2px;flex:none}
+  .radar-head h1{margin:0;font-family:var(--mono);font-weight:600;font-size:15px;letter-spacing:.4px}
+  .radar-head h1::before{content:"◈ ";color:var(--btc)}
+  .radar-head .lede{color:var(--ink-faint);font-size:11.5px;font-family:var(--mono)}
+
+  .radar-wrap{flex:1;position:relative;min-height:0;
+    background-image:radial-gradient(rgba(140,210,180,.055) 1px,transparent 1px);background-size:26px 26px;background-position:center}
+  .crt{position:absolute;inset:0;pointer-events:none;z-index:2;
+    background:repeating-linear-gradient(rgba(0,0,0,.15) 0 1px,transparent 1px 3px);mix-blend-mode:multiply;opacity:.55}
+  svg.radar{width:100%;height:100%;display:block;position:relative;z-index:1;
+    touch-action:none;user-select:none;-webkit-user-select:none}
+  .viewctl{position:absolute;right:24px;bottom:88px;z-index:4;display:flex;flex-direction:column;gap:6px}
+  .vc{width:38px;height:38px;border-radius:10px;border:1px solid var(--line-strong);
+    background:rgba(14,19,28,.92);color:var(--ink-dim);font-size:17px;cursor:pointer;display:grid;
+    place-items:center;backdrop-filter:blur(4px);transition:.15s;font-family:var(--mono);line-height:1}
+  .vc:hover{color:var(--ink);border-color:var(--btc)}
+  .vc:active{background:var(--elev)}
+
+  .ring{fill:none;stroke:var(--line-strong);stroke-width:1;stroke-dasharray:2 7;opacity:.75}
+  .ring-lbl{fill:var(--ink-faint);font-family:var(--mono)}
+  .tether{stroke-width:1.2;stroke-dasharray:3 5;fill:none;opacity:.5}
+  .tether.solid{stroke-dasharray:none;stroke-width:1.7;opacity:.75}
+  .peer-g{cursor:pointer}
+  .peer-hit{fill:transparent;stroke:none;pointer-events:all}
+  .peer-ring{stroke-width:2;transition:stroke-width .12s}
+  .peer-g:hover .peer-ring{stroke-width:3.5}
+  .peer-glyph{font-weight:600;pointer-events:none;text-anchor:middle}
+  .peer-lbl{font-family:var(--mono);fill:var(--ink);text-anchor:middle;pointer-events:none}
+  .peer-sub{font-family:var(--mono);text-anchor:middle;pointer-events:none;opacity:.85}
+  .badge-c{fill:var(--unread);stroke:var(--bg);stroke-width:3}
+  .badge-t{fill:#fff;font-family:var(--mono);font-weight:600;text-anchor:middle;pointer-events:none}
+  .live-dot{fill:var(--signal);stroke:var(--bg);stroke-width:2;animation:blink 1.4s steps(1) infinite}
+  .self-core{fill:var(--btc);stroke:var(--btc-bright);stroke-width:2}
+  .self-guide{fill:none;stroke:var(--btc);stroke-width:1;stroke-dasharray:2 6;opacity:.45}
+  .self-lbl{font-family:var(--mono);font-weight:600;fill:#150d02;text-anchor:middle;pointer-events:none}
+  .pulse-dot{fill:var(--btc-bright)}
+
+  .legend{position:absolute;left:20px;bottom:20px;z-index:3;background:rgba(14,19,28,.9);border:1px solid var(--line);
+    border-radius:10px;padding:10px 12px;font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);
+    display:flex;flex-direction:column;gap:5px;backdrop-filter:blur(4px);max-width:210px}
+  .legend .row{display:flex;align-items:center;gap:7px}
+  .legend .sw{width:9px;height:9px;border-radius:3px;flex:none}
+  .hud{position:absolute;right:20px;top:14px;z-index:3;font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);
+    background:rgba(14,19,28,.85);border:1px solid var(--line);border-radius:8px;padding:6px 10px;backdrop-filter:blur(4px)}
+  .hud b{color:var(--ink);font-weight:600}
+
+  .fab{position:absolute;right:22px;bottom:22px;width:54px;height:54px;border-radius:14px;border:0;z-index:4;
+    background:var(--btc);color:#150d02;font-size:28px;cursor:pointer;display:grid;place-items:center;line-height:0;
+    box-shadow:0 8px 22px -8px rgba(247,147,26,.85),0 0 0 1px rgba(255,255,255,.14) inset;transition:transform .12s}
+  .fab:hover{transform:translateY(-2px)}
+  .fab:active{transform:scale(.95)}
+
+  .empty{position:absolute;inset:0;display:grid;place-items:center;z-index:3}
+  .empty .card{text-align:center;color:var(--ink-faint);background:var(--panel);border:1px dashed var(--line-strong);
+    border-radius:14px;padding:24px 28px;max-width:340px}
+  .empty .card b{display:block;color:var(--ink);font-family:var(--mono);font-size:14px;margin-bottom:6px}
+  .empty .card p{margin:0 0 14px;font-size:12.5px;line-height:1.5}
+  .ghost-btn{appearance:none;border:1px solid var(--line-strong);background:var(--elev);color:var(--ink);padding:8px 13px;
+    border-radius:8px;font-family:var(--mono);font-size:12.5px;cursor:pointer}
+  .ghost-btn:hover{border-color:var(--btc);color:var(--btc-bright)}
+
+  /* ---------- Tooltip ---------- */
+  .tip{position:fixed;z-index:60;pointer-events:none;opacity:0;transform:translateY(4px);transition:.12s;min-width:244px;max-width:300px;
+    background:var(--elev);border:1px solid var(--line-strong);border-radius:11px;box-shadow:0 20px 50px -12px rgba(0,0,0,.75);padding:0;overflow:hidden}
+  .tip.show{opacity:1;transform:translateY(0)}
+  .tip .accent{height:3px;width:100%}
+  .tip .inner{padding:12px 14px}
+  .tip .nick{font-family:var(--mono);font-weight:600;font-size:13.5px;margin-bottom:2px;display:flex;align-items:center;gap:7px}
+  .tip .ip{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:10px}
+  .tip .row{display:flex;justify-content:space-between;gap:10px;font-size:12px;margin:5px 0}
+  .tip .row .k{color:var(--ink-faint);font-family:var(--mono)}
+  .tip .row .v{font-family:var(--mono);text-align:right}
+  .chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+  .chip{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border-radius:5px;border:1px solid}
+  .chip.none{background:var(--bg);color:var(--ink-faint);border-color:var(--line)}
+  .tip .hint{margin-top:10px;font-size:11px;color:var(--ink-faint);border-top:1px solid var(--line);padding-top:8px;font-family:var(--mono)}
+
+  /* ---------- Messages ---------- */
+  #view-msgs{flex-direction:row}
+  .conv-list{width:318px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--panel)}
+  .conv-head{padding:15px 18px 11px;border-bottom:1px solid var(--line)}
+  .conv-head h2{margin:0;font-family:var(--mono);font-weight:600;font-size:14px;letter-spacing:.3px}
+  .conv-head p{margin:2px 0 0;font-size:11px;color:var(--ink-faint);font-family:var(--mono)}
+  .conv-scroll{overflow-y:auto;flex:1}
+  .conv{display:flex;gap:12px;padding:12px 16px;cursor:pointer;border-bottom:1px solid var(--line);transition:.12s;align-items:center;position:relative}
+  .conv:hover{background:var(--panel-2)}
+  .conv.active{background:var(--elev)}
+  .conv .bar{position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:42px;border-radius:0 3px 3px 0}
+  .avatar{width:42px;height:42px;border-radius:11px;flex:none;display:grid;place-items:center;font-family:var(--display);
+    font-weight:700;font-size:17px;position:relative;border:1.5px solid}
+  .avatar .u{position:absolute;top:-6px;left:-6px;min-width:18px;height:18px;border-radius:20px;background:var(--unread);color:#fff;
+    font-family:var(--mono);font-size:11px;font-weight:600;display:grid;place-items:center;border:2px solid var(--panel);padding:0 4px}
+  .avatar .lv{position:absolute;bottom:-3px;right:-3px;width:12px;height:12px;border-radius:50%;background:var(--signal);border:2px solid var(--panel)}
+  .conv-main{flex:1;min-width:0}
+  .conv-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+  .conv-name{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono)}
+  .conv-time{font-family:var(--mono);font-size:10px;color:var(--ink-faint);flex:none}
+  .conv-prev{font-size:12px;color:var(--ink-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+  .conv-prev.locked{color:var(--ink-faint);font-family:var(--mono)}
+
+  .thread{flex:1;display:flex;flex-direction:column;min-width:0}
+  .thread-head{display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--line);flex:none;background:var(--panel);position:relative}
+  .thread-head::after{content:"";position:absolute;left:0;bottom:-1px;height:2px;width:100%;opacity:.5;background:var(--accent,transparent)}
+  .thread-head .avatar{width:37px;height:37px;border-radius:10px;font-size:15px}
+  .thread-head .th-meta{line-height:1.2;min-width:0;margin-right:auto}
+  .thread-head .th-meta .n{font-family:var(--mono);font-weight:600;font-size:14px}
+  .thread-head .th-meta .s{font-size:11px;color:var(--ink-faint);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .idbtn{margin-left:8px;appearance:none;border:1px solid var(--line-strong);background:var(--bg);color:var(--ink-dim);
+    font-family:var(--mono);font-size:11px;padding:5px 11px;border-radius:7px;cursor:pointer;flex:none;transition:.15s}
+  .idbtn:hover{border-color:var(--btc);color:var(--btc-bright)}
+  .idbtn.danger:hover{border-color:var(--unread);color:var(--unread)}
+  .idbtn.busy{color:var(--signal);border-color:rgba(57,224,138,.4);cursor:default}
+  .idbtn+.idbtn{margin-left:8px}
+  .idbtn+.lock-pill{margin-left:8px}
+  .lock-pill{margin-left:8px;font-family:var(--mono);font-size:11px;display:flex;align-items:center;gap:6px;padding:5px 10px;
+    border-radius:7px;border:1px solid var(--line-strong);color:var(--ink-dim);flex:none}
+  .lock-pill.enc{color:var(--signal);border-color:rgba(57,224,138,.35);background:rgba(57,224,138,.08)}
+  .lock-pill.live{color:var(--signal);border-color:rgba(57,224,138,.35);background:rgba(57,224,138,.08)}
+
+  .msgs{flex:1;overflow-y:auto;padding:20px 22px;display:flex;flex-direction:column;gap:9px}
+  .bubble{max-width:min(560px,74%);padding:9px 12px;border-radius:12px;font-size:13px;line-height:1.45;word-break:break-word}
+  .bubble .ts{display:block;font-family:var(--mono);font-size:9.5px;opacity:.55;margin-top:4px}
+  .bubble.them{align-self:flex-start;background:var(--elev);border:1px solid var(--line);border-bottom-left-radius:4px}
+  .bubble.them.live{font-family:var(--mono);font-size:11.5px;color:var(--signal);border-color:rgba(57,224,138,.28);background:rgba(57,224,138,.05)}
+  .bubble.them.sys{font-family:var(--mono);font-size:11.5px;color:var(--amber);border-color:rgba(255,209,102,.28);background:rgba(255,209,102,.05)}
+  .bubble.me{align-self:flex-end;background:var(--btc);color:#160f04;border-bottom-right-radius:4px}
+  .bubble.me .ts{color:#160f04}
+  .bubble.me.pending{background:rgba(247,147,26,.14);color:var(--btc-bright);
+    border:1px dashed rgba(247,147,26,.6)}
+  .bubble.me.pending .ts{color:var(--btc-bright);opacity:.8}
+  .xn{display:inline-block;margin-left:7px;padding:0 6px;border-radius:9px;font-family:var(--mono);
+    font-size:10px;background:rgba(255,255,255,.10);color:var(--ink-dim);vertical-align:middle}
+  .conv-prev.telemetry{color:var(--ink-faint);font-family:var(--mono);font-size:11.5px;opacity:.85}
+  .tip .ua{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);background:var(--bg);
+    border:1px solid var(--line);border-radius:6px;padding:6px 8px;margin:9px 0 2px;word-break:break-all;line-height:1.4}
+  .chip.cap{color:var(--ink-dim);border-color:var(--line-strong);background:rgba(255,255,255,.03)}
+
+  .composer{flex:none;border-top:1px solid var(--line);padding:13px 18px;display:flex;gap:10px;align-items:center;background:var(--panel)}
+  .composer input{flex:1;background:var(--bg);border:1px solid var(--line-strong);border-radius:10px;color:var(--ink);
+    padding:11px 14px;font-family:var(--body);font-size:14px;outline:none;transition:border-color .15s}
+  .composer input:focus{border-color:var(--btc)}
+  .composer input:disabled{opacity:.45;cursor:not-allowed}
+  .send{appearance:none;border:0;width:44px;height:44px;border-radius:11px;cursor:pointer;flex:none;background:var(--btc);
+    color:#150d02;display:grid;place-items:center;font-size:16px}
+  .send:disabled{filter:grayscale(.65) brightness(.7);cursor:not-allowed}
+  .thread-empty{flex:1;display:grid;place-items:center;color:var(--ink-faint);text-align:center}
+  .thread-empty .big{font-size:40px;margin-bottom:10px;opacity:.4}
+
+  .gate{flex:1;display:grid;place-items:center;padding:20px}
+  .gate .box{background:var(--panel);border:1px solid var(--line-strong);border-radius:16px;padding:28px 30px;text-align:center;max-width:330px;width:100%}
+  .gate .lockicon{width:50px;height:50px;border-radius:12px;background:var(--elev);display:grid;place-items:center;margin:0 auto 14px;color:var(--btc);font-size:22px}
+  .gate h3{margin:0 0 4px;font-family:var(--mono);font-weight:600;font-size:16px}
+  .gate p{margin:0 0 18px;color:var(--ink-dim);font-size:12.5px;line-height:1.5}
+  .pin-in{display:flex;gap:8px;justify-content:center;margin-bottom:8px}
+  .pin-in input{width:44px;height:52px;text-align:center;font-family:var(--mono);font-size:21px;background:var(--bg);
+    border:1px solid var(--line-strong);border-radius:10px;color:var(--ink);outline:none}
+  .pin-in input:focus{border-color:var(--btc)}
+  .gate .err{color:var(--unread);font-size:12px;font-family:var(--mono);min-height:16px}
+
+  /* ---------- Modal ---------- */
+  .scrim{position:fixed;inset:0;background:rgba(3,5,8,.68);backdrop-filter:blur(3px);z-index:80;display:none;place-items:center;padding:20px}
+  .scrim.show{display:grid}
+  .modal{background:var(--panel);border:1px solid var(--line-strong);border-radius:16px;width:100%;max-width:420px;
+    box-shadow:0 30px 80px -20px rgba(0,0,0,.85);overflow:hidden;animation:pop .16s ease}
+  .modal-head{padding:17px 22px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .modal-head b{font-family:var(--mono);font-weight:600;font-size:15px}
+  .modal-head .x{margin-left:auto;cursor:pointer;color:var(--ink-faint);font-size:20px;background:none;border:0}
+  .modal-body{padding:19px 22px;display:flex;flex-direction:column;gap:13px;max-height:70vh;overflow-y:auto}
+  .modebanner{font-family:var(--mono);font-size:11px;line-height:1.5;border-radius:8px;padding:9px 11px;
+    border:1px solid var(--line-strong);background:var(--bg)}
+  .field label{display:block;font-size:11px;color:var(--ink-dim);font-family:var(--mono);margin-bottom:6px;letter-spacing:.3px;text-transform:uppercase}
+  .field input,.field select{width:100%;background:var(--bg);border:1px solid var(--line-strong);border-radius:9px;color:var(--ink);
+    padding:10px 12px;font-family:var(--body);font-size:13.5px;outline:none;transition:border-color .15s}
+  .field input:focus,.field select:focus{border-color:var(--btc)}
+  .field .help{font-size:11px;color:var(--ink-faint);margin-top:5px;font-family:var(--mono);line-height:1.45}
+  .two{display:flex;gap:12px}.two>*{flex:1}
+  .chk{display:flex;align-items:center;gap:9px;font-size:12.5px;color:var(--ink);font-family:var(--mono);cursor:pointer;
+    background:var(--bg);border:1px solid var(--line-strong);border-radius:9px;padding:11px 12px}
+  .chk input{width:16px;height:16px;accent-color:var(--signal)}
+  .chk small{color:var(--ink-faint);font-size:10.5px}
+  .modal-foot{padding:15px 22px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end}
+  .btn{appearance:none;border:1px solid var(--line-strong);background:var(--elev);color:var(--ink);padding:9px 17px;border-radius:9px;
+    font-family:var(--mono);font-weight:500;font-size:13px;cursor:pointer}
+  .btn:hover{background:var(--panel-2)}
+  .btn.primary{background:var(--btc);color:#150d02;border-color:transparent;font-weight:600}
+  .btn.primary:hover{filter:brightness(1.06)}
+
+  /* ---------- Dev drawer ---------- */
+  .drawer{position:fixed;top:0;right:0;height:100%;width:326px;background:var(--panel);border-left:1px solid var(--line-strong);
+    z-index:70;transform:translateX(100%);transition:transform .22s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;
+    box-shadow:-20px 0 60px -20px rgba(0,0,0,.7)}
+  .drawer.open{transform:translateX(0)}
+  .drawer-head{padding:17px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .drawer-head b{font-family:var(--mono);font-weight:600;font-size:14px}
+  .drawer-head .tag{font-family:var(--mono);font-size:10px;background:rgba(180,140,255,.15);color:var(--violet);padding:2px 7px;border-radius:5px;border:1px solid rgba(180,140,255,.3)}
+  .drawer-head .x{margin-left:auto;background:none;border:0;color:var(--ink-faint);font-size:20px;cursor:pointer}
+  .drawer-body{padding:17px 20px;display:flex;flex-direction:column;gap:10px;overflow-y:auto}
+  .dstatus{font-family:var(--mono);font-size:11px;color:var(--ink-faint);line-height:1.45}
+  .dstatus.ok{color:var(--signal)}
+  .dstatus.err{color:var(--unread)}
+  .dev-sec{font-family:var(--mono);font-size:10px;color:var(--ink-faint);letter-spacing:.6px;text-transform:uppercase;margin-top:6px}
+  .dev-note{font-size:11.5px;color:var(--ink-dim);line-height:1.5;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:11px 12px;font-family:var(--mono)}
+  .dev-note code{color:var(--btc-bright);background:rgba(247,147,26,.1);padding:1px 5px;border-radius:4px}
+  .dev-btn{appearance:none;text-align:left;border:1px solid var(--line-strong);background:var(--elev);color:var(--ink);
+    padding:11px 13px;border-radius:10px;cursor:pointer;font-family:var(--body);font-size:12.5px;display:flex;gap:11px;align-items:center;transition:.15s}
+  .dev-btn:hover{border-color:var(--btc);background:var(--panel-2)}
+  .dev-btn.live:hover{border-color:var(--signal)}
+  .dev-btn.live .ic{color:var(--signal)}
+  .dev-btn .ic{width:30px;height:30px;border-radius:8px;background:var(--bg);display:grid;place-items:center;flex:none;color:var(--btc);font-size:15px}
+  .dev-btn small{display:block;color:var(--ink-faint);font-size:10.5px;margin-top:2px;font-family:var(--mono)}
+  .dev-btn.danger:hover{border-color:var(--unread)}
+  .dev-btn.danger .ic{color:var(--unread)}
+
+  .toast{position:fixed;bottom:22px;left:50%;transform:translate(-50%,20px);z-index:90;opacity:0;background:var(--elev);
+    border:1px solid var(--line-strong);border-radius:10px;padding:11px 17px;font-size:12.5px;box-shadow:0 20px 50px -15px rgba(0,0,0,.75);
+    transition:.25s;pointer-events:none;font-family:var(--mono);max-width:82vw;text-align:center}
+  .toast.show{opacity:1;transform:translate(-50%,0)}
+
+  /* ---------- notifications ---------- */
+  .notifs{position:fixed;right:18px;top:70px;z-index:95;display:flex;flex-direction:column;gap:10px;
+    width:330px;max-width:calc(100vw - 36px);pointer-events:none}
+  .notif{pointer-events:auto;background:var(--elev);border:1px solid var(--line-strong);border-radius:12px;
+    box-shadow:0 18px 44px -14px rgba(0,0,0,.8);overflow:hidden;cursor:pointer;
+    animation:slideIn .26s cubic-bezier(.2,.9,.3,1);position:relative}
+  .notif.out{animation:slideOut .22s ease forwards}
+  .notif .stripe{position:absolute;left:0;top:0;bottom:0;width:3px}
+  .notif .body{display:flex;gap:11px;align-items:flex-start;padding:12px 13px 12px 16px}
+  .notif .av{width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center;
+    font-family:var(--display);font-weight:700;font-size:15px;border:1.5px solid}
+  .notif .txt{flex:1;min-width:0}
+  .notif .who{font-family:var(--mono);font-weight:600;font-size:12.5px;white-space:nowrap;
+    overflow:hidden;text-overflow:ellipsis}
+  .notif .prev{font-size:12px;color:var(--ink-dim);margin-top:3px;line-height:1.4;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+  .notif .prev.locked{font-family:var(--mono);color:var(--amber);font-size:11.5px}
+  .notif .x{background:none;border:0;color:var(--ink-faint);font-size:16px;cursor:pointer;
+    padding:0 2px;line-height:1;flex:none}
+  .notif .x:hover{color:var(--ink)}
+  .notif .when{font-family:var(--mono);font-size:9.5px;color:var(--ink-faint);margin-top:5px}
+  @keyframes slideIn{from{opacity:0;transform:translateX(26px)}to{opacity:1;transform:translateX(0)}}
+  @keyframes slideOut{to{opacity:0;transform:translateX(26px);height:0;margin-top:-10px}}
+  .tab-count{animation:pop-badge .3s cubic-bezier(.2,1.4,.4,1)}
+  @keyframes pop-badge{0%{transform:scale(.4)}70%{transform:scale(1.25)}100%{transform:scale(1)}}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:20px;border:3px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:var(--ink-faint);background-clip:content-box}
+
+  @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
+  @keyframes pop{from{transform:scale(.96);opacity:0}to{transform:scale(1);opacity:1}}
+
+  @media (max-width:820px){
+    .conv-list{width:100%}.thread{display:none}.brand .stack span{display:none}.radar-head .lede{display:none}.legend{display:none}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms !important;animation-iteration-count:1 !important}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">N</div>
+      <div class="stack"><b>NodeSignal</b><span>consensus-layer chat</span></div>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" id="tab-peers" onclick="switchTab('peers')">◈ peers</button>
+      <button class="tab" id="tab-msgs" onclick="switchTab('msgs')">✉ messages <span class="tab-count" id="tab-unread" style="display:none">0</span></button>
+    </nav>
+    <div class="spacer"></div>
+    <div class="selfnode" title="How you appear to peers you connect to">
+      <div class="pulse"></div>
+      <div class="meta"><div class="t">Your Node</div><div class="s" id="self-desc">Bitcoin Core v29.0</div></div>
+    </div>
+    <button class="icon-btn" id="dev-toggle" title="Dev tools" onclick="toggleDrawer()">⚙</button>
+  </header>
+
+  <div class="views">
+    <section class="view active" id="view-peers">
+      <div class="radar-head">
+        <h1>peer constellation</h1>
+        <span class="lede">// rings = rtt latency · colour = implementation · drag to pan · scroll to zoom</span>
+      </div>
+      <div class="radar-wrap">
+        <svg class="radar" id="radar" preserveAspectRatio="xMidYMid meet">
+          <g id="rings"></g><g id="tethers"></g><g id="self"></g><g id="peers"></g>
+        </svg>
+        <div class="crt"></div>
+        <div class="hud" id="hud"></div>
+        <div class="legend" id="legend"></div>
+        <div class="empty" id="peers-empty">
+          <div class="card">
+            <b>no peers connected</b>
+            <p>Add an operator by clearnet IP, spawn a demo peer, or connect a real node from Dev Tools.</p>
+            <button class="ghost-btn" onclick="spawnFakePeer()">spawn a demo peer</button>
+          </div>
+        </div>
+        <div class="viewctl">
+          <button class="vc" onclick="zoomBy(1/1.25)" title="Zoom in">+</button>
+          <button class="vc" onclick="zoomBy(1.25)" title="Zoom out">−</button>
+          <button class="vc" onclick="fitNow()" title="Fit all peers">⤢</button>
+        </div>
+        <button class="fab" title="Add a node" onclick="openAddModal()">+</button>
+      </div>
+    </section>
+
+    <section class="view" id="view-msgs">
+      <aside class="conv-list">
+        <div class="conv-head"><h2>messages</h2><p id="conv-sub">0 conversations</p></div>
+        <div class="conv-scroll" id="conv-scroll"></div>
+      </aside>
+      <div class="thread" id="thread">
+        <div class="thread-empty"><div><div class="big">✉</div><div>select a conversation</div></div></div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<div class="tip" id="tip"></div>
+
+<div class="scrim" id="scrim">
+  <div class="modal">
+    <div class="modal-head"><b>add a node</b><button class="x" onclick="closeAddModal()">×</button></div>
+    <div class="modal-body">
+      <div class="modebanner" id="add-mode-line"></div>
+      <div class="field">
+        <label>clearnet address</label>
+        <input id="f-ip" placeholder="203.0.113.24:8333" autocomplete="off"/>
+        <div class="help" id="add-mode-line">…</div>
+      </div>
+      <div class="field"><label>nickname (your reference)</label><input id="f-nick" placeholder="e.g. Satoshi's spare box" autocomplete="off"/></div>
+      <div class="field"><label>shared PIN (encrypts the chat)</label>
+        <input id="f-pin" placeholder="blank for none" autocomplete="off"/>
+        <div class="help">PBKDF2 → AES-256-GCM. Both operators must set the SAME PIN — agree it out-of-band.</div></div>
+    </div>
+    <div class="modal-foot"><button class="btn" onclick="closeAddModal()">cancel</button><button class="btn primary" onclick="addNodeFromForm()">add node</button></div>
+  </div>
+</div>
+
+<aside class="drawer" id="drawer">
+  <div class="drawer-head"><b>Dev Tools</b><span class="tag">DEMO</span><button class="x" onclick="toggleDrawer()">×</button></div>
+  <div class="drawer-body">
+    <div class="dev-sec">daemon</div>
+    <div class="dstatus" id="d-status">looking for a local daemon…</div>
+    <div class="dev-note">This page is served by the daemon, so it connects to <code>/ws</code> on whatever address you loaded it from — no configuration. Run it on the node box and visit <code>http://&lt;tailscale-ip&gt;:8789</code>. Demo peers use PIN <code>2013</code>.</div>
+    <div class="dev-sec">simulation</div>
+    <button class="dev-btn" onclick="spawnFakePeer()"><span class="ic">✦</span><span>Spawn fake node<small>Random impl, version, signaling, latency</small></span></button>
+    <button class="dev-btn" onclick="spawnFakePeer(3)"><span class="ic">⇲</span><span>Spawn 3 nodes<small>Watch the map re-space itself</small></span></button>
+    <button class="dev-btn" onclick="spawnFakePeer(10)"><span class="ic">⣿</span><span>Spawn 10 nodes<small>Stress-test the layout</small></span></button>
+    <button class="dev-btn" onclick="simulateIncoming()"><span class="ic">◉</span><span>Simulate incoming message<small>Random peer pings you → unread badge</small></span></button>
+    <button class="dev-btn danger" onclick="resetDemo()"><span class="ic">⌫</span><span>Reset demo<small>Clear all peers & conversations</small></span></button>
+  </div>
+</aside>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ===================== STATE ===================== */
+const state={tab:'peers',peers:[],activePeer:null,sessionKeys:{},plainCache:{},discovered:[]};
+let idSeq=1; const uid=()=>'p'+(idSeq++); const now=()=>Date.now();
+const DEMO_PIN='2013';
+
+/* ===================== COLOUR ===================== */
+const IMPL_COLOR={
+  'Bitcoin Core':'#f7931a','Bitcoin Knots':'#22a95a','btcd':'#4dd2ff','libbitcoin':'#b48cff',
+  'Bcoin':'#ff7ab8','Stratum pool':'#ffd166','bitcoinj':'#ff9f6b','Unknown':'#8fa39a'};
+const GLYPH={'Bitcoin Core':'₿','Bitcoin Knots':'⨳','btcd':'◆','libbitcoin':'⬡','Bcoin':'❋','Stratum pool':'⛏','bitcoinj':'◐','Unknown':'◈'};
+const color=p=>IMPL_COLOR[p.impl]||IMPL_COLOR.Unknown;
+const glyph=p=>GLYPH[p.impl]||GLYPH.Unknown;
+const SIG_COLORS=['#b48cff','#4dd2ff','#39e08a','#ffd166','#ff7ab8','#ff9f6b'];
+const sigColor=s=>SIG_COLORS[[...s].reduce((a,c)=>a+c.charCodeAt(0),0)%SIG_COLORS.length];
+
+/* ===================== CRYPTO ===================== */
+const te=new TextEncoder(),tdc=new TextDecoder();
+async function deriveKey(pin,salt){
+  const base=await crypto.subtle.importKey('raw',te.encode(pin),'PBKDF2',false,['deriveKey']);
+  return crypto.subtle.deriveKey({name:'PBKDF2',salt:new Uint8Array(salt),iterations:120000,hash:'SHA-256'},
+    base,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+}
+async function enc(k,t){const iv=crypto.getRandomValues(new Uint8Array(12));
+  const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv},k,te.encode(t));return{iv:[...iv],ct:[...new Uint8Array(ct)]};}
+async function dec(k,m){const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:new Uint8Array(m.iv)},k,new Uint8Array(m.ct));return tdc.decode(pt);}
+const randSalt=()=>[...crypto.getRandomValues(new Uint8Array(16))];
+
+/* ===================== DEMO DATA ===================== */
+const IMPLS=[{name:'Bitcoin Core',vers:['v29.0','v28.1','v28.0','v27.2']},
+  {name:'Bitcoin Knots',vers:['v29.1.knots20250903','v28.1.knots20250601']},
+  {name:'btcd',vers:['v0.24.2','v0.24.0']},{name:'libbitcoin',vers:['v4.0','v3.8']},{name:'Bcoin',vers:['v2.2.0']}];
+const SIGNALS=['BIP-8','BIP-110','BIP-119 (CTV)','BIP-300/301','BIP-324 v2','BIP-345 (OP_VAULT)','Taproot'];
+const NICKS=['Timechain Relay','block-oracle','satoshis-spare','mempool-monk','21M Club','utxo-farmer','the-signal',
+  'coldstorage-9','node-runner-fr','ordinal-hater','stack-sats-01','full-node-fi','orange-pill-7','csv-maxi'];
+const REPLIES=['just validated to tip, all green here','signaling this epoch, you in?','mempool sitting at 180MB, feerate floor rising',
+  'gm from the timechain','peer count steady at 124, IBD wrapped last night','saw your ping, latency looks clean from my side',
+  'reject-tokens patch is holding fine on Knots','block 000000...a3f1 checks out','running a compact-block relay test, want in?',
+  'no forks on my chaintip, we agree'];
+const pick=a=>a[Math.floor(Math.random()*a.length)];
+const r=(a,b)=>Math.floor(Math.random()*(b-a+1))+a;
+const randIP=()=>`${r(11,220)}.${r(0,255)}.${r(0,255)}.${r(1,254)}:8333`;
+const randSignals=()=>{const n=r(0,3);return n?[...SIGNALS].sort(()=>Math.random()-.5).slice(0,n):[];};
+const shortIP=ip=>ip.split(':')[0];
+const implShort=p=>p.impl==='Stratum pool'?'pool':p.impl.split(' ').pop();
+
+/* Rough share of the real network, so demo spawns look plausible rather than
+   uniformly random. btcd and libbitcoin together are capped at ONE node on the
+   map, and Bcoin at one — these are a tiny slice of the network in practice. */
+const IMPL_WEIGHTS={'Bitcoin Core':62,'Bitcoin Knots':29,'btcd':4,'Bcoin':3,'libbitcoin':2};
+const RARE_GROUPS=[{impls:['btcd'],max:1},{impls:['libbitcoin'],max:1},{impls:['Bcoin'],max:1}];
+function rareBlocked(impl){
+  for(const g of RARE_GROUPS)
+    if(g.impls.includes(impl)&&state.peers.filter(p=>g.impls.includes(p.impl)).length>=g.max)
+      return true;
+  return false;
+}
+function pickImpl(){
+  const avail=IMPLS.filter(i=>!rareBlocked(i.name));
+  const pool=avail.length?avail:IMPLS.filter(i=>!RARE_GROUPS.some(g=>g.impls.includes(i.name)));
+  const total=pool.reduce((s,i)=>s+(IMPL_WEIGHTS[i.name]||1),0);
+  let x=Math.random()*total;
+  for(const i of pool){x-=(IMPL_WEIGHTS[i.name]||1);if(x<=0)return i.name;}
+  return pool[pool.length-1].name;
+}
+
+/* ===================== PEERS ===================== */
+let layoutDirty=true, lastThreadPeer=null;
+async function createPeer(o={}){
+  const impl=o.impl||pickImpl(), io=IMPLS.find(i=>i.name===impl);
+  const p={id:uid(),ip:o.ip||randIP(),nickname:o.nickname||'',impl,
+    version:o.version||(io?pick(io.vers):'—'),signaling:o.signaling||randSignals(),
+    latency:o.latency??r(8,290),unmeasured:!!o.unmeasured,angle:o.angle??Math.random()*Math.PI*2,
+    salt:randSalt(),hasPin:!!o.pin,pin:o.pin||null,
+    unidentified:!!o.unidentified,identifying:false,demo:!!o.demo,chatty:!!o.chatty,
+    declared:[],supports:[],userAgent:null,
+    live:!!o.live,liveState:null,mode:o.mode||null,ws:null,height:null,services:[],network:null,
+    msgs:[],unread:0};
+  state.peers.push(p); layoutDirty=true; return p;
+}
+async function seedConversation(p,n=2){
+  if(!p.hasPin){p.msgs.push({id:uid(),from:'them',text:pick(REPLIES),ts:now()-r(60000,600000)});return;}
+  const key=await deriveKey(p.pin,p.salt);
+  for(let i=0;i<n;i++)p.msgs.push({id:uid(),from:'them',ts:now()-r(60000,900000),enc:await enc(key,pick(REPLIES))});
+  p.msgs.sort((a,b)=>a.ts-b.ts);
+}
+
+/* ===================== DAEMON (console attachment) =====================
+   The console attaches to a nodesignald over WebSocket. Everything real on the
+   map comes from that daemon: your node's identity (RPC), its peer list
+   (getpeerinfo), your NodeSignal contacts and their message history. */
+const daemon={url:'',ws:null,state:'off',info:null,node:null,nodePeers:[],err:''};
+function wsEndpoint(){
+  // file:// has no usable origin — fall back to a daemon on this machine.
+  if(location.protocol==='file:')return 'ws://localhost:8789/ws';
+  const proto=location.protocol==='https:'?'wss:':'ws:';
+  return proto+'//'+location.host+'/ws';
+}
+
+function daemonAttach(url,token,quiet){
+  if(daemon.ws){try{daemon.ws.close();}catch{}}
+  daemon.url=url; daemon.state='connecting'; daemon.err='';
+  renderDaemonPanel();
+  let ws; try{ws=new WebSocket(url);}catch(e){daemon.state=quiet?'off':'error';daemon.err=quiet?'':'bad URL';renderDaemonPanel();return;}
+  daemon.ws=ws;
+  const guard=setTimeout(()=>{if(ws.readyState!==1){try{ws.close();}catch{}}},quiet?2500:5000);
+  ws.onopen=()=>{clearTimeout(guard);
+    if(token)ws.send(JSON.stringify({type:'auth',token}));
+    else ws.send(JSON.stringify({type:'hello'}));};
+  ws.onmessage=ev=>{let m;try{m=JSON.parse(ev.data);}catch{return;}handleDaemon(m);};
+  ws.onerror=()=>{};
+  ws.onclose=()=>{clearTimeout(guard);
+    if(daemon.state==='connecting'&&quiet){daemon.state='off';daemon.err='';renderDaemonPanel();return;}
+    if(daemon.state!=='off'){daemon.state=daemon.state==='attached'?'lost':'error';
+      if(!daemon.err)daemon.err=daemon.state==='lost'?'connection lost':'could not reach daemon — is nodesignald running?';
+      renderDaemonPanel();renderAll();}};
+}
+function daemonDetach(){daemon.state='off';daemon.err='';
+  if(daemon.ws){try{daemon.ws.close();}catch{}}
+  daemon.ws=null;daemon.info=null;daemon.node=null;daemon.nodePeers=[];
+  state.peers=state.peers.filter(p=>!p.fromDaemon);
+  layoutDirty=true;renderDaemonPanel();updateSelfBadge();renderAll();seedDemo();}
+const dsend=o=>{if(daemon.ws&&daemon.ws.readyState===1)daemon.ws.send(JSON.stringify(o));};
+
+function handleDaemon(m){
+  if(m.type==='auth.fail'){daemon.state='error';daemon.err='daemon rejected the token';renderDaemonPanel();return;}
+  if(m.type==='state'){
+    daemon.state='attached'; daemon.info=m.daemon;
+    daemon.node=m.node&&m.node.self?m.node.self:null;
+    daemon.nodePeers=(m.node&&m.node.peers)||[];
+    state.peers=state.peers.filter(p=>!p.fromDaemon);   // demo peers stay on the map
+    for(const c of m.contacts)upsertContact(c);
+    rebuildNodePeers();
+    updateSelfBadge();
+    layoutDirty=true;renderDaemonPanel();renderAll();
+    toast('attached to '+(daemon.info?daemon.info.nick:'daemon'));
+    return;
+  }
+  if(m.type==='node'){
+    daemon.node=m.self||null;daemon.nodePeers=m.peers||[];
+    rebuildNodePeers();updateSelfBadge();layoutDirty=true;renderAll();return;
+  }
+  if(m.type==='contact'){upsertContact(m.contact);layoutDirty=true;renderAll();return;}
+  if(m.type==='chat.recv'){
+    const p=findByHost(m.host); if(!p)return;
+    const msg=m.msg;
+    const existing=p.msgs.find(x=>x.id===msg.id);
+    if(existing)Object.assign(existing,fromWireMsg(msg));
+    else p.msgs.push(fromWireMsg(msg));
+    if(msg.from==='them'){
+      const viewing = state.activePeer===p.id && state.tab==='msgs';
+      if(viewing)dsend({type:'chat.read',host:p.host});
+      else{ p.unread=m.unread??(p.unread+1); notify(p,msg.text,msg.locked); }
+    }
+    pulseTether(p);renderAll();return;
+  }
+  if(m.type==='chat.status'){
+    const p=findByHost(m.host); if(!p)return;
+    const msg=p.msgs.find(x=>x.id===m.id);
+    if(msg){msg.status=m.status;msg.pending=m.status==='sending';msg.failed=m.status==='failed';if(m.error)msg.error=m.error;}
+    if(m.status==='failed')toast('delivery failed: '+(m.error||''));
+    renderAll();return;
+  }
+  if(m.type==='contact.removed'){
+    const p=findByHost(m.host);
+    if(p){state.peers=state.peers.filter(x=>x.id!==p.id);
+      if(state.activePeer===p.id)state.activePeer=null;
+      layoutDirty=true;toast('contact removed');renderAll();}
+    return;
+  }
+  if(m.type==='identified'){
+    if(m.error)toast('identify: '+m.error);
+    else toast('identified: '+m.info.ua+' · height '+m.info.height.toLocaleString());
+    return; // the contact update itself arrives as a 'contact' broadcast
+  }
+  if(m.type==='chat.readack'){const p=findByHost(m.host);if(p){p.unread=0;renderAll();}}
+}
+function fromWireMsg(w){
+  return {id:w.id,from:w.from,ts:w.ts,text:w.text,locked:!!w.locked,status:w.status||null,
+    pending:w.status==='sending',failed:w.status==='failed'};
+}
+function findByHost(host){return state.peers.find(p=>p.fromDaemon&&p.host===host);}
+
+function upsertContact(c){
+  let p=findByHost(c.host);
+  const ni=c.peerInfo||{};
+  if(!p){
+    p={id:uid(),fromDaemon:true,contactType:'contact',host:c.host,ip:c.host+':'+(c.port||8788),
+      nickname:c.nick||'',impl:ni.impl||'Unknown',version:ni.version||'—',unidentified:!ni.impl,
+      signaling:ni.declared||[],declared:ni.declared||[],supports:[],userAgent:ni.ua||null,
+      latency:120,unmeasured:true,angle:Math.random()*Math.PI*2,
+      salt:null,hasPin:!!c.hasPin,pin:null,identifying:false,
+      live:true,liveState:'contact',mode:'nodesignal',ws:null,
+      height:ni.height??null,services:[],network:null,msgs:[],unread:c.unread||0};
+    state.peers.push(p);
+  }
+  p.nickname=c.nick||p.nickname; p.hasPin=!!c.hasPin; p.unread=c.unread??p.unread;
+  p.impl=ni.impl||p.impl; p.version=ni.version||p.version; p.height=ni.height??p.height;
+  p.userAgent=ni.ua||p.userAgent; p.declared=ni.declared||p.declared;
+  p.signaling=ni.declared||p.signaling||[]; p.supports=ni.supports||p.supports||[];
+  p.services=ni.services||p.services||[]; p.network=ni.network||p.network;
+  if(ni.latency!=null){p.latency=Math.max(1,Math.min(1000,ni.latency));p.unmeasured=false;}
+  p.unidentified=!(ni.impl||(p.impl&&p.impl!=='Unknown'));
+  if(c.msgs)p.msgs=c.msgs.map(fromWireMsg);
+  p.online=!!(c.lastSeen&&(Date.now()-c.lastSeen<10*60*1000));
+  layoutDirty=true;
+}
+function rebuildNodePeers(){
+  state.peers=state.peers.filter(p=>!(p.fromDaemon&&p.contactType==='nodepeer'));
+  for(const np of daemon.nodePeers){
+    const host=np.addr.replace(/:[0-9]+$/,'');
+    if(findByHost(host))continue;
+    state.peers.push({id:uid(),fromDaemon:true,contactType:'nodepeer',host,ip:np.addr,
+      nickname:'',impl:np.impl||'Unknown',version:np.version||'—',unidentified:!np.impl,
+      signaling:np.declared||[],declared:np.declared||[],supports:[],userAgent:np.ua||null,
+      latency:np.latency??300,unmeasured:np.latency==null,angle:Math.random()*Math.PI*2,
+      salt:null,hasPin:false,pin:null,identifying:false,
+      live:false,liveState:null,mode:null,ws:null,
+      height:np.height??null,services:[],network:null,msgs:[],unread:0,inbound:np.inbound});
+  }
+  layoutDirty=true;
+}
+function updateSelfBadge(){
+  const el=document.getElementById('self-desc');
+  const tEl=document.querySelector('.selfnode .meta .t');
+  if(!el)return;
+  if(daemon.state==='attached'){
+    if(tEl)tEl.textContent=daemon.info?daemon.info.nick:'Your Node';
+    el.textContent=daemon.node
+      ? (daemon.node.impl+' '+daemon.node.version+' · height '+daemon.node.height.toLocaleString())
+      : 'daemon attached · no node RPC';
+  } else {
+    if(tEl)tEl.textContent='Your Node';
+    el.textContent='demo mode — attach a daemon';
+  }
+}
+
+/* ===================== ADAPTIVE LAYOUT ===================== */
+const CX=470,CY=390;
+let LAYOUT=null,layoutSig='';
+function sig(){return state.peers.map(p=>`${p.id}:${p.latency}:${p.nickname}:${p.impl}:${p.liveState}:${p.unmeasured}`).join('|');}
+
+function computeLayout(){
+  const peers=state.peers,n=peers.length;
+  // Everything scales with peer count: more peers -> wider world + smaller nodes.
+  const grow=Math.min(1.85,1+Math.max(0,n-5)*0.055);
+  const RMIN=160*grow,RMAX=470*grow;
+  const coreR=56*grow;
+  const nodeR=Math.max(34,52-Math.max(0,n-5)*0.85);
+  const fs=n<=8?14:n<=14?12.5:11.5;
+  const showSub=n<=22;
+  // Frame is derived from the outermost ring rather than fixed, so widening the
+  // radial spread doesn't clip anything.
+  const labelBlock=showSub?fs*2+16:fs+12;
+  const VBH=(RMAX+nodeR+labelBlock+24)*2;
+  const VBW=VBH*1.35;
+  const RCAP=VBH/2-nodeR-labelBlock-12;
+  // Log scale spreads the low-latency peers that would otherwise stack up.
+  // Ring set grows with the slowest peer, so a satellite/Tor-distance node adds
+  // outer rings instead of pinning everyone to the edge.
+  const RING_STEPS=[10,25,60,150,400,1000];
+  const peakLat=Math.max(300,...peers.filter(p=>!p.unmeasured).map(p=>p.latency),0);
+  const scaleMax=RING_STEPS.find(s=>s>=peakLat)||RING_STEPS[RING_STEPS.length-1];
+  const rings=RING_STEPS.filter(s=>s<=scaleMax);
+  const latR=lat=>{lat=Math.max(4,Math.min(scaleMax,lat));
+    return RMIN+Math.pow(Math.log(lat/4)/Math.log(scaleMax/4),0.92)*(RMAX-RMIN);};
+
+  const nodes=peers.map(p=>{
+    const label='['+(p.nickname||shortIP(p.ip))+']';
+    const sub=p.demo?('demo · '+implShort(p)+' · '+p.latency+'ms')
+      :(p.fromDaemon&&p.contactType==='contact')?('contact'+(p.online?' · online':''))
+      :(p.fromDaemon&&p.contactType==='nodepeer')?('node peer'+(p.latency!=null&&!p.unmeasured?' · '+p.latency+'ms':''))
+      :p.unmeasured?'unmeasured':((p.unidentified?'unidentified':implShort(p))+' · '+p.latency+'ms');
+    const tr=p.unmeasured?RMAX:latR(p.latency);
+    const w=Math.max(nodeR*2,Math.max(label.length,sub.length)*fs*0.62);
+    return {p,tr,label,sub,x:CX+tr*Math.cos(p.angle),y:CY+tr*Math.sin(p.angle),
+      hw:w/2+8,hh:nodeR+(showSub?fs*2+16:fs+12)};
+  });
+
+  const minCore=coreR+nodeR+28;
+  // Relaxation: separate overlapping node+label boxes, then pull each peer back
+  // toward its true latency radius. Repeat until it settles.
+  for(let it=0;it<300;it++){
+    for(let i=0;i<n;i++)for(let j=i+1;j<n;j++){
+      const a=nodes[i],b=nodes[j];
+      let dx=b.x-a.x,dy=b.y-a.y;
+      if(!dx&&!dy){dx=Math.random()-.5;dy=Math.random()-.5;}
+      const ox=(a.hw+b.hw)-Math.abs(dx),oy=(a.hh+b.hh)-Math.abs(dy);
+      if(ox>0&&oy>0){
+        if(ox<oy){const s=(ox/2+.5)*(dx<0?-1:1);a.x-=s;b.x+=s;}
+        else{const s=(oy/2+.5)*(dy<0?-1:1);a.y-=s;b.y+=s;}
+      }
+    }
+    for(const nd of nodes){
+      const dx=nd.x-CX,dy=nd.y-CY,d=Math.hypot(dx,dy)||1;
+      const band=nodeR*1.7;
+      const lo=Math.max(minCore,nd.tr-band),hi=Math.min(RCAP,Math.max(lo,nd.tr+band));
+      const t=Math.min(hi,Math.max(lo,d));
+      nd.x=CX+dx/d*t;nd.y=CY+dy/d*t;
+    }
+  }
+  nodes.forEach(nd=>{nd.p._x=nd.x;nd.p._y=nd.y;});
+  return {nodes,grow,VBW,VBH,RMIN,RMAX,coreR,nodeR,fs,showSub,latR,rings,scaleMax};
+}
+function ensureLayout(){
+  const s=sig();
+  if(layoutDirty||s!==layoutSig||!LAYOUT){LAYOUT=computeLayout();layoutSig=s;layoutDirty=false;}
+  return LAYOUT;
+}
+
+/* ===================== VIEW / NAVIGATION =====================
+   The radar is a live viewport, not a static picture: drag to pan, wheel or
+   pinch to zoom about the cursor, double-click to zoom in, ⤢ to refit.
+   Once the operator moves the view we stop auto-refitting, so incoming peers
+   or protocol chatter never yank the camera out from under them. */
+let view=null, viewUserSet=false, didDrag=false;
+const fitView=L=>({x:CX-L.VBW/2,y:CY-L.VBH/2,w:L.VBW,h:L.VBH});
+function applyView(){
+  const svg=document.getElementById('radar');
+  if(svg&&view)svg.setAttribute('viewBox',`${view.x} ${view.y} ${view.w} ${view.h}`);
+}
+function zoomAt(px,py,k){
+  if(!view)return;
+  const L=LAYOUT||ensureLayout();
+  const min=L.VBW*0.12, max=L.VBW*2.4;
+  const nw=Math.max(min,Math.min(max,view.w*k)), f=nw/view.w;
+  view={x:px-(px-view.x)*f, y:py-(py-view.y)*f, w:view.w*f, h:view.h*f};
+  viewUserSet=true; applyView(); updateHud();
+}
+const zoomBy=k=>{if(view)zoomAt(view.x+view.w/2,view.y+view.h/2,k);};
+function fitNow(){viewUserSet=false;view=fitView(ensureLayout());applyView();updateHud();}
+function svgPointFromEvent(e){
+  const svg=document.getElementById('radar'), r=svg.getBoundingClientRect();
+  const s=Math.min(r.width/view.w, r.height/view.h);
+  const ox=(r.width-view.w*s)/2, oy=(r.height-view.h*s)/2;
+  return {x:view.x+(e.clientX-r.left-ox)/s, y:view.y+(e.clientY-r.top-oy)/s};
+}
+function initNav(){
+  const svg=document.getElementById('radar');
+  if(!svg||svg._navInit)return; svg._navInit=true;
+  svg.style.cursor='grab';
+
+  svg.addEventListener('wheel',e=>{
+    e.preventDefault();
+    const p=svgPointFromEvent(e);
+    zoomAt(p.x,p.y, e.deltaY>0?1.15:1/1.15);
+  },{passive:false});
+
+  const pointers=new Map();
+  let start=null, pinch=null;
+
+  svg.addEventListener('pointerdown',e=>{
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(pointers.size===1){
+      didDrag=false;
+      // NOTE: deliberately NOT calling setPointerCapture here. Capturing on
+      // pointerdown retargets the following click to the <svg>, which stops
+      // node circles from opening their chat. We capture only once a real
+      // drag begins (see pointermove).
+      start={sx:e.clientX,sy:e.clientY,view:{...view},captured:false};
+      svg.style.cursor='grabbing';
+    } else if(pointers.size===2){
+      const [a,b]=[...pointers.values()];
+      pinch={d:Math.hypot(a.x-b.x,a.y-b.y)};
+      start=null;
+    }
+  });
+
+  svg.addEventListener('pointermove',e=>{
+    if(!pointers.has(e.pointerId))return;
+    pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(pinch&&pointers.size===2){
+      const [a,b]=[...pointers.values()];
+      const d=Math.hypot(a.x-b.x,a.y-b.y);
+      if(pinch.d>0&&d>0){
+        const p=svgPointFromEvent({clientX:(a.x+b.x)/2,clientY:(a.y+b.y)/2});
+        zoomAt(p.x,p.y,pinch.d/d);
+      }
+      pinch.d=d; didDrag=true; hideTip(); return;
+    }
+    if(!start)return;
+    const r=svg.getBoundingClientRect();
+    const s=Math.min(r.width/start.view.w, r.height/start.view.h);
+    if(Math.abs(e.clientX-start.sx)+Math.abs(e.clientY-start.sy)>4){
+      didDrag=true; hideTip();
+      if(!start.captured){start.captured=true;try{svg.setPointerCapture(e.pointerId);}catch{}}
+    }
+    view={...start.view, x:start.view.x-(e.clientX-start.sx)/s, y:start.view.y-(e.clientY-start.sy)/s};
+    viewUserSet=true; applyView();
+  });
+
+  const end=e=>{
+    if(start&&start.captured){try{svg.releasePointerCapture(e.pointerId);}catch{}}
+    pointers.delete(e.pointerId);
+    if(pointers.size<2)pinch=null;
+    if(pointers.size===0){
+      start=null; svg.style.cursor='grab';
+      // cleared after the click event so a drag never opens a chat
+      setTimeout(()=>{didDrag=false;},0);
+    }
+  };
+  svg.addEventListener('pointerup',end);
+  svg.addEventListener('pointercancel',end);
+  svg.addEventListener('dblclick',e=>{e.preventDefault();const p=svgPointFromEvent(e);zoomAt(p.x,p.y,1/1.6);});
+}
+function updateHud(){
+  const L=LAYOUT; if(!L||!view)return;
+  const unread=state.peers.reduce((s,p)=>s+p.unread,0);
+  document.getElementById('hud').innerHTML=
+    `<b>${state.peers.length}</b> peers · <b>${unread}</b> unread · zoom <b>${(L.VBW/view.w).toFixed(2)}×</b>`;
+}
+
+/* ===================== RADAR ===================== */
+const NS='http://www.w3.org/2000/svg';
+const svgEl=(t,a)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;};
+
+function renderRadar(){
+  const L=ensureLayout();
+  initNav();
+  if(!view||!viewUserSet)view=fitView(L);
+  applyView();
+
+  // rings
+  const rg=document.getElementById('rings'); rg.innerHTML='';
+  L.rings.forEach(lat=>{
+    const rr=L.latR(lat);
+    rg.appendChild(svgEl('circle',{class:'ring',cx:CX,cy:CY,r:rr}));
+    const t=svgEl('text',{class:'ring-lbl',x:CX+7,y:CY-rr+16,'font-size':L.fs-1.5});
+    t.textContent=lat>=1000?(lat/1000)+'s':lat+'ms'; rg.appendChild(t);
+  });
+
+  // self
+  const sg=document.getElementById('self'); sg.innerHTML='';
+  sg.appendChild(svgEl('circle',{class:'self-guide',cx:CX,cy:CY,r:L.coreR+13}));
+  sg.appendChild(svgEl('circle',{class:'self-core',cx:CX,cy:CY,r:L.coreR}));
+  const a=svgEl('text',{class:'self-lbl',x:CX,y:CY-3,'font-size':L.fs});a.textContent='YOUR';sg.appendChild(a);
+  const b=svgEl('text',{class:'self-lbl',x:CX,y:CY+L.fs+2,'font-size':L.fs});b.textContent='NODE';sg.appendChild(b);
+
+  // peers
+  const tg=document.getElementById('tethers'),pg=document.getElementById('peers');
+  tg.innerHTML='';pg.innerHTML='';
+  document.getElementById('peers-empty').style.display=state.peers.length?'none':'grid';
+
+  L.nodes.forEach(nd=>{
+    const p=nd.p,c=color(p),x=nd.x,y=nd.y;
+    // A NodeSignal contact is a real, messageable link: solid tether + the
+    // blinking live pip. Node peers and demo peers stay dashed.
+    const isLive=!!(p.fromDaemon&&p.contactType==='contact');
+    // Live is encoded by line STYLE (solid tether) + the blinking dot, never by
+    // recolouring — otherwise a live node loses its implementation colour.
+    tg.appendChild(svgEl('line',{class:'tether'+(isLive?' solid':''),x1:CX,y1:CY,x2:x,y2:y,stroke:c}));
+
+    const g=svgEl('g',{class:'peer-g'});
+    // Invisible hit disc sized from nodeR, so the clickable area scales with
+    // the circle at every zoom level and peer count.
+    g.appendChild(svgEl('circle',{class:'peer-hit',cx:x,cy:y,r:L.nodeR+12}));
+    g.appendChild(svgEl('circle',{class:'peer-ring',cx:x,cy:y,r:L.nodeR,fill:c+'1f',stroke:c}));
+    const gl=svgEl('text',{class:'peer-glyph',x:x,y:y+L.nodeR*0.17,'font-size':L.nodeR*0.62,fill:c});
+    gl.textContent=glyph(p); g.appendChild(gl);
+
+    const lb=svgEl('text',{class:'peer-lbl',x:x,y:y+L.nodeR+L.fs+6,'font-size':L.fs});
+    lb.textContent=nd.label; g.appendChild(lb);
+    if(L.showSub){
+      const sb=svgEl('text',{class:'peer-sub',x:x,y:y+L.nodeR+L.fs*2+8,'font-size':L.fs-1.5,fill:c});
+      sb.textContent=nd.sub; g.appendChild(sb);
+    }
+    if(p.unread){
+      const bx=x-L.nodeR*0.72,by=y-L.nodeR*0.72;
+      g.appendChild(svgEl('circle',{class:'badge-c',cx:bx,cy:by,r:L.nodeR*0.30}));
+      const bt=svgEl('text',{class:'badge-t',x:bx,y:by+L.nodeR*0.11,'font-size':L.nodeR*0.30});
+      bt.textContent=p.unread>9?'9+':p.unread; g.appendChild(bt);
+    }
+    if(isLive)g.appendChild(svgEl('circle',{class:'live-dot',cx:x+L.nodeR*0.72,cy:y-L.nodeR*0.72,r:L.nodeR*0.14}));
+
+
+    g.addEventListener('mouseenter',ev=>showTip(p,ev.currentTarget));
+    g.addEventListener('mouseleave',hideTip);
+    g.addEventListener('click',()=>{if(didDrag)return;hideTip();openConversation(p.id);});
+    pg.appendChild(g);
+  });
+
+  renderLegend();
+  updateHud();
+}
+function renderLegend(){
+  const el=document.getElementById('legend');
+  const impls=[...new Set(state.peers.map(p=>p.impl))];
+  if(!impls.length){el.style.display='none';return;}
+  el.style.display='flex';
+  el.innerHTML=impls.map(i=>{
+    const cnt=state.peers.filter(p=>p.impl===i).length;
+    return `<div class="row"><span class="sw" style="background:${IMPL_COLOR[i]||IMPL_COLOR.Unknown}"></span>${i} <span style="color:var(--ink-faint)">· ${cnt}</span></div>`;
+  }).join('');
+}
+
+/* ===================== TOOLTIP ===================== */
+const tip=document.getElementById('tip');
+function showTip(p,gEl){
+  const c=color(p),rect=gEl.getBoundingClientRect();
+  const mk=(s,cls)=>`<span class="chip ${cls||''}" style="${cls?'':`color:${sigColor(s)};border-color:${sigColor(s)}55;background:${sigColor(s)}18`}">${escapeHtml(s)}</span>`;
+  const dec=p.declared||[], sup=p.supports||[];
+  const isReal=p.live||dec.length||sup.length;
+
+  let chipBlock;
+  if(isReal){
+    // Declared = what the operator wrote in their own user agent (UASF convention).
+    // Supports = proven by service bits and the protocol messages they sent.
+    chipBlock=`<div class="row"><span class="k">signaling</span></div>
+      <div class="chips">${dec.length?dec.map(s=>mk(s)).join(''):'<span class="chip none">none declared in user agent</span>'}</div>`;
+    if(sup.length)chipBlock+=`<div class="row" style="margin-top:9px"><span class="k">supports</span></div>
+      <div class="chips">${sup.map(s=>mk(s,'cap')).join('')}</div>`;
+  } else {
+    chipBlock=`<div class="row"><span class="k">signaling</span></div>
+      <div class="chips">${p.signaling.length?p.signaling.map(s=>mk(s)).join(''):'<span class="chip none">not signaling</span>'}</div>`;
+  }
+
+  const rows=[
+    ['impl',p.unidentified?'not yet identified':p.impl],
+    ['version',p.unidentified?'—':p.version],
+    ['latency',p.unmeasured?'unmeasured':p.latency+' ms'],
+  ];
+  if(p.height!=null)rows.push(['height',p.height.toLocaleString()]);
+  if(p.network)rows.push(['network',p.network]);
+  const hint=p.demo
+    ?'demo peer — simulated, not a real connection'
+    :(p.fromDaemon&&p.contactType==='nodepeer')
+    ?'your node\'s peer — open chat → "add as contact"'
+    :`click to open chat${p.unread?` · ${p.unread} unread`:''}`;
+
+  tip.innerHTML=`<div class="accent" style="background:${c}"></div><div class="inner">
+    <div class="nick" style="color:${c}">${escapeHtml(p.nickname||'Unnamed peer')} ${p.hasPin?'<span style="color:var(--signal)">🔒</span>':''}</div>
+    <div class="ip">${escapeHtml(p.ip)}</div>
+    ${rows.map(([k,v])=>`<div class="row"><span class="k">${k}</span><span class="v">${escapeHtml(String(v))}</span></div>`).join('')}
+    ${p.userAgent?`<div class="ua">${escapeHtml(p.userAgent)}</div>`:''}
+    ${chipBlock}
+    <div class="hint">${hint}</div></div>`;
+  tip.classList.add('show');
+  const tr=tip.getBoundingClientRect();
+  let left=rect.left+rect.width/2-tr.width/2,top=rect.top-tr.height-12;
+  left=Math.max(10,Math.min(left,innerWidth-tr.width-10));
+  if(top<66)top=rect.bottom+12;
+  tip.style.left=left+'px';tip.style.top=top+'px';
+}
+const hideTip=()=>tip.classList.remove('show');
+
+/* ===================== MESSAGES ===================== */
+const lastMsg=p=>p.msgs[p.msgs.length-1];
+function previewText(p){
+  const m=lastMsg(p); if(!m)return{text:'no messages yet',locked:false};
+  if(m.enc&&!state.sessionKeys[p.id])return{text:'🔒 encrypted — enter PIN',locked:true};
+  const body=(m.text??state.plainCache[m.id]??'🔒 encrypted')+(m.count>1?` ×${m.count}`:'');
+  // Protocol chatter is telemetry — show it, but visually subordinate to real messages.
+  if(m.kind==='live'||m.kind==='sys')return{text:body,locked:false,telemetry:true};
+  return{text:(m.from==='me'?'you: ':'')+body,locked:false};
+}
+function fmtTime(ts){const d=new Date(ts),df=(now()-ts)/1000;
+  if(df<60)return'now'; if(df<3600)return Math.floor(df/60)+'m';
+  if(df<86400)return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
+  return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});}
+
+function renderConvList(){
+  const wrap=document.getElementById('conv-scroll');
+  document.getElementById('conv-sub').textContent=`${state.peers.length} conversation${state.peers.length!==1?'s':''}`;
+  if(!state.peers.length){
+    wrap.innerHTML=`<div style="padding:38px 24px;text-align:center;color:var(--ink-faint);font-size:12.5px;line-height:1.6;font-family:var(--mono)">no conversations yet.<br>add a node from the peers tab.</div>`;return;}
+  const sorted=[...state.peers].sort((a,b)=>(lastMsg(b)?.ts||0)-(lastMsg(a)?.ts||0));
+  wrap.innerHTML=sorted.map(p=>{
+    const pv=previewText(p),m=lastMsg(p),c=color(p);
+    return `<div class="conv ${state.activePeer===p.id?'active':''}" onclick="openConversation('${p.id}')">
+      ${state.activePeer===p.id?`<span class="bar" style="background:${c}"></span>`:''}
+      <div class="avatar" style="background:${c}22;border-color:${c};color:${c}">${glyph(p)}
+        ${p.unread?`<span class="u">${p.unread>9?'9+':p.unread}</span>`:''}
+        ${p.live&&(p.liveState==='connected'||p.liveState==='handshaked')?'<span class="lv"></span>':''}</div>
+      <div class="conv-main"><div class="conv-top">
+        <span class="conv-name" style="color:${c}">${escapeHtml(p.nickname||shortIP(p.ip))}</span>
+        <span class="conv-time">${m?fmtTime(m.ts):''}</span></div>
+        <div class="conv-prev ${pv.locked?'locked':''}${pv.telemetry?' telemetry':''}">${escapeHtml(pv.text)}</div></div></div>`;
+  }).join('');
+}
+
+async function renderThread(){
+  const t=document.getElementById('thread');
+  const p=state.peers.find(x=>x.id===state.activePeer);
+  if(!p){t.innerHTML=`<div class="thread-empty"><div><div class="big">✉</div><div>select a conversation</div></div></div>`;lastThreadPeer=null;return;}
+  const c=color(p),locked=p.hasPin&&!state.sessionKeys[p.id];
+  let pill;
+  if(p.fromDaemon&&p.contactType==='contact')
+    pill=`<div class="lock-pill ${p.hasPin?'enc':''}">${p.hasPin?'🔒 PIN-encrypted':'unencrypted'}${p.online?' · ◉ online':''}</div>`;
+  else if(p.fromDaemon&&p.contactType==='nodepeer')
+    pill=`<div class="lock-pill">₿ node peer · not yet a contact</div>`;
+  else pill=`<div class="lock-pill ${p.hasPin?'enc':''}">${p.demo?'✦ demo peer · ':''}${p.hasPin?'🔒 PIN-encrypted':'unencrypted'}</div>`;
+  let idBtn='';
+  if(p.fromDaemon&&p.contactType==='nodepeer')
+    idBtn=`<button class="idbtn" onclick="promoteToContact('${p.id}')">add as contact</button>`;
+  else if(p.fromDaemon&&p.contactType==='contact')
+    idBtn=`<button class="idbtn" onclick="identifyContactUi('${p.id}')">identify (8333)</button>`+
+          `<button class="idbtn" onclick="setContactPin('${p.id}')">${p.hasPin?'change PIN':'set PIN'}</button>`+
+          `<button class="idbtn danger" onclick="removeContactUi('${p.id}')">remove</button>`;
+  const sub=[p.unidentified?'unidentified':p.impl,p.unidentified?null:p.version,p.ip,
+    p.height!=null?('height '+p.height.toLocaleString()):null].filter(Boolean).join(' · ');
+  const header=`<div class="thread-head" style="--accent:${c}">
+    <div class="avatar" style="background:${c}22;border-color:${c};color:${c}">${glyph(p)}</div>
+    <div class="th-meta"><div class="n" style="color:${c}">${escapeHtml(p.nickname||shortIP(p.ip))}</div>
+    <div class="s">${escapeHtml(sub)}</div></div>${idBtn}${pill}</div>`;
+
+  if(locked){
+    const n=Math.min(8,Math.max(4,(p.pin||'0000').length));
+    t.innerHTML=header+`<div class="gate"><div class="box"><div class="lockicon">🔒</div>
+      <h3>encrypted conversation</h3><p>Enter the shared PIN to decrypt messages with ${escapeHtml(p.nickname||shortIP(p.ip))}.</p>
+      <div class="pin-in" id="pin-in">${Array.from({length:n},(_,i)=>`<input maxlength="1" inputmode="numeric" data-i="${i}">`).join('')}</div>
+      <div class="err" id="pin-err"></div></div></div>`;
+    wirePin(p);return;
+  }
+  if(p.hasPin){const key=state.sessionKeys[p.id];
+    for(const m of p.msgs)if(m.enc&&!state.plainCache[m.id]){
+      try{state.plainCache[m.id]=await dec(key,m.enc);}catch{state.plainCache[m.id]='⚠ could not decrypt';}}}
+
+  const bubbles=p.msgs.map(m=>{
+    const text=m.text??state.plainCache[m.id]??'🔒';
+    const cls=m.from+(m.kind?' '+m.kind:'')+(m.pending?' pending':'');
+    const xn=m.count>1?`<span class="xn">×${m.count}</span>`:'';
+    return `<div class="bubble ${cls}">${escapeHtml(text)}${xn}<span class="ts">${fmtTime(m.ts)}${m.pending?' · queued':''}</span></div>`;
+  }).join('')||`<div style="margin:auto;color:var(--ink-faint);font-size:12.5px;font-family:var(--mono)">no messages yet — say hi</div>`;
+
+  const ph=p.live&&p.mode==='p2p'?`message ${p.nickname||shortIP(p.ip)}…`
+    :p.live?`send raw line to ${shortIP(p.ip)}…`
+    :`message ${p.nickname||shortIP(p.ip)}…`;
+
+  // A live thread re-renders whenever protocol chatter arrives. Capture the
+  // draft, caret, focus and scroll first so an incoming addr/ping doesn't wipe
+  // what the operator is typing or yank them away from what they're reading.
+  const oldBox=document.getElementById('msgs'), oldIn=document.getElementById('composer-in');
+  const sameThread=lastThreadPeer===p.id;
+  const draft=sameThread&&oldIn?oldIn.value:'';
+  const caret=sameThread&&oldIn?oldIn.selectionStart:0;
+  const hadFocus=!!oldIn&&document.activeElement===oldIn;
+  const atBottom=!oldBox||(oldBox.scrollHeight-oldBox.scrollTop-oldBox.clientHeight<60);
+  const oldTop=oldBox?oldBox.scrollTop:0;
+
+  t.innerHTML=header+`<div class="msgs" id="msgs">${bubbles}</div>
+    <div class="composer">
+      <input id="composer-in" placeholder="${ph}" autocomplete="off" onkeydown="if(event.key==='Enter')sendMessage()">
+      <button class="send" onclick="sendMessage()" title="Send">➤</button></div>`;
+
+  const box=document.getElementById('msgs');
+  box.scrollTop=(!sameThread||atBottom)?box.scrollHeight:oldTop;
+  const inp=document.getElementById('composer-in');
+  if(inp){
+    inp.value=draft;
+    if(hadFocus||!sameThread){inp.focus();try{inp.setSelectionRange(caret,caret);}catch{}}
+  }
+  lastThreadPeer=p.id;
+}
+
+function wirePin(p){
+  const ins=[...document.querySelectorAll('#pin-in input')];ins[0]?.focus();
+  ins.forEach((inp,i)=>{
+    inp.addEventListener('input',()=>{inp.value=inp.value.replace(/\D/g,'');
+      if(inp.value&&i<ins.length-1)ins[i+1].focus();
+      if(ins.every(x=>x.value))tryUnlock(p,ins.map(x=>x.value).join(''));});
+    inp.addEventListener('keydown',e=>{if(e.key==='Backspace'&&!inp.value&&i>0)ins[i-1].focus();});
+  });
+}
+async function tryUnlock(p,pin){
+  const err=document.getElementById('pin-err');
+  try{
+    const key=await deriveKey(pin,p.salt);
+    const test=p.msgs.find(m=>m.enc); if(test)await dec(key,test.enc);
+    state.sessionKeys[p.id]=key;p.unread=0;toast('conversation unlocked');renderAll();
+  }catch{
+    err.textContent='wrong PIN — messages stay encrypted.';
+    const ins=[...document.querySelectorAll('#pin-in input')];ins.forEach(x=>x.value='');ins[0].focus();
+  }
+}
+async function sendMessage(){
+  const p=state.peers.find(x=>x.id===state.activePeer); if(!p)return;
+  const inp=document.getElementById('composer-in'); if(!inp)return;
+  const text=inp.value.trim(); if(!text)return;
+
+  // Real contact: hand the message to the daemon, which dials the other
+  // operator's daemon directly and reports delivered / failed.
+  if(p.fromDaemon&&p.contactType==='contact'){
+    if(daemon.state!=='attached'){toast('daemon not attached');return;}
+    inp.value='';
+    dsend({type:'chat.send',host:p.host,port:p.port,text});
+    return;   // the echo comes back as chat.recv with status "sending"
+  }
+  if(p.fromDaemon&&p.contactType==='nodepeer'){
+    toast('add this node peer as a contact first — its operator needs nodesignald running');
+    return;
+  }
+  inp.value='';
+  const m={id:uid(),from:'me',ts:now()};
+  if(p.hasPin){m.enc=await enc(state.sessionKeys[p.id],text);state.plainCache[m.id]=text;}else m.text=text;
+  p.msgs.push(m);renderThread();renderConvList();
+  // Canned demo replies come ONLY from the built-in demo peers and dev-tool
+  // spawns — never from a node the operator added themselves.
+  if(p.chatty)setTimeout(()=>autoReply(p),900+Math.random()*1200);
+}
+async function autoReply(p){
+  const text=pick(REPLIES),m={id:uid(),from:'them',ts:now()};
+  if(p.hasPin){const key=await deriveKey(p.pin,p.salt);m.enc=await enc(key,text);
+    if(state.sessionKeys[p.id])state.plainCache[m.id]=text;}else m.text=text;
+  p.msgs.push(m);
+  const hidden = state.activePeer!==p.id || state.tab!=='msgs' || (p.hasPin&&!state.sessionKeys[p.id]);
+  if(hidden){ p.unread++; notify(p, state.sessionKeys[p.id]||!p.hasPin?text:null, !!(p.hasPin&&!state.sessionKeys[p.id])); }
+  renderAll();
+}
+const escapeHtml=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ===================== NAV ===================== */
+function switchTab(tab){state.tab=tab;
+  document.getElementById('tab-peers').classList.toggle('active',tab==='peers');
+  document.getElementById('tab-msgs').classList.toggle('active',tab==='msgs');
+  document.getElementById('view-peers').classList.toggle('active',tab==='peers');
+  document.getElementById('view-msgs').classList.toggle('active',tab==='msgs');
+  hideTip();}
+function openConversation(id){state.activePeer=id;
+  const p=state.peers.find(x=>x.id===id);
+  if(p&&!(p.hasPin&&!state.sessionKeys[id]))p.unread=0;
+  switchTab('msgs');renderAll();}
+
+/* ===================== ADD MODAL ===================== */
+function openAddModal(){
+  const line=document.getElementById('add-mode-line');
+  if(line){
+    if(daemon.state==='attached'){
+      line.textContent='✔ daemon attached ('+(daemon.info?daemon.info.nick:'')+') — this adds a REAL contact; their nodesignald listens on :8788.';
+      line.style.color='var(--signal)';
+    } else {
+      line.textContent='⚠ no daemon on this machine — this only adds a DEMO peer. For real messaging, run start-daemon.bat first; the console links to it automatically.';
+      line.style.color='var(--amber)';
+    }
+  }
+  document.getElementById('scrim').classList.add('show');document.getElementById('f-ip').focus();}
+function closeAddModal(){document.getElementById('scrim').classList.remove('show');
+  ['f-ip','f-nick','f-pin'].forEach(i=>document.getElementById(i).value='');}
+async function addNodeFromForm(){
+  const ip=document.getElementById('f-ip').value.trim();
+  if(!ip){toast('enter an address');return;}
+  const nick=document.getElementById('f-nick').value.trim();
+  const pin=document.getElementById('f-pin').value.trim();
+  closeAddModal();
+  if(daemon.state==='attached'){
+    const host=ip.replace(/^ws:\/\//,'').split(':')[0];
+    const port=Number(ip.split(':')[1])||8788;
+    dsend({type:'contact.add',host,port,nick,pin});
+    toast('contact added — delivery needs their nodesignald reachable on '+host+':'+port);
+    return;
+  }
+  const p=await createPeer({ip,nickname:nick,impl:'Unknown',version:'—',unidentified:true,signaling:[],pin:pin||undefined,demo:true});
+  if(p.hasPin)await seedConversation(p,1);
+  toast('⚠ no daemon attached — added a DEMO peer only. Run start-daemon.bat on this machine and reload for real messaging.');
+  renderAll();
+}
+
+function promoteToContact(id){
+  const p=state.peers.find(x=>x.id===id); if(!p)return;
+  const nick=prompt('Nickname for this operator (their node: '+p.impl+' '+p.version+')', p.nickname||'');
+  if(nick===null)return;
+  const pin=prompt('Shared PIN for encryption (leave empty for none — agree it with the operator out-of-band)','');
+  if(pin===null)return;
+  dsend({type:'contact.add',host:p.host,port:8788,nick:nick.trim(),pin:pin.trim()});
+  toast('contact added — messages go to their nodesignald on :8788');
+}
+function identifyContactUi(id){
+  const p=state.peers.find(x=>x.id===id); if(!p)return;
+  if(daemon.state!=='attached'){toast('daemon not attached');return;}
+  dsend({type:'identify',host:p.host,port:8333});
+  toast('identifying '+p.host+' over the Bitcoin wire…');
+}
+function removeContact(id){
+  const p=state.peers.find(x=>x.id===id); if(!p)return;
+  if(!confirm('Remove contact '+(p.nickname||p.host)+'? Its message history on this daemon is deleted.'))return;
+  dsend({type:'contact.remove',host:p.host});
+}
+function removeContactUi(id){
+  const p=state.peers.find(x=>x.id===id); if(!p)return;
+  if(!confirm('Remove contact '+(p.nickname||p.host)+'? Its message history on the daemon is deleted.'))return;
+  dsend({type:'contact.remove',host:p.host});
+}
+function setContactPin(id){
+  const p=state.peers.find(x=>x.id===id); if(!p)return;
+  const pin=prompt('Shared PIN for '+(p.nickname||p.host)+' (both sides must use the same PIN)','');
+  if(pin===null)return;
+  dsend({type:'contact.pin',host:p.host,pin:pin.trim()});
+}
+
+function renderDaemonPanel(){
+  const st=document.getElementById('d-status'); if(!st)return;
+  st.className='dstatus';
+  if(daemon.state==='off')st.textContent='no daemon on this machine — demo mode (retrying quietly)';
+  else if(daemon.state==='connecting')st.textContent='linking to '+daemon.url+' …';
+  else if(daemon.state==='attached'){st.classList.add('ok');
+    st.textContent='linked: '+(daemon.info?daemon.info.nick:'')+
+      (daemon.node?(' · '+daemon.node.impl+' '+daemon.node.version+' · '+daemon.nodePeers.length+' node peers'):' · standalone (no node RPC)');}
+  else{st.classList.add('err');st.textContent=daemon.err||'error';}
+}
+
+/* ===================== DEV ===================== */
+function toggleDrawer(){const d=document.getElementById('drawer');
+  document.getElementById('dev-toggle').classList.toggle('on',d.classList.toggle('open'));}
+async function spawnFakePeer(count){
+  count=count||1;
+  for(let i=0;i<count;i++){
+    const slow=Math.random();
+    const latency=slow<.12?r(600,980):slow<.28?r(310,590):r(8,290);
+    const p=await createPeer({nickname:Math.random()<.75?pick(NICKS):'',pin:DEMO_PIN,latency,demo:true,chatty:true});
+    await seedConversation(p,r(1,3));
+    if(Math.random()<.45)p.unread=r(1,3);
+  }
+  toast(count>1?`${count} demo nodes spawned · layout re-spaced`:'demo node spawned');
+  renderAll();
+}
+async function simulateIncoming(){
+  const targets=state.peers.filter(p=>p.chatty);
+  if(!targets.length){toast('spawn a demo peer first');return;}
+  const p=pick(targets),text=pick(REPLIES),m={id:uid(),from:'them',ts:now()};
+  if(p.hasPin){const key=await deriveKey(p.pin,p.salt);m.enc=await enc(key,text);
+    if(state.sessionKeys[p.id])state.plainCache[m.id]=text;}else m.text=text;
+  p.msgs.push(m);p.unread++;
+  notify(p, state.sessionKeys[p.id]||!p.hasPin?text:null, !!(p.hasPin&&!state.sessionKeys[p.id]));
+  pulseTether(p);renderAll();
+}
+function pulseTether(p){
+  if(p._x==null)return;
+  const dot=svgEl('circle',{class:'pulse-dot',cx:CX,cy:CY,r:6});
+  document.getElementById('peers').appendChild(dot);
+  const an=dot.animate([{transform:'translate(0,0)'},{transform:`translate(${p._x-CX}px,${p._y-CY}px)`}],{duration:700,easing:'ease-in'});
+  an.onfinish=()=>dot.remove();
+}
+function resetDemo(){
+  // clears DEMO peers only — daemon contacts and node peers are real data
+  state.peers=state.peers.filter(p=>p.fromDaemon);
+  state.activePeer=null;state.sessionKeys={};state.plainCache={};
+  layoutDirty=true;toast('demo peers cleared');renderAll();
+}
+
+
+/* ===================== NOTIFICATIONS =====================
+   A slide-in card per incoming message plus a live unread count in the tab
+   badge and the page title. Purely presentational — nothing here changes
+   message state; unread counts still come from the daemon. */
+const NOTIF_MS=9000;
+function notifHost(){
+  let h=document.getElementById('notifs');
+  if(!h){h=document.createElement('div');h.className='notifs';h.id='notifs';document.body.appendChild(h);}
+  return h;
+}
+function notify(peer,text,locked){
+  const host=notifHost();
+  const c=color(peer);
+  const card=document.createElement('div');
+  card.className='notif';
+  card.innerHTML=
+    `<span class="stripe" style="background:${c}"></span>
+     <div class="body">
+       <div class="av" style="background:${c}22;border-color:${c};color:${c}">${glyph(peer)}</div>
+       <div class="txt">
+         <div class="who" style="color:${c}">${escapeHtml((peer.nickname||shortIP(peer.ip)))}</div>
+         <div class="prev${locked?' locked':''}">${locked?'🔒 encrypted message — set the shared PIN to read it':escapeHtml(text||'')}</div>
+         <div class="when">now</div>
+       </div>
+       <button class="x" title="dismiss">×</button>
+     </div>`;
+  const close=()=>{ if(card._gone)return; card._gone=true;
+    card.classList.add('out'); setTimeout(()=>card.remove(),220); };
+  card.querySelector('.x').onclick=e=>{e.stopPropagation();close();};
+  card.onclick=()=>{ close(); openConversation(peer.id); };
+  host.appendChild(card);
+  while(host.children.length>4)host.firstElementChild.remove();
+  setTimeout(close,NOTIF_MS);
+}
+function updateTitle(total){
+  const base='NodeSignal';
+  document.title = total>0 ? `(${total}) ${base}` : base;
+}
+
+/* ===================== RENDER ===================== */
+function updateUnreadTab(){
+  const total=state.peers.reduce((a,p)=>a+p.unread,0),e=document.getElementById('tab-unread');
+  if(total){
+    if(e.textContent!==String(total>99?'99+':total)){ e.style.animation='none'; void e.offsetWidth; e.style.animation=''; }
+    e.style.display='';e.textContent=total>99?'99+':total;
+  } else e.style.display='none';
+  updateTitle(total);
+}
+function renderAll(){renderRadar();renderConvList();renderThread();updateUnreadTab();}
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');
+  clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2600);}
+
+document.getElementById('scrim').addEventListener('click',e=>{if(e.target.id==='scrim')closeAddModal();});
+window.addEventListener('keydown',e=>{if(e.key==='Escape'){closeAddModal();
+  document.getElementById('drawer').classList.remove('open');document.getElementById('dev-toggle').classList.remove('on');}});
+window.addEventListener('resize',()=>{hideTip();});
+
+/* ===================== BOOT ===================== */
+async function seedDemo(){
+  if(state.peers.some(p=>p.demo))return;
+  const seeds=[
+    {nickname:'Timechain Relay',impl:'Bitcoin Knots',version:'v29.1.knots20250903',latency:22,
+     signaling:['BIP-119 (CTV)','BIP-8'],pin:DEMO_PIN,angle:-2.2},
+    {nickname:'mempool-monk',impl:'Bitcoin Core',version:'v29.0',latency:74,
+     signaling:['Taproot'],pin:DEMO_PIN,angle:-0.5},
+    {nickname:'coldstorage-9',impl:'btcd',version:'v0.24.2',latency:150,
+     signaling:[],pin:DEMO_PIN,angle:0.7},
+    {nickname:'',impl:'libbitcoin',version:'v4.0',latency:265,
+     signaling:['BIP-300/301'],pin:DEMO_PIN,angle:1.9},
+    {nickname:'kiwi-relay',impl:'Bitcoin Knots',version:'v28.1.knots20250601',latency:415,
+     signaling:['Taproot','BIP-324 v2'],pin:DEMO_PIN,angle:2.8},
+    {nickname:'starlink-node',impl:'Bitcoin Core',version:'v29.0',latency:640,
+     signaling:['BIP-110'],pin:DEMO_PIN,angle:-1.35},
+    {nickname:'ice-station-btc',impl:'Bcoin',version:'v2.2.0',latency:915,
+     signaling:[],pin:DEMO_PIN,angle:3.6},
+  ];
+  for(const sd of seeds){const p=await createPeer({...sd,demo:true,chatty:true});await seedConversation(p,r(1,2));}
+  const dm=state.peers.filter(p=>p.demo);
+  if(dm[0])dm[0].unread=2; if(dm[1])dm[1].unread=1;
+  renderAll();
+}
+(async function init(){
+  await seedDemo();
+  renderDaemonPanel(); updateSelfBadge();
+  // The daemon serves this page, so the API lives on the SAME origin. Works
+  // for an IP, a hostname, a domain, or behind a TLS reverse proxy.
+  daemonAttach(wsEndpoint(), '', location.protocol==='file:');
+})();
+</script>
+</body>
+</html>
