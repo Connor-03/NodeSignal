@@ -1,0 +1,104 @@
+NodeSignal — Windows Installation Guide
+=======================================================================
+
+There is no npm step any more. NodeSignal has zero dependencies: it uses
+only Node.js itself. If you are following an older guide that says
+"npm.cmd install", skip that line — it is obsolete.
+
+
+-----------------------------------------------------------------------
+1. Install Node.js
+-----------------------------------------------------------------------
+Download the LTS build from https://nodejs.org and run it, leaving
+"Add to PATH" ticked.
+
+IMPORTANT: after installing, close every open Command Prompt window.
+A window opened before the install still has the old PATH and will
+report "node is not recognized".
+
+Open a NEW Command Prompt and check:
+
+    node -v
+
+
+-----------------------------------------------------------------------
+2. Put the files in one folder
+-----------------------------------------------------------------------
+For example  C:\NodeSignal\
+
+Required:
+
+    nodesignald.js        the daemon
+    noise.js              encryption
+    nodeps.js             http + websocket layer
+    install.js            the setup program
+    install-windows.bat   what you double-click
+
+Plus ONE interface file:
+
+    nodesignal.html       if this machine runs a Bitcoin node
+    nodesignal-demo.html  if it does not (demo peer)
+
+
+-----------------------------------------------------------------------
+3. Run the installer
+-----------------------------------------------------------------------
+Double-click:
+
+    install-windows.bat
+
+It asks a short series of questions and checks each answer against your
+real system as it goes:
+
+  · whether this machine runs a Bitcoin node
+  · your RPC details — it tries your cookie file and bitcoin.conf first
+    and only asks if it cannot work them out. It then actually connects
+    to bitcoind and prints the node's version, chain height and peer
+    count, so you know it works before setup finishes
+  · a display name other operators will see
+  · how peers reach you: Tailscale, Tor, localhost only, or clearnet
+  · which ports to use — it verifies they are genuinely free
+  · whether the web interface needs a login token, and can generate one
+
+It then writes:
+
+    nodesignal-config.json   your settings, locked to your user account
+    run-nodesignal.bat       the launcher
+    a Desktop shortcut       (optional)
+
+and offers to add the Windows Firewall rule for the peer port.
+
+Finally it starts the daemon once to prove the configuration works.
+
+
+-----------------------------------------------------------------------
+4. Run it
+-----------------------------------------------------------------------
+Double-click run-nodesignal.bat (or the Desktop shortcut) and leave the
+window open — that window IS the daemon.
+
+Then open the address the installer printed, normally:
+
+    http://localhost:8789
+
+
+-----------------------------------------------------------------------
+Notes
+-----------------------------------------------------------------------
+PRUNED NODES are fully supported. NodeSignal only calls getpeerinfo,
+getnetworkinfo and getblockchaininfo, none of which need block history.
+
+FIREWALL: if other operators cannot reach you, the peer port is blocked.
+Run this once in an ADMIN PowerShell:
+
+    netsh advfirewall firewall add rule name="NodeSignal 8788" dir=in action=allow protocol=TCP localport=8788
+
+CHANGING SETTINGS later: edit nodesignal-config.json and restart, or run
+install-windows.bat again to redo setup.
+
+UNATTENDED INSTALL: the installer reads piped input, so you can script
+it:  node install.js < answers.txt
+
+TOR: see TorSetupGuide.txt. Tor needs no port forwarding.
+
+Problems: see Troubleshooting.txt

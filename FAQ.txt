@@ -1,0 +1,154 @@
+NodeSignal — Frequently Asked Questions
+=======================================================================
+
+
+WHAT IT IS
+-----------------------------------------------------------------------
+
+What is NodeSignal?
+    Encrypted chat between Bitcoin node operators. It runs beside your
+    node, uses the node to discover and identify peers, and serves its
+    own web interface.
+
+Does it send messages over the Bitcoin network?
+    No, and it cannot. The Bitcoin P2P protocol has no message type that
+    can carry chat, and nodes disconnect peers that send unknown data.
+    Messages travel directly between operators' daemons on a separate
+    port (8788).
+
+So what does Bitcoin actually provide?
+    Two things. Discovery: your peer map is your node's real peer list,
+    read from getpeerinfo. Identity: NodeSignal connects to a peer's
+    port 8333 and reads its version message, giving implementation,
+    version, block height, service bits and any BIPs it declares.
+
+Is there a central server?
+    No. Daemons talk to each other directly.
+
+
+REQUIREMENTS
+-----------------------------------------------------------------------
+
+Does it work with Bitcoin Core?
+    Yes.
+
+Does it work with Bitcoin Knots?
+    Yes.
+
+Do I need a full node?
+    To see your node's peers on the map, yes — that data comes from your
+    node. But you can also run NodeSignal with no node at all: it still
+    sends and receives messages, it just has no peer map of its own.
+    Choose "messaging peer only" during setup.
+
+Can I use a pruned node?
+    Yes, fully. NodeSignal only calls getpeerinfo, getnetworkinfo and
+    getblockchaininfo, none of which need block history.
+
+Does it need my wallet?
+    No. It never touches wallet functions.
+
+Do I need to install anything with npm?
+    No. NodeSignal has zero dependencies and uses only Node.js itself.
+    If a guide tells you to run "npm install", it is out of date.
+
+What are the ports?
+    8789  web interface and API      (inbound)
+    8788  messaging between daemons  (inbound)
+    8333  peer identification        (outbound only)
+    8332  your bitcoind RPC          (localhost only)
+
+
+NETWORKING
+-----------------------------------------------------------------------
+
+Can I use Tor?
+    Yes, and it is the recommended setup. You need both halves: a hidden
+    service for inbound, and Tor's SOCKS proxy for outbound. See
+    TorSetupGuide.txt.
+
+Does Tor require port forwarding?
+    No.
+
+Can I use Tailscale?
+    Yes. The daemon detects a Tailscale interface and binds to it
+    automatically, keeping itself off the public internet.
+
+Can I use clearnet?
+    Yes, but it publishes the link between your identity and your node's
+    IP. Read Security.txt first.
+
+Does it support IPv4 and IPv6?
+    Yes, both.
+
+Do I need to forward ports?
+    Only for clearnet, where peers need to reach TCP 8788. Tor and
+    Tailscale need no forwarding.
+
+
+USING IT
+-----------------------------------------------------------------------
+
+Can I message someone who is not running NodeSignal?
+    No. They need the daemon running. You can still see them on your map
+    as one of your node's peers, and identify their node, but messages
+    have nowhere to arrive.
+
+Why is a peer's line dashed instead of solid?
+    Solid lines mean a confirmed two-way NodeSignal exchange. A peer you
+    added but who has never replied stays dashed. That is deliberate —
+    it tells you at a glance who is really reachable.
+
+What is the blinking green dot?
+    That peer is established AND was seen recently, so you can message
+    them right now.
+
+A peer shows "not identified" — is something broken?
+    No. Nothing answered on its port 8333. That is normal for machines
+    with no Bitcoin node, such as a laptop running only NodeSignal.
+    Messaging is unaffected.
+
+What is the PIN?
+    There is no PIN any more. Older versions used a shared PIN, which
+    was weak. Encryption now uses an authenticated key exchange with no
+    shared secret to agree in advance.
+
+Where is my data?
+    ~/.nodesignal/state.json  (Linux)
+    C:\\Users\\<you>\\.nodesignal\\state.json  (Windows)
+    It holds your contacts, message history and encryption identity.
+    Upgrades never touch it.
+
+How do I change settings after installing?
+    Edit nodesignal-config.json and restart, or run the installer again.
+
+
+SECURITY
+-----------------------------------------------------------------------
+
+Is it encrypted?
+    Yes, end to end, with forward secrecy and mutual authentication.
+    See Security.txt.
+
+Are messages encrypted on disk?
+    No. This is a known weakness. Anyone with filesystem access can read
+    your history.
+
+What is the red "identity mismatch" banner?
+    That address presented a different encryption key than the one
+    pinned on first contact. Either they reinstalled, or someone is
+    impersonating them. Confirm out-of-band before re-adding them.
+
+Can someone pretend to run Bitcoin Knots when they do not?
+    Yes. Every claim about a node is self-declared. NodeSignal has an
+    --impersonate option that does exactly this, deliberately, so the
+    limitation is visible rather than hidden.
+
+Is it safe to run on my node?
+    It opens two new listening ports on a machine you probably keep
+    carefully hardened, and it is a young project. Read
+    SECURITY-CRITIQUE.md before running it on a node holding
+    significant value.
+
+Is it open source?
+    Yes.

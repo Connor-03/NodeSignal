@@ -1,0 +1,137 @@
+NodeSignal — Security
+=======================================================================
+
+This is the practical guide. For the full adversarial threat model —
+including what is still weak and why — read SECURITY-CRITIQUE.md.
+
+
+-----------------------------------------------------------------------
+WHAT NODESIGNAL DOES AND DOES NOT DO
+-----------------------------------------------------------------------
+It does NOT modify Bitcoin in any way.
+It does NOT relay anything through the Bitcoin P2P network.
+It does NOT create, sign or broadcast transactions.
+It does NOT touch your wallet.
+
+It reads exactly three RPC methods:
+
+    getpeerinfo        who your node is connected to
+    getnetworkinfo     your node's version and connection count
+    getblockchaininfo  chain and block height
+
+Messages travel directly between operators' daemons on port 8788, on a
+channel that has nothing to do with Bitcoin. The Bitcoin protocol has no
+message type that can carry chat, and pretending otherwise would get
+your node disconnected by its peers.
+
+
+-----------------------------------------------------------------------
+ENCRYPTION
+-----------------------------------------------------------------------
+Every connection runs a Noise-XX handshake over X25519, with
+HKDF-SHA256 and ChaCha20-Poly1305.
+
+  · Each daemon has a persistent identity keypair, created on first run
+    and stored in state.json. Its fingerprint appears in the boot log
+    and in the web interface Status panel.
+  · Each session mixes in fresh ephemeral keys, so stealing an identity
+    key later cannot decrypt traffic already captured (forward secrecy).
+  · Both sides prove they hold their identity key, so a man in the
+    middle is detected rather than silently trusted.
+  · The first time you talk to someone, their fingerprint is pinned. If
+    it ever changes, the connection is REJECTED and the interface shows
+    a red banner.
+
+There is no PIN any more. PINs were guessable and shared a fixed salt.
+
+If a peer legitimately reinstalls, their key changes and you will see a
+mismatch. Confirm out-of-band that it really was a reinstall, then
+remove and re-add the contact to pin the new key.
+
+
+-----------------------------------------------------------------------
+PROTECT YOUR RPC CREDENTIALS
+-----------------------------------------------------------------------
+Never expose Bitcoin RPC to the internet. It should listen on localhost
+only, which is the default.
+
+rpcuser/rpcpassword grants FULL RPC access, including wallet commands.
+NodeSignal only needs three read methods, so restrict it in bitcoin.conf:
+
+    rpcwhitelist=nodesignal:getpeerinfo,getnetworkinfo,getblockchaininfo
+
+Prefer the cookie file over a static password where you can, and run the
+daemon as an unprivileged user.
+
+The Windows installer stores credentials in nodesignal-config.json and
+locks that file to your user account. Do not put passwords on a command
+line: on Linux they show up in `systemctl cat`, and on Windows in a
+process listing.
+
+
+-----------------------------------------------------------------------
+NETWORKING, FROM MOST TO LEAST PRIVATE
+-----------------------------------------------------------------------
+  Tor           Recommended. No port forwarding, and your node's IP is
+                never revealed to peers. See TorSetupGuide.txt. Set
+                tor-proxy for outbound as well as a hidden service for
+                inbound — you need both halves.
+
+  Tailscale     Good. Private to your tailnet, no ports open to the
+                internet. Detected and used automatically.
+
+  Localhost     Fine for testing; nobody else can reach you.
+
+  Clearnet      Works, but publishes the link between your identity and
+                your node's IP. Anyone scanning the internet for port
+                8788 can enumerate NodeSignal users. Only open the ports
+                you actually need, and read SECURITY-CRITIQUE.md first.
+
+
+-----------------------------------------------------------------------
+WHAT IS STILL WEAK
+-----------------------------------------------------------------------
+Stated plainly, because you should know before trusting it:
+
+  · Messages are stored DECRYPTED at rest, in state.json. Anyone with
+    filesystem access — a backup, a snapshot, a stolen disk — can read
+    your history.
+  · Running NodeSignal links a social identity to a node IP. That is a
+    property of the design, not a bug, and it is the reason to prefer
+    Tor.
+  · Content is encrypted; metadata is not. Who you talk to, when, and
+    how often is visible to anyone positioned to watch.
+  · Every identity claim a peer makes about its node is self-declared.
+    The 8333 handshake proves something at that address speaks the
+    Bitcoin protocol and claims a given user agent. Nothing more.
+
+Do not run this on a node holding significant value without reading
+SECURITY-CRITIQUE.md in full.
+
+
+-----------------------------------------------------------------------
+KEEP THINGS UPDATED
+-----------------------------------------------------------------------
+Bitcoin Core / Knots, Node.js, and NodeSignal itself.
+
+NodeSignal has no third-party dependencies, so there is no npm supply
+chain to audit — it uses only Node's standard library.
+
+
+-----------------------------------------------------------------------
+IF YOU SUSPECT A PROBLEM
+-----------------------------------------------------------------------
+Red banner about an identity mismatch
+    Someone at that address presented a different key than the one you
+    pinned. Do not dismiss it. Confirm with that operator through
+    another channel before re-adding them.
+
+Unexpected contacts appearing
+    Anyone who completes a handshake with your daemon becomes a contact.
+    Remove them, and consider moving to Tor or Tailscale so strangers
+    cannot reach your peer port at all.
+
+Suspected compromise
+    Stop the daemon, move state.json aside (it holds your identity key
+    and message history), and restart to generate a fresh identity. Tell
+    your contacts, since they will see a fingerprint mismatch.

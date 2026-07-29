@@ -47,15 +47,15 @@ echo ""
 
 if ! command -v node >/dev/null 2>&1; then
   echo "Node.js not found. Install it, then re-run:"
-  echo "  sudo apt update && sudo apt install -y nodejs npm"
+  echo "  sudo apt update && sudo apt install -y nodejs"
   exit 1
 fi
 echo "Node.js $(node --version) found."
 
-for f in nodesignald.js nodesignal.html; do
+for f in nodesignald.js nodesignal.html noise.js nodeps.js; do
   if [ ! -f "$f" ]; then
     echo "ERROR: $f not found in $(pwd)."
-    echo "Copy nodesignald.js and nodesignal.html here, then re-run."
+    echo "Copy nodesignald.js, nodesignal.html, noise.js and nodeps.js here, then re-run."
     echo "(nodesignal.html is the operator console — do NOT use nodesignal-demo.html"
     echo " on the node; that build is the Windows demo and needs a secure context.)"
     exit 1
@@ -76,12 +76,16 @@ fi
 
 echo "Installing files to ${DEST}..."
 sudo mkdir -p "$DEST"
-sudo cp nodesignald.js nodesignal.html "$DEST/"
+sudo cp nodesignald.js nodesignal.html noise.js nodeps.js "$DEST/"
 sudo chown -R "${USER_NAME}:${USER_NAME}" "$DEST"
 
-echo "Installing dependencies (express, ws)..."
+# No dependencies to install: the daemon uses only Node's standard library.
+# Clear any node_modules left by older versions so nothing stale is loaded.
 cd "$DEST"
-npm install express ws --no-audit --no-fund --loglevel=error
+if [ -d node_modules ]; then
+  echo "Removing node_modules from a previous version (no longer needed)..."
+  sudo rm -rf node_modules package-lock.json package.json
+fi
 
 EXEC="$(command -v node) ${DEST}/nodesignald.js --nick ${NICK} --web-port ${WEB_PORT} --peer-port ${PEER_PORT}"
 if [ -n "$WEB_TOKEN" ]; then

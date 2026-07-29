@@ -1,0 +1,137 @@
+NodeSignal — Troubleshooting
+=======================================================================
+
+
+INSTALL
+-----------------------------------------------------------------------
+
+"node is not recognized" (Windows)
+    Node.js is installed but this window still has the old PATH.
+    Close every Command Prompt window, open a new one, try again.
+
+"npm install fails" / ENOENT / package-lock.json errors
+    You do not need npm at all. NodeSignal has zero dependencies.
+    Skip any instruction to run "npm install". If a folder has a
+    package-lock.json but no package.json, npm can error — just delete
+    node_modules, package-lock.json and package.json. None are used.
+
+Installer says a file is missing
+    Every NodeSignal file must sit in ONE folder. The daemon needs
+    nodesignald.js, noise.js and nodeps.js beside each other, plus one
+    interface file (nodesignal.html or nodesignal-demo.html).
+
+Double-clicking nodesignald.js opens an error about "JScript"
+    Windows handed the .js file to Windows Script Host, which cannot run
+    it. That is the wrong interpreter, not a broken file. Use
+    run-nodesignal.bat, or run "node nodesignald.js" from a terminal.
+
+
+BITCOIN RPC
+-----------------------------------------------------------------------
+
+Banner says "Bitcoin RPC not connected" / the peer map is empty
+    The daemon cannot read your node. Check the log:
+        Linux:    journalctl -u nodesignal -n 40 --no-pager
+        Windows:  the text in the daemon window
+    It prints every path it tried and why each failed. The two common
+    causes:
+
+    "permission denied" — the daemon runs as a user that cannot read
+        bitcoind's .cookie file. Either run it as that user, or add to
+        bitcoin.conf:
+            rpcuser=someone
+            rpcpassword=a-long-random-value
+        then restart bitcoind and NodeSignal.
+
+    "not found" — your data directory is somewhere else. Point at it:
+            --rpc-cookie /path/to/.cookie
+        or  --rpc-conf   /path/to/bitcoin.conf
+
+bitcoin.conf uses rpcauth=
+    That is a hash; the password cannot be recovered from it. Supply the
+    password you originally generated with --rpc-user / --rpc-pass, or
+    add plain rpcuser=/rpcpassword= lines and restart bitcoind.
+
+Pruned node
+    Fully supported. NodeSignal only calls getpeerinfo, getnetworkinfo
+    and getblockchaininfo, none of which need block history.
+
+
+MESSAGING
+-----------------------------------------------------------------------
+
+"timeout — is nodesignald running and reachable"
+    Nothing is listening on the other side's peer port (8788).
+      · is their daemon actually running?
+      · on Windows, is the firewall rule present?
+            netsh advfirewall firewall add rule name="NodeSignal 8788" dir=in action=allow protocol=TCP localport=8788
+      · on Linux with ufw:
+            sudo ufw allow in on tailscale0 to any port 8788 proto tcp
+
+"refused — host reachable but nodesignald is not listening"
+    You reached the machine but nothing is on that port. The daemon is
+    stopped, or is bound to a different interface than you dialled.
+
+A peer stays dashed and never turns solid
+    The solid line and the blinking dot only appear after a real two-way
+    exchange — their daemon must actually answer. A contact you added but
+    who never replied stays dashed. That is the intended signal.
+
+"identity mismatch — rejected"
+    That host presented a different encryption key than the one pinned on
+    first contact. Either they reinstalled (their key changed), or someone
+    is impersonating them. If you know they reinstalled: remove the
+    contact and add it again to pin the new key.
+
+A peer shows "not identified"
+    Nothing answered on its port 8333. Normal for machines with no
+    Bitcoin node, such as a laptop running only NodeSignal. Messaging is
+    unaffected — identification and messaging are separate layers.
+
+
+WEB INTERFACE
+-----------------------------------------------------------------------
+
+Page will not load
+    From the machine itself:
+        curl http://127.0.0.1:8789/health
+    If that works but a remote browser fails, the problem is the network
+    (Tailscale down, firewall, or the daemon bound to localhost only),
+    not NodeSignal.
+
+Page loads but is blank, or the header shows a placeholder
+    You are serving the DEMO interface over http:// to an IP address.
+    The demo build uses the browser Web Crypto API, which only exists in
+    a "secure context" — file:// and localhost qualify, http://<ip> does
+    not. On a node, install nodesignal.html (the operator console), which
+    performs no browser cryptography.
+
+Asks for a token you do not have
+    The token is in nodesignal-config.json as "web-token". To remove the
+    requirement, delete that line and restart.
+
+Port already in use
+    Another program has it. Change "web-port" or "peer-port" in
+    nodesignal-config.json and restart, or re-run the installer, which
+    checks port availability for you.
+
+
+GENERAL
+-----------------------------------------------------------------------
+
+Where is my data?
+    Contacts, message history and your encryption identity live in:
+        Linux:    ~/.nodesignal/state.json
+        Windows:  C:\Users\<you>\.nodesignal\state.json
+    Upgrading never touches it. Deleting it means losing your identity,
+    so peers who pinned your old key will report a mismatch.
+
+How do I change settings?
+    Edit nodesignal-config.json and restart, or re-run the installer.
+
+Is my node at risk?
+    Read SECURITY-CRITIQUE.md. Short version: messaging is end-to-end
+    encrypted with a real handshake, and the daemon only reads three
+    RPC methods. But it does link a social identity to a node IP, and
+    messages are stored decrypted at rest. Do not run it on a node
+    holding significant value without reading that document.

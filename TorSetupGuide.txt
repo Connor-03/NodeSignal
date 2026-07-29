@@ -1,0 +1,159 @@
+NodeSignal — Tor Setup Guide
+=======================================================================
+
+Tor is the most private way to run NodeSignal. It needs no port
+forwarding, and it does not publish the link between your identity and
+your node's IP address — which is the single biggest privacy weakness
+of running this over clearnet.
+
+There are TWO halves, and you need both:
+
+    INBOUND   a hidden service, so other operators can reach you
+    OUTBOUND  Tor's SOCKS proxy, so you can reach THEIR .onion
+
+Most guides only cover the first. Without the second, your messages to
+other operators fail: a .onion address cannot be resolved by DNS, so a
+direct connection returns "ENOTFOUND". NodeSignal routes .onion traffic
+through the SOCKS proxy automatically once you tell it where that is.
+
+
+-----------------------------------------------------------------------
+1. INSTALL TOR
+-----------------------------------------------------------------------
+Linux:
+
+    sudo apt update && sudo apt install -y tor
+
+Windows:
+    Install the Tor Expert Bundle, or Tor Browser (which runs a SOCKS
+    proxy on 127.0.0.1:9150 while it is open).
+
+
+-----------------------------------------------------------------------
+2. INBOUND — publish a hidden service
+-----------------------------------------------------------------------
+Edit your torrc:
+
+    Linux:    /etc/tor/torrc
+    Windows:  the torrc in your Tor data directory
+
+Add:
+
+    HiddenServiceDir /var/lib/tor/nodesignal/
+    HiddenServicePort 8788 127.0.0.1:8788
+    HiddenServicePort 8789 127.0.0.1:8789
+
+Port 8788 is the one other operators need. 8789 is your web interface —
+only publish it if you want to reach your own console remotely over Tor,
+and if you do, set a login token first.
+
+Restart Tor:
+
+    sudo systemctl restart tor
+
+Read your address:
+
+    sudo cat /var/lib/tor/nodesignal/hostname
+
+That is the address you give to other operators. It looks like:
+
+    abcdefghijklmnop...xyz.onion
+
+
+-----------------------------------------------------------------------
+3. BIND NODESIGNAL TO LOCALHOST
+-----------------------------------------------------------------------
+Tor connects to the daemon over localhost, so the daemon must NOT be
+exposed elsewhere. In nodesignal-config.json:
+
+    "bind": "127.0.0.1"
+
+or on the command line:
+
+    --bind 127.0.0.1
+
+The Windows installer sets this for you if you choose Tor.
+
+
+-----------------------------------------------------------------------
+4. OUTBOUND — point NodeSignal at Tor's SOCKS proxy
+-----------------------------------------------------------------------
+This is the half that is usually missed. Add:
+
+    "tor-proxy": "127.0.0.1:9050"
+
+or:
+
+    --tor-proxy 127.0.0.1:9050
+
+Which port:
+
+    9050   the tor service (Linux, Tor Expert Bundle)
+    9150   Tor Browser (only while the browser is open)
+
+Any address ending in .onion is then dialled through Tor automatically.
+Everything else still connects directly.
+
+To force ALL outbound traffic through Tor, including connections to
+plain IP addresses, add:
+
+    --tor-all
+
+That is the stronger privacy setting: without it, connecting to a
+clearnet peer still reveals your IP to that peer.
+
+
+-----------------------------------------------------------------------
+5. ADD A PEER
+-----------------------------------------------------------------------
+Use their .onion address exactly as they gave it to you, in the "add a
+contact" dialog. The port stays 8788.
+
+Delivery is slower than clearnet — a Tor circuit adds latency, and the
+first connection to a new .onion can take several seconds. A message
+that eventually reports "delivered" has worked.
+
+
+-----------------------------------------------------------------------
+IF IT DOES NOT WORK
+-----------------------------------------------------------------------
+"no SOCKS proxy at 127.0.0.1:9050 — is Tor running?"
+    Tor is not running, or listens elsewhere. Check:
+        sudo systemctl status tor
+    If you are using Tor Browser, the port is 9150 and the browser must
+    be open.
+
+"Tor could not reach <address> (host unreachable)"
+    The .onion is wrong, or that hidden service is down. Onion addresses
+    are long and unforgiving — copy and paste, never retype.
+
+"ENOTFOUND ... .onion"
+    tor-proxy is not configured, so NodeSignal tried a direct DNS lookup.
+    Add the tor-proxy setting from step 4 and restart.
+
+Peers cannot reach YOU
+    Check the hidden service is published:
+        sudo cat /var/lib/tor/nodesignal/hostname
+    and that the daemon is actually listening on 127.0.0.1:8788. The
+    HiddenServicePort target must match the daemon's peer port exactly.
+
+Identification shows "not identified"
+    Identifying a peer means connecting to its port 8333. Many operators
+    do not expose 8333 over their hidden service, so this stays blank
+    over Tor. Messaging is unaffected — the two are separate layers.
+
+
+-----------------------------------------------------------------------
+NOTES
+-----------------------------------------------------------------------
+  · No port forwarding is required, on either side.
+  · Your .onion address IS your contact address. Share it the way you
+    would share a phone number, and remember that doing so links that
+    address to whatever identity you share it under.
+  · Tor hides your IP from peers. It does not hide the fact that you run
+    NodeSignal from anyone watching your own machine.
+  · Onion addresses are self-authenticating at the Tor layer, and
+    NodeSignal adds its own encrypted handshake with key pinning on top.
+
+Threat model: SECURITY-CRITIQUE.md
+Problems:     Troubleshooting.txt

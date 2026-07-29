@@ -1,0 +1,15 @@
+{
+  "name": "nodesignal",
+  "version": "1.2.0",
+  "private": true,
+  "description": "Encrypted operator-to-operator chat that runs beside a Bitcoin node",
+  "main": "nodesignald.js",
+  "scripts": {
+    "start": "node nodesignald.js",
+    "demo": "node nodesignald.js --no-rpc"
+  },
+  "dependencies": {},
+  "engines": {
+    "node": ">=18"
+  }
+}

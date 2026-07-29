@@ -376,7 +376,7 @@
     <div class="modal-body">
       <div class="field">
         <label>address</label>
-        <input id="f-ip" placeholder="100.99.115.114" autocomplete="off" spellcheck="false"/>
+        <input id="f-ip" placeholder="100.x.y.z  or  something.onion" autocomplete="off" spellcheck="false"/>
         <div class="help">The other operator's host. Their nodesignald listens on :8788. Their node details are read automatically over :8333.</div>
       </div>
       <div class="field"><label>nickname</label><input id="f-nick" placeholder="optional" autocomplete="off"/></div>
@@ -495,6 +495,15 @@ function handle(m){
       renderAll(); break;
     }
     case 'chat.readack': { const p=byHost(m.host); if(p){p.unread=0;renderAll();} break; }
+    case 'security':
+      if(m.kind==='fp-mismatch'){
+        toast('⚠ identity mismatch for '+m.host+' — connection rejected');
+        const ban=document.getElementById('banner');
+        ban.className='banner bad show';
+        ban.innerHTML='⚠ SECURITY: '+esc(m.host)+' presented a different identity key than the one pinned on first contact. '+
+          'The connection was rejected. This means either the operator reinstalled, or someone is impersonating them.';
+      }
+      break;
     case 'identified':
       if(m.error)toast('identify: '+m.error);
       else toast('identified '+m.host+' · '+m.info.impl+' '+m.info.version);
@@ -540,7 +549,7 @@ function rebuild(nodePeers, contacts){
       declared:np.declared||[], supports:[], services:[], network:null,
       height:np.height??null, latency:np.latency??null, unmeasured:np.latency==null,
       inbound:!!np.inbound, isNodePeer:true,
-      hasPin:false, unread:0, msgs:[], online:false, lastSeen:0,
+      hasPin:false, unread:0, msgs:[], online:false, established:false, lastSeen:0,
       angle:angles.has(host)?angles.get(host):Math.random()*Math.PI*2,
     });
   }
@@ -558,7 +567,15 @@ function contactModel(c,angles){
     latency:ni.latency!=null?ni.latency:null, unmeasured:ni.latency==null,
     inbound:false, isNodePeer:false,
     hasPin:!!c.hasPin, unread:c.unread||0, msgs:(c.msgs||[]).map(wireMsg),
-    lastSeen:c.lastSeen||0, online:!!(c.lastSeen&&(Date.now()-c.lastSeen<10*60*1000)),
+    lastSeen:c.lastSeen||0,
+    // established = we have completed a real two-way NodeSignal exchange with
+    // this operator (their daemon acked us, or messaged us). It drives the
+    // SOLID green tether and persists even after they go offline.
+    established:!!c.established,
+    peerFp:c.peerFp||null,
+    // online = established AND seen within the daemon's freshness window. Drives
+    // the blinking dot — only shown for peers we could actually message now.
+    online:!!c.online,
     angle:angles.has(c.host)?angles.get(c.host):Math.random()*Math.PI*2,
   };
 }
@@ -595,12 +612,28 @@ function computeLayout(){
   const VBH=(RMAX+nodeR+labelBlock+24)*2, VBW=VBH*1.35;
   const RCAP=VBH/2-nodeR-labelBlock-12;
 
-  const RING_STEPS=[10,25,60,150,400,1000];
+  const RING_STEPS=[10,25,50,100,200,350,550,800,1200];
   const peak=Math.max(300,...peers.filter(p=>!p.unmeasured&&p.latency!=null).map(p=>p.latency),0);
   const scaleMax=RING_STEPS.find(s=>s>=peak)||RING_STEPS[RING_STEPS.length-1];
   const rings=RING_STEPS.filter(s=>s<=scaleMax);
-  const latR=l=>{l=Math.max(4,Math.min(scaleMax,l));
-    return RMIN+Math.pow(Math.log(l/4)/Math.log(scaleMax/4),0.92)*(RMAX-RMIN);};
+  // Rings are placed at EVEN radial spacing — each latency step is the same
+  // distance apart on screen — instead of a near-log curve that crushed the
+  // high-latency nodes together at the outer edge. A latency lands between its
+  // bracketing rings, interpolated by log within the bracket so ordering holds.
+  const ringR=i=>RMIN+(rings.length<2?0:(i/(rings.length-1))*(RMAX-RMIN));
+  const latR=l=>{
+    l=Math.max(4,Math.min(scaleMax,l));
+    if(rings.length<2)return RMIN;
+    if(l<=rings[0])return RMIN;
+    for(let i=1;i<rings.length;i++){
+      if(l<=rings[i]){
+        const lo=rings[i-1],hi=rings[i];
+        const f=Math.log(l/lo)/Math.log(hi/lo);     // 0..1 within this band
+        return ringR(i-1)+f*(ringR(i)-ringR(i-1));
+      }
+    }
+    return RMAX;
+  };
 
   const nodes=peers.map(p=>{
     const label='['+(p.nick||p.host)+']';
@@ -758,8 +791,10 @@ function renderRadar(){
 
   L.nodes.forEach(nd=>{
     const p=nd.p,c=color(p),x=nd.x,y=nd.y;
-    const isContact=p.kind==='contact';
-    tg.appendChild(el('line',{class:'tether'+(isContact?' solid':''),x1:CX,y1:CY,x2:x,y2:y,stroke:c}));
+    // Solid line ONLY once a mutual NodeSignal exchange is confirmed. Merely
+    // adding a contact, or messaging a node that never replies, stays dashed.
+    const established=!!p.established;
+    tg.appendChild(el('line',{class:'tether'+(established?' solid':''),x1:CX,y1:CY,x2:x,y2:y,stroke:c}));
 
     const g=el('g',{class:'peer-g'});
     g.appendChild(el('circle',{class:'peer-hit',cx:x,cy:y,r:L.nodeR+12}));
@@ -778,7 +813,9 @@ function renderRadar(){
       const bt=el('text',{class:'badge-t',x:bx,y:by+L.nodeR*0.11,'font-size':L.nodeR*0.30});
       bt.textContent=p.unread>9?'9+':p.unread;g.appendChild(bt);
     }
-    if(isContact)g.appendChild(el('circle',{class:'live-dot',cx:x+L.nodeR*0.72,cy:y-L.nodeR*0.72,r:L.nodeR*0.15}));
+    // Blinking pip ONLY for peers we could message right now: established AND
+    // currently online (their daemon seen recently).
+    if(p.online)g.appendChild(el('circle',{class:'live-dot',cx:x+L.nodeR*0.72,cy:y-L.nodeR*0.72,r:L.nodeR*0.15}));
 
     g.addEventListener('mouseenter',ev=>showTip(p,ev.currentTarget));
     g.addEventListener('mouseleave',hideTip);
@@ -798,8 +835,8 @@ function renderLegend(){
     return `<div class="row"><span class="sw" style="background:${IMPL_COLOR[i]||IMPL_COLOR.Unknown}"></span>${esc(i)} <span style="color:var(--ink-faint)">· ${n}</span></div>`;
   }).join('')+
   `<div class="sep"></div>
-   <div class="k"><i></i> NodeSignal contact</div>
-   <div class="k"><i class="dash"></i> node peer</div>`;
+   <div class="k"><i></i> messaging on NodeSignal</div>
+   <div class="k"><i class="dash"></i> node peer / not yet replied</div>`;
 }
 function renderEmpty(){
   const wrap=document.getElementById('empty'),card=document.getElementById('empty-card');
@@ -833,7 +870,10 @@ function showTip(p,g){
   ];
   if(p.height!=null)rows.push(['height',Number(p.height).toLocaleString()]);
   if(p.network)rows.push(['network',p.network]);
-  if(p.kind==='contact')rows.push(['encryption',p.hasPin?'PIN set':'none']);
+  if(p.kind==='contact'){
+    if(p.peerFp)rows.push(['identity',p.peerFp.slice(0,16)+'…']);
+    if(p.established)rows.push(['encryption','end-to-end (Noise)']);
+  }
 
   const dec=p.declared||[],sup=p.supports||[];
   let chips=`<div class="row"><span class="k">signaling</span></div>
@@ -1057,7 +1097,7 @@ function renderChrome(){
   if(state.node){
     pulseEl.classList.add('ok');
     name.textContent=state.daemon?state.daemon.nick:'Your Node';
-    desc.textContent=`${state.node.impl} ${state.node.version} · height ${Number(state.node.height).toLocaleString()} · ${state.node.connections} peers`;
+    desc.textContent=`${state.node.impl} ${state.node.version} · height ${Number(state.node.height).toLocaleString()}${state.node.pruned?' · pruned':''} · ${state.node.connections} peers`;
     ban.className='banner'; ban.innerHTML='';
   }else{
     pulseEl.classList.add('bad');
@@ -1084,6 +1124,8 @@ function renderDrawer(){
     `<div class="sec">daemon</div>
      ${kv('nick',state.daemon?state.daemon.nick:'—')}
      ${kv('version',state.daemon?state.daemon.ua:'—')}
+     ${state.daemon&&state.daemon.fingerprint?kv('identity fp',state.daemon.fingerprint.slice(0,16)+'…','ok'):''}
+     ${state.daemon&&state.daemon.secure===false?kv('encryption','PIN fallback','bad'):(state.daemon&&state.daemon.secure?kv('encryption','Noise handshake','ok'):'')}
      ${kv('web socket',state.wsState,state.wsState==='open'?'ok':'bad')}
      ${kv('peer port',state.daemon?state.daemon.peerPort:'—')}
      <div class="sec">bitcoin node</div>
@@ -1092,6 +1134,7 @@ function renderDrawer(){
      ${n?kv('version',n.version):''}
      ${n?kv('height',Number(n.height).toLocaleString()):''}
      ${n?kv('network',n.network):''}
+     ${n?kv('pruned',n.pruned?('yes — from '+Number(n.pruneHeight||0).toLocaleString()):'no'):''}
      ${n?kv('connections',n.connections):''}
      ${n&&n.declared&&n.declared.length?kv('signaling',n.declared.join(', ')):''}
      ${!n&&state.rpcError?kv('error',state.rpcError,'bad'):''}

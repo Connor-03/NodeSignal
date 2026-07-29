@@ -1,0 +1,185 @@
+NodeSignal — Ubuntu / Linux Installation Guide
+=======================================================================
+
+NodeSignal runs beside your Bitcoin node and serves its own web
+interface. Once installed you use it from any browser on your network.
+
+There is no npm step. NodeSignal has zero dependencies — Node.js and the
+program files are all you need.
+
+
+-----------------------------------------------------------------------
+WHAT YOU NEED
+-----------------------------------------------------------------------
+  · Bitcoin Core or Bitcoin Knots, running with server=1
+    (pruned nodes are fully supported)
+  · Node.js 18 or newer
+  · systemd (standard on Ubuntu)
+
+Check Node.js:
+
+    node -v
+
+If it is missing:
+
+    sudo apt update && sudo apt install -y nodejs
+
+If that gives you something older than 18, use the NodeSource LTS
+packages instead.
+
+
+-----------------------------------------------------------------------
+FILES
+-----------------------------------------------------------------------
+Copy these into one folder on the node machine:
+
+    nodesignald.js        the daemon
+    noise.js              encryption
+    nodeps.js             http + websocket layer
+    nodesignal.html       the operator console
+    install-node.sh       the installer
+
+Do NOT put nodesignal-demo.html on the node. That build is for a
+Windows demo machine and expects a browser "secure context", which
+http:// to a bare IP is not — it will load blank.
+
+
+-----------------------------------------------------------------------
+INSTALL
+-----------------------------------------------------------------------
+    chmod +x install-node.sh
+    ./install-node.sh MyNodeName
+
+To require a login token for the web interface, generate one and pass it
+as a second argument:
+
+    openssl rand -hex 32
+    ./install-node.sh MyNodeName THAT_TOKEN
+
+The installer will:
+
+  1. check Node.js is present and new enough
+  2. stop the old service if this is an upgrade
+  3. copy the four program files to /opt/nodesignal
+  4. remove any node_modules left by an older release
+  5. write /etc/systemd/system/nodesignal.service, running as YOUR user
+     so it can read bitcoind's cookie file
+  6. enable and start the service, then print a health check
+
+Your contacts, message history and encryption identity live in
+~/.nodesignal/state.json and are never touched by an upgrade.
+
+
+-----------------------------------------------------------------------
+USE IT
+-----------------------------------------------------------------------
+Open, from any machine on your network:
+
+    http://<this-machine's-ip>:8789
+
+On the same machine, http://localhost:8789 also works.
+
+
+-----------------------------------------------------------------------
+IF THE PEER MAP IS EMPTY
+-----------------------------------------------------------------------
+The banner will say "Bitcoin RPC not connected". Check the log:
+
+    journalctl -u nodesignal -n 40 --no-pager
+
+It prints every path it tried and why each failed. The daemon searches,
+in order: explicit flags, --rpc-cookie, then rpcuser/rpcpassword or
+rpccookiefile or datadir from bitcoin.conf in ~/.bitcoin, /etc/bitcoin
+and /var/lib/bitcoind, then the usual .cookie locations.
+
+Two common outcomes:
+
+  "permission denied"
+      The service user cannot read bitcoind's cookie. Either run the
+      service as the user that owns it, or add to bitcoin.conf:
+          rpcuser=someone
+          rpcpassword=a-long-random-value
+      then restart bitcoind and NodeSignal.
+
+  "not found"
+      Your data directory is elsewhere. Edit the unit and point at it:
+          sudo systemctl edit --full nodesignal
+      add to the ExecStart line:
+          --rpc-cookie /path/to/.cookie
+      or  --rpc-conf   /path/to/bitcoin.conf
+      then:
+          sudo systemctl daemon-reload
+          sudo systemctl restart nodesignal
+
+If bitcoin.conf uses rpcauth= (a hash), the password cannot be read from
+it. Supply it with --rpc-user / --rpc-pass, or add plain rpcuser= and
+rpcpassword= lines and restart bitcoind.
+
+
+-----------------------------------------------------------------------
+NETWORKING
+-----------------------------------------------------------------------
+The daemon binds to your Tailscale address automatically if it finds
+one, which keeps it off the public internet. With no Tailscale, the web
+interface binds to localhost and only the peer port listens publicly.
+The boot log states which posture is active. Override with --bind.
+
+Ports:
+    8789/tcp   web interface + WebSocket API + /health   inbound
+    8788/tcp   daemon-to-daemon messaging                inbound
+    8333/tcp   Bitcoin handshake used to identify peers  outbound only
+    8332       bitcoind RPC, localhost only              outbound only
+
+With ufw, restrict them to your tailnet:
+
+    sudo ufw allow in on tailscale0 to any port 8789 proto tcp
+    sudo ufw allow in on tailscale0 to any port 8788 proto tcp
+
+For clearnet you must forward TCP 8788 so peers can reach you. Read
+SECURITY-CRITIQUE.md first — clearnet publishes the link between your
+identity and your node's IP.
+
+For Tor, which needs no port forwarding at all, see TorSetupGuide.txt.
+
+
+-----------------------------------------------------------------------
+RUNNING IT
+-----------------------------------------------------------------------
+    sudo systemctl status nodesignal        is it running?
+    sudo systemctl restart nodesignal       restart
+    sudo systemctl stop nodesignal          stop
+    journalctl -u nodesignal -f             live log
+    curl http://127.0.0.1:8789/health       JSON status
+
+To run it by hand for debugging:
+
+    sudo systemctl stop nodesignal
+    cd /opt/nodesignal
+    node nodesignald.js --nick MyNodeName
+
+Ctrl+C to quit, then start the service again. Do not run both at once;
+the second will exit with a port-in-use error.
+
+
+-----------------------------------------------------------------------
+UPGRADING
+-----------------------------------------------------------------------
+Copy the new files over the old ones and run ./install-node.sh again
+with the same arguments. It stops the service, replaces the files,
+removes stale dependencies, and restarts. Your data is preserved.
+
+
+-----------------------------------------------------------------------
+HARDENING
+-----------------------------------------------------------------------
+NodeSignal only calls getpeerinfo, getnetworkinfo and getblockchaininfo.
+If you use rpcuser/rpcpassword, restrict what those credentials can do:
+
+    rpcwhitelist=nodesignal:getpeerinfo,getnetworkinfo,getblockchaininfo
+
+Better still, run the daemon as an unprivileged user, and consider
+running it on a machine that is not the node, talking to the node over
+your LAN.
+
+Problems: see Troubleshooting.txt
+Threat model: see SECURITY-CRITIQUE.md
