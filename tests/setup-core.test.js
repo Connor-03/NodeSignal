@@ -312,6 +312,31 @@ t('cli setup (the .deb postinst step): nodesignal user, rpcauth, never the cooki
   assert(fs.existsSync(path.join(r, 'var/lib/nodesignal/state.json')), 'purge never deletes identity or history');
 });
 
+t('cli setup carries a 1.2 from-source unit over: its history, never its RPC password', async () => {
+  // 1.2 kept everything on the ExecStart line and history in ~/.nodesignal of User=
+  const { r } = fakeRoot('deb12', { conf: 'server=1\nrpcuser=pool\nrpcpassword=poolsecret\n' });
+  const unit = '/etc/systemd/system/nodesignal.service';
+  write(path.join(r, unit), '[Service]\nUser=alice\nExecStart=/usr/bin/node /opt/ns/nodesignald.js --nick oldbox --web-port 8789 --rpc-user pool --rpc-pass poolsecret\n');
+  write(path.join(r, 'home/alice/.nodesignal/state.json'), '{"v12":true}');
+  const out = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r, '--migrate-unit', unit], { encoding: 'utf8', timeout: 30000 });
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert(/Copied your identity and history from \/home\/alice\/\.nodesignal/.test(out.stdout), out.stdout);
+  assert.strictEqual(fs.readFileSync(path.join(r, 'var/lib/nodesignal/state.json'), 'utf8'), '{"v12":true}');
+  assert(fs.existsSync(path.join(r, 'home/alice/.nodesignal/state.json')), 'original kept');
+  const cfg = JSON.parse(fs.readFileSync(path.join(r, 'etc/nodesignal/config.json'), 'utf8'));
+  assert.strictEqual(cfg.nick, 'oldbox');
+  assert.strictEqual(cfg['rpc-user'], 'nodesignal', 'its own login, not the old shared one');
+  assert(!JSON.stringify(cfg).includes('poolsecret'));
+  // --data on the old line wins over the home folder
+  const { r: r2 } = fakeRoot('deb12b', { conf: 'server=1\n' });
+  write(path.join(r2, unit), '[Service]\nExecStart=/usr/bin/node nodesignald.js --data /srv/ns\n');
+  write(path.join(r2, 'srv/ns/state.json'), '{"srv":true}');
+  write(path.join(r2, 'root/.nodesignal/state.json'), '{"root":true}');
+  const out2 = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r2, '--migrate-unit', unit], { encoding: 'utf8', timeout: 30000 });
+  assert.strictEqual(out2.status, 0, out2.stdout + out2.stderr);
+  assert.strictEqual(fs.readFileSync(path.join(r2, 'var/lib/nodesignal/state.json'), 'utf8'), '{"srv":true}');
+});
+
 t('cli setup on a fresh machine writes a new config', async () => {
   const { r } = fakeRoot('deb2', { conf: 'server=1\n' });
   const out = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r, '--nick', 'fresh'], { encoding: 'utf8', timeout: 30000 });

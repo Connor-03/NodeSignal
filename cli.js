@@ -277,7 +277,10 @@ async function cmdSetup(ctx) {
   if (det.installed && (!cfg['rpc-url'] || argv.includes('--redetect'))) cfg['rpc-url'] = det.rpcUrl;
 
   // 3. state directory, never emptied or replaced
-  const oldData = cfg.data && cfg.data !== STATE_DIR ? cfg.data : null;
+  // a 1.2 from-source unit had no config file: its history sat in --data,
+  // or in ~/.nodesignal of the unit's User= (root when it named none)
+  const unitData = migrated && (migrated.data || oldUnitHome(core, root, migrated.user));
+  const oldData = [cfg.data, unitData].find((d) => d && d !== STATE_DIR) || null;
   cfg.data = STATE_DIR;
   if (!fs.existsSync(P(STATE_DIR))) fs.mkdirSync(P(STATE_DIR), { recursive: true, mode: 0o700 });
   if (oldData && fs.existsSync(P(path.join(oldData, 'state.json')))) {
@@ -451,7 +454,12 @@ function parseOldUnit(file) {
       i++;
     }
   }
-  return { user: user ? user.trim() : null, config };
+  const data = (exec.match(/(?:^|\s)--data(?:=|\s+)(\S+)/) || [])[1] || null;
+  return { user: user ? user.trim() : null, config, data };
+}
+function oldUnitHome(core, root, name) {
+  const u = core.readPasswd(root).find((x) => x.name === (name || 'root'));
+  return u && u.home && u.home !== '/' ? path.posix.join(u.home, '.nodesignal') : null;
 }
 function hostnameOf(root) {
   if (root) { try { return fs.readFileSync(path.join(root, 'etc', 'hostname'), 'utf8').trim() || os.hostname(); } catch { } }
