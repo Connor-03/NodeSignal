@@ -59,8 +59,9 @@ Node.js, so nothing else needs installing.
 
 **Windows:** double-click the .exe. No admin rights needed. It asks for a
 display name and two optional extras (both default to No), installs to
-`%LOCALAPPDATA%\NodeSignal`, starts hidden at sign-in, and opens
-`http://localhost:8789`. The file is not code-signed, so SmartScreen will warn;
+`%LOCALAPPDATA%\NodeSignal`, starts hidden at sign-in, and opens in its own
+window (Edge's app mode: no tabs, its own taskbar icon) from a Desktop and
+Start menu shortcut. Closing the window does not stop it receiving. The file is not code-signed, so SmartScreen will warn;
 compare its SHA-256 with `SHA256SUMS.txt` first.
 
 **Linux** (on the node):

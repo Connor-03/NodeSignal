@@ -109,23 +109,27 @@ function winFolders() {
   const out = {
     startup: path.join(appdata, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup'),
     desktop: path.join(os.homedir(), 'Desktop'),
+    programs: path.join(appdata, 'Microsoft', 'Windows', 'Start Menu', 'Programs'),
   };
   try {
     // The real folders, which may be redirected (OneDrive, roaming profiles).
     const ps = "[Console]::OutputEncoding=[Text.Encoding]::UTF8;"
-      + "[Environment]::GetFolderPath('Startup');[Environment]::GetFolderPath('Desktop')";
+      + "[Environment]::GetFolderPath('Startup');[Environment]::GetFolderPath('Desktop');[Environment]::GetFolderPath('Programs')";
     const text = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps],
       { encoding: 'utf8', timeout: 20000, windowsHide: true });
-    const [s, d] = text.split(/\r?\n/).map((x) => x.trim());
+    const [s, d, pr] = text.split(/\r?\n/).map((x) => x.trim());
     if (s) out.startup = s;
     if (d) out.desktop = d;
+    if (pr) out.programs = pr;
   } catch { }
   return out;
 }
 const vbsString = (s) => '"' + String(s).replace(/"/g, '""') + '"';
-// The hidden launcher: runs "nodesignal.exe run" with window style 0.
-// Written as UTF-16LE with a BOM so any path (any user name) survives.
-function launcherVbs(L) {
+// The hidden launchers: run "nodesignal.exe run" (at sign-in) or
+// "nodesignal.exe open" (the shortcuts) with window style 0, so no console
+// window flashes up. Written as UTF-16LE with a BOM so any path (any user
+// name) survives.
+function launcherVbs(L, verb = 'run') {
   const local = process.env.LOCALAPPDATA || '';
   let exeExpr;
   if (local && L.exe.toLowerCase().startsWith(local.toLowerCase() + '\\')) {
@@ -133,18 +137,19 @@ function launcherVbs(L) {
   } else exeExpr = vbsString(L.exe);
   const extra = L.custom ? ' & " --root " & Chr(34) & ' + vbsString(L.root) + ' & Chr(34)' : '';
   return [
-    "' NodeSignal: starts the daemon hidden when you sign in. Written by the installer.",
+    verb === 'run' ? "' NodeSignal: starts the daemon hidden when you sign in. Written by the installer."
+      : "' NodeSignal: opens the NodeSignal window (the Desktop and Start menu shortcuts). Written by the installer.",
     "' Remove it with: nodesignal.exe uninstall",
     'Set sh = CreateObject("WScript.Shell")',
     'exe = ' + exeExpr,
-    'sh.Run Chr(34) & exe & Chr(34) & " run"' + extra + ', 0, False',
+    `sh.Run Chr(34) & exe & Chr(34) & " ${verb}"` + extra + ', 0, False',
     '',
   ].join('\r\n');
 }
-function writeLauncher(dir, L) {
-  const file = path.join(dir, 'NodeSignal.vbs');
+function writeLauncher(dir, L, verb = 'run', name = 'NodeSignal.vbs') {
+  const file = path.join(dir, name);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(launcherVbs(L), 'utf16le')]));
+  fs.writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(launcherVbs(L, verb), 'utf16le')]));
   return file;
 }
 function runLauncher(file) {
@@ -152,12 +157,28 @@ function runLauncher(file) {
   child.on('error', () => { });
   child.unref();
 }
-function writeUrlShortcut(dir, url) {
-  const file = path.join(dir, 'NodeSignal.url');
+/* A real shortcut (.lnk) with NodeSignal's icon. It runs the hidden "open"
+   launcher, which starts the daemon if it is not running and opens the
+   NodeSignal window. Values go to PowerShell through environment variables,
+   so no path is ever quoted into a command line. */
+function writeAppShortcut(dir, L) {
+  const launcher = path.join(L.root, 'NodeSignal-open.vbs');
+  const lnk = path.join(dir, 'NodeSignal.lnk');
+  const sysdir = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(file, ['[InternetShortcut]', 'URL=' + url, ''].join('\r\n'), 'ascii');
-  return file;
+  const ok = runPowerShell([
+    '$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:NS_LNK)',
+    '$s.TargetPath=$env:NS_TARGET', '$s.Arguments=$env:NS_ARGS', '$s.WorkingDirectory=$env:NS_DIR',
+    '$s.IconLocation=$env:NS_ICON', "$s.Description='NodeSignal: encrypted chat between Bitcoin node operators'", '$s.Save()',
+  ].join(';'), {
+    NS_LNK: lnk, NS_TARGET: path.join(sysdir, 'wscript.exe'), NS_ARGS: `//B //Nologo "${launcher}"`,
+    NS_DIR: L.root, NS_ICON: L.exe + ',0',
+  });
+  if (!ok || !fs.existsSync(lnk)) throw new Error('could not create ' + lnk);
+  return lnk;
 }
+// Shortcuts an older version left behind (an Internet shortcut that opened a browser tab).
+const OLD_SHORTCUTS = (f) => [path.join(f.desktop, 'NodeSignal.url')];
 const UNINSTALL_KEY = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\NodeSignal';
 // Apps & features entry, per user (no admin). Values go in through
 // environment variables so no quoting is involved.
@@ -207,6 +228,44 @@ function openBrowser(url) {
   try {
     if (IS_WIN) spawn('explorer.exe', [url], { detached: true, stdio: 'ignore' }).on('error', () => { }).unref();
   } catch { }
+}
+/* ---- the NodeSignal window ----------------------------------------------
+   The console opens in its own window: Microsoft Edge (part of Windows 10 and
+   11) in app mode, with no tabs or address bar, NodeSignal's title and icon,
+   and its own taskbar entry. Chrome's app mode is the fallback, a normal
+   browser tab the last resort. The window is only a view: the daemon is a
+   separate background process, so closing the window never stops NodeSignal
+   receiving messages. */
+function appBrowsers(env = process.env) {
+  const bases = [env['ProgramFiles(x86)'], env.ProgramFiles, env.LOCALAPPDATA].filter(Boolean);
+  return [
+    ...bases.map((b) => path.join(b, 'Microsoft', 'Edge', 'Application', 'msedge.exe')),
+    ...bases.map((b) => path.join(b, 'Google', 'Chrome', 'Application', 'chrome.exe')),
+  ];
+}
+function findAppBrowser(env = process.env) {
+  return appBrowsers(env).find((f) => { try { return fs.statSync(f).isFile(); } catch { return false; } }) || null;
+}
+const appArgs = (url) => ['--app=' + url, '--no-first-run', '--no-default-browser-check'];
+// Opens the window; returns how: 'app' (Edge or Chrome app mode) or 'browser'.
+function openApp(url, { browser = false } = {}) {
+  const exe = IS_WIN && !browser ? findAppBrowser() : null;
+  if (exe) {
+    try {
+      spawn(exe, appArgs(url), { detached: true, stdio: 'ignore' }).on('error', () => openBrowser(url)).unref();
+      return 'app';
+    } catch { }
+  }
+  openBrowser(url);
+  return 'browser';
+}
+// "nodesignal.exe open": start the daemon if it is not answering, then open the window.
+async function openWindow(L, url, argv = []) {
+  if (!(await core.httpGetJson(`http://127.0.0.1:${portOf(L)}/health`, 1500)).ok && installedOk(L)) {
+    startDetached(L);
+    await core.waitForHealth(portOf(L), { timeoutMs: 20000 });
+  }
+  return openApp(url, { browser: argv.includes('--browser') });
 }
 // The image name of a running PID, or null. Used so a stale PID file can
 // never make us kill an unrelated program that reused the number.
@@ -604,8 +663,12 @@ async function performInstall(L, answers, opts) {
       catch (e) { step(`Warning: could not add the sign-in launcher (${e.code || e.message})`); }
     }
     if (opts.userLevel) {
-      try { writeUrlShortcut(folders.desktop, url); step('Desktop shortcut: NodeSignal'); }
-      catch (e) { step(`Warning: no Desktop shortcut (${e.code || e.message})`); }
+      try {
+        writeLauncher(L.root, L, 'open', 'NodeSignal-open.vbs');
+        writeAppShortcut(folders.desktop, L); writeAppShortcut(folders.programs, L);
+        for (const old of OLD_SHORTCUTS(folders)) { try { fs.unlinkSync(old); } catch { } }
+        step('Desktop and Start menu shortcut: NodeSignal (opens in its own window)');
+      } catch (e) { step(`Warning: no Desktop or Start menu shortcut (${e.code || e.message})`); }
       if (registerUninstallEntry(L)) step('Listed in Settings > Apps, for uninstalling');
       if (answers.portMapping) {
         if (addFirewallRule(ports.peer)) step(`Windows Firewall allows inbound TCP ${ports.peer}`);
@@ -748,13 +811,15 @@ async function cmdInstall(L) {
     if (h.rpcConnected) say(`  Bitcoin node connected: ${h.peerCount} peers on the map.`);
     else if (needsRestart) for (const l of core.RPC_RESTART_TEXT.win32) say('  ' + l);
     else say('  Bitcoin node not connected yet. NodeSignal keeps trying every 30 seconds.');
-    openBrowser(res.url);
+    openApp(res.url);
   } else {
     say('  NodeSignal did not answer its health check. The log says why:');
     say(`    ${L.log}`);
   }
   say('');
-  say(`  Open it any time:  ${res.url}   (Desktop shortcut: NodeSignal)`);
+  say('  Open it any time from the NodeSignal shortcut (Desktop or Start menu). It opens');
+  say('  in its own window; closing the window does not stop NodeSignal.');
+  say(`  Address:           ${res.url}`);
   say(`  Command line:      "${L.exe}" status`);
   say('  It starts by itself when you sign in. Uninstall from Settings > Apps.');
   say('  If Windows Firewall asks about NodeSignal, allowing private networks is enough');
@@ -798,7 +863,8 @@ async function cmdUninstall(L, args) {
 
   if (IS_WIN) {
     const f = winFolders();
-    for (const file of [path.join(f.startup, 'NodeSignal.vbs'), path.join(f.desktop, 'NodeSignal.url')]) {
+    for (const file of [path.join(f.startup, 'NodeSignal.vbs'), path.join(f.desktop, 'NodeSignal.lnk'),
+      path.join(f.programs, 'NodeSignal.lnk'), ...OLD_SHORTCUTS(f)]) {
       try { fs.unlinkSync(file); say(`  - Removed ${file}`); } catch { }
     }
     removeUninstallEntry();
@@ -808,6 +874,7 @@ async function cmdUninstall(L, args) {
     }
   }
   fs.rmSync(L.app, { recursive: true, force: true });
+  try { fs.unlinkSync(path.join(L.root, 'NodeSignal-open.vbs')); } catch { }
   say(`  - Removed ${L.app}`);
 
   // Purge never deletes the identity key or history, on Windows as on Linux.
@@ -872,7 +939,23 @@ async function cmdSelftest(args) {
       { userLevel: false, startupDir: IS_WIN ? path.join(tmp, 'Startup') : null, interactive: false, P: null });
     check('program files extracted', core.missingFiles(L.app, MANIFEST.files).length === 0);
     check('program copied', fs.existsSync(L.exe));
+    check('app window: Edge/Chrome app mode, no tabs or address bar', appArgs('http://localhost:1/')[0] === '--app=http://localhost:1/'
+      && appBrowsers({ ProgramFiles: 'P', LOCALAPPDATA: 'L' })[0] === path.join('P', 'Microsoft', 'Edge', 'Application', 'msedge.exe'));
     if (IS_WIN) {
+      const edge = findAppBrowser();
+      check('app window: a browser with app mode is installed', !!edge, edge || 'neither Edge nor Chrome found');
+      const openVbs = writeLauncher(L.root, L, 'open', 'NodeSignal-open.vbs');
+      check('open launcher runs "nodesignal.exe open" hidden', /" open"[^\r\n]*, 0, False/.test(fs.readFileSync(openVbs).subarray(2).toString('utf16le')));
+      let lnkOk = false, lnkDetail = '';
+      try {
+        const lnk = writeAppShortcut(path.join(tmp, 'Shortcuts'), L);
+        const got = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+          '$s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:NS_LNK);$s.TargetPath;$s.Arguments;$s.IconLocation'],
+        { encoding: 'utf8', timeout: 30000, windowsHide: true, env: Object.assign({}, process.env, { NS_LNK: lnk }) }).split(/\r?\n/);
+        lnkOk = /wscript\.exe$/i.test(got[0]) && got[1].includes('NodeSignal-open.vbs') && got[2].toLowerCase().startsWith(L.exe.toLowerCase());
+        lnkDetail = got.slice(0, 3).join(' | ');
+      } catch (e) { lnkDetail = e.message; }
+      check('shortcut (.lnk) runs the open launcher and carries the NodeSignal icon', lnkOk, lnkDetail);
       const vbs = fs.readFileSync(path.join(tmp, 'Startup', 'NodeSignal.vbs'));
       check('hidden launcher written as UTF-16 with BOM', vbs[0] === 0xff && vbs[1] === 0xfe);
       check('hidden launcher (wscript, window style 0) started the daemon', res.launcherWorked);
@@ -975,7 +1058,7 @@ async function main() {
       const cli = loadAssetModule('cli.js');
       return cli.main(args, {
         core, version: VERSION, configPath: L.config, logPath: L.log,
-        hooks: { restart: () => restart(L), openUrl: openBrowser, uninstall: (a) => cmdUninstall(L, a) },
+        hooks: { restart: () => restart(L), openUrl: (url, argv) => openWindow(L, url, argv), uninstall: (a) => cmdUninstall(L, a) },
       });
     }
   }

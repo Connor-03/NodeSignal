@@ -46,6 +46,10 @@ same machine, and still only calls three read-only RPC methods:
   users keep working.
 - Purging the package (or `uninstall --purge` on Windows) removes NodeSignal's
   lines from bitcoin.conf. It never deletes your identity key or history.
+- Windows: NodeSignal opens in its own window (Microsoft Edge's app mode, no
+  tabs or address bar, its own taskbar icon) from a Desktop and Start menu
+  shortcut, which also starts it if it was not running. Closing the window
+  does not stop NodeSignal; it keeps receiving in the background.
 - The Windows .exe now carries its own icon and version details
   (ProductName NodeSignal, the release version) instead of Node's.
 - New `nodesignal` command: `status`, `advertise on|off`, `port-mapping on|off`,
