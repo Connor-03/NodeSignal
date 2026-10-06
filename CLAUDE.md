@@ -158,7 +158,7 @@ From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 | `start-node.bat` | Manual Windows launcher for a from-source copy. |
 | `CHANGELOG.md`, `RELEASING.md` | Release notes per version (the release workflow publishes the `## <version>` section) and the maintainer's release checklist. `release.yml` run by hand is a dry run by default. |
 | `tools/screenshots/` | Publishable screenshots of the console from a fake daemon (`fixture-ws.js`). Optional Playwright. |
-| `tests/` | `run-all.js` runs every `*.test.js` with plain node; `console.e2e.js` (optional Playwright); `mock-node.js` (mock RPC that applies rpcauth/rpcwhitelist from a bitcoin.conf like bitcoind, and a :8333 identify listener). |
+| `tests/` | `run-all.js` runs every `*.test.js` with plain node; `console.e2e.js` (optional Playwright); `mock-node.js` (mock RPC that applies rpcauth/rpcwhitelist from a bitcoin.conf like bitcoind, and a :8333 identify listener); `harness.js` (shared helpers: spawned daemons, a raw WebSocket client, raw Noise peers). |
 
 ### Two interfaces, deliberately separate
 
@@ -285,7 +285,9 @@ status table. Keep it current whenever security changes.
 - Web front door (v1.3): loopback-only bind, Host and Origin checks,
   per-launch action token on every state-changing op, `no-store` and
   frame-blocking headers on the console page. A console socket error can
-  no longer crash the daemon.
+  no longer crash the daemon. The web server hands out the console page,
+  `/health` and the login routes only: no static files from the program
+  folder, where a from-source install keeps `nodesignal-config.json`.
 
 **Still open, in honest terms**
 - Without a passphrase, messages are stored in the clear in `state.json`;
@@ -316,23 +318,38 @@ status table. Keep it current whenever security changes.
    enabled, and when the daemon is disconnected the message is held and
    labeled honestly as "queued", then sent on reconnect. Currently
    `sendMsg()` toasts "daemon not connected" and discards it.
-3. **Add a real test suite.** v1.3 adds `noise.test.js` (vectors),
+3. **[DONE, Oct 2026]** **Add a real test suite.** v1.3 adds `noise.test.js` (vectors),
    `store.test.js`, `daemon.test.js` (real daemons: delivery, reply over the
    peer's link, retry, dedupe, v1.2 interop, key change, vault, hostile
    input) and `portmap.test.js`. Earlier: `tests/console.test.js` (static
    checks, plain node), `tests/console.e2e.js` (two daemons + mock node,
    optional Playwright, skips without it) and `tests/mock-node.js` (mock
    RPC and :8333). Still to add, in the same `tests/` folder runnable with plain `node` (no test framework, keep zero
-   deps) covering at least:
-   - Noise handshake: mutual auth, matching keys, tamper rejection
-   - two-daemon delivery and reply
-   - TOFU: a reinstalled peer with a new key is rejected
-   - DoS: a flood of handshake-less connections persists zero contacts
-   - `established` only after a real reply; history survives peer loss
-   - Tor: delivery to a `.onion` through a mock SOCKS5 proxy
-   - WebSocket server against framing sizes 5 KB and 200 KB, UTF-8, ping
-   - static server rejects path traversal and dotfiles
-   - layout: 40 peers, zero overlaps, nothing out of frame
+   deps) covering at least (all now done; `tests/harness.js` holds the
+   helpers the newer suites share, and each suite has its own port range):
+   - [DONE, `noise.test.js`] Noise handshake: mutual auth, matching keys, tamper rejection
+   - [DONE, `daemon.test.js`] two-daemon delivery and reply
+   - [DONE, `daemon.test.js`] TOFU: a reinstalled peer with a new key is rejected
+   - [DONE, `dos.test.js`] DoS: a flood of handshake-less connections persists zero contacts
+     (state.json untouched, `/health` answering), plus `--max-conns` and the
+     per-source rate limit
+   - [DONE, `established.test.js`] `established` only after a real reply; history survives peer loss
+     (an inbound hello alone, or a hello exchange, establishes nobody; history
+     survives leaving getpeerinfo and a restart)
+   - [DONE, `tor.test.js`] Tor: delivery to a `.onion` through a mock SOCKS5 proxy
+     (domain-name CONNECT, reply over the same circuit, no DNS lookup of the
+     onion; found and fixed a split-reply bug)
+   - [DONE, `websocket.test.js`] WebSocket server against framing sizes 5 KB and 200 KB, UTF-8, ping
+     (found and fixed: unmasked frames accepted, fragmented messages unbounded,
+     no close frame sent)
+   - [DONE, `static.test.js`] static server rejects path traversal and dotfiles
+     (POSIX and Windows path rules; found and fixed: the daemon served any file
+     in its program folder, including `nodesignal-config.json`)
+   - [DONE, `layout.test.js`] layout: 40 peers, zero overlaps, nothing out of frame
+     (runs the page's own layout code in a vm, seeded; holds for realistic
+     latency spreads. Known limit, not fixed because the radar is frozen: 40
+     peers crowded into one narrow band, such as all within 5 ms or all
+     unmeasured, can still overlap)
 
 ### Then
 
