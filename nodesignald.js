@@ -1299,8 +1299,11 @@ async function handleRequest(req, res) {
       '\nExpected nodesignal.html (or nodesignal-demo.html) next to nodesignald.js.', 500);
   }
 
-  // static assets: correct MIME types, path traversal and dotfiles rejected
-  if (method === 'GET' && W.serveStatic(CFG.webRoot, pathname, res)) return;
+  // Nothing else is served from the web root. The console is one
+  // self-contained page, and its folder is the program folder: a from-source
+  // install keeps nodesignal-config.json (the RPC password, the web token)
+  // there, and --data may point there too (state.json holds the private
+  // identity key). So there is no static file fallback at all.
   return W.sendText(res, 'not found', 404);
 }
 function redirect2(res, to, setCookie) {

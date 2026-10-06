@@ -30,13 +30,15 @@
 | Reinstalled peer = remove and re-add | **[FIXED in v1.3]**: the new key is held for review; accepting must echo the exact presented fingerprint |
 | Web console reachable from the network; DNS rebinding; cross-site actions | **[FIXED in v1.3]**: the console listens on 127.0.0.1 only, checks Host (localhost/127.0.0.1 on its port) and Origin, and every state-changing action needs a random per-launch token served only inside the page (`tests/websecurity.test.js`) |
 | Daemon holds full RPC power (cookie or rpcuser/rpcpassword); ran as the node's user or root | **[FIXED in v1.3]**: its own `rpcauth` user, limited by `rpcwhitelist` to the three methods it calls (`tests/setup-core.test.js` checks the list against every `rpcCall`); the cookie is never read; on Linux it runs as a dedicated `nodesignal` system user with no access to /home; the installers refuse root and Windows administrator. Needs one bitcoind restart after install |
+| Web server handed out any file in the program folder, including a from-source install's `nodesignal-config.json` (RPC password, web token) and `state.json` if `--data` pointed there | **[FIXED in v1.3]**: the console page, `/health` and the login routes are all it serves; there is no static file fallback (`tests/static.test.js`). Readable only from this machine, but it bypassed the config file's 0600 permissions for any local user |
+| Console WebSocket accepted unmasked frames and unbounded fragmented messages | **[FIXED in v1.3]**: unmasked client frames close the socket (RFC 6455 5.1); the 8 MiB cap covers a whole message, not one frame (`tests/websocket.test.js`) |
 | A browser tab dropping mid-write could crash the daemon | **[FIXED in v1.3]**: an EPIPE on a console socket was re-emitted as an unhandled `'error'` event |
 | Corrupt `state.json` silently replaced by a fresh identity | **[FIXED in v1.3, self-review]**: only a missing file means a fresh install; anything else stops the daemon and leaves the file untouched (section 8) |
 | Authenticated strangers grow state without limit | **[FIXED in v1.3, self-review]**: at most 256 contacts you never added or wrote to, 50 messages kept each, 200 messages and 1000 frames per connection (section 8) |
 | Hostile field values from authenticated peers | **[FIXED in v1.3]**: every field type-checked, length-capped, control characters stripped; claims never overwrite measured node data |
 | No forward secrecy | **[FIXED]**: ephemeral keys per session |
 | No peer authentication / MITM | **[FIXED]**: mutual static-key auth + TOFU pinning |
-| Unauthenticated disk-exhaustion DoS | **[FIXED]**: no persisted state before a completed handshake |
+| Unauthenticated disk-exhaustion DoS | **[FIXED]**: no persisted state before a completed handshake (`tests/dos.test.js`: a flood of handshake-less connections leaves state.json untouched) |
 | IPv6 spray defeats per-IP limits | **[FIXED]**: rate limit per /64 source block |
 | No connection cap | **[FIXED]**: `--max-conns`, default 128 |
 | Clearnet-exposed by default | **[MITIGATED]**: binds to Tailscale/localhost by default |
