@@ -353,8 +353,9 @@ from either side.
 
 What was read: everything a remote peer can reach on :8788 (frames, handshake,
 hello, msg, ack), what answers on :8333 when we identify, the web front door and
-every WebSocket op, the retry queue and the vault. Each fix below has a test in
-`tests/hardening.test.js` that fails on the code before the fix.
+every WebSocket op, the retry queue and the vault. Each fix below has a test that fails on the code before the fix: items 1 to 5
+in `tests/hardening.test.js`, items 7 to 9 in the suites named. Items 7 to 9
+came from writing the missing test suites the same night.
 
 | # | Finding | Severity | Fix |
 |---|---|---|---|
@@ -364,6 +365,9 @@ every WebSocket op, the retry queue and the vault. Each fix below has a test in
 | 4 | `vault.change` checked the old passphrase outside the unlock backoff, so it could test guesses at full speed | Medium (needs the action token, so local only) | Unlock and change share one backoff |
 | 5 | The user agent in a :8333 `version` reply was stored, logged and shown unbounded (up to the 4 MB frame cap) and with control characters, so it could inject fake log lines | Low | Cleaned and capped at 256, as Bitcoin Core does |
 | 6 | `probe.js` and `probeTester.bat` were still in the tree, with a real public IP in their examples. CLAUDE.md lists the probe tool as removed on purpose | Low (personal data in a public repo) | Deleted. The address remains in git history |
+| 7 | The web server's static fallback served any file in the web root, which is the program folder: a from-source install's `nodesignal-config.json` (RPC password, web token), the launcher, and `state.json` when `--data` pointed there. Found by `tests/static.test.js` | High (local secret disclosure past 0600 permissions) | No static fallback: the daemon serves the console page, `/health` and the login routes only |
+| 8 | SOCKS5 replies were assumed to arrive in one read; a split reply corrupted the Noise stream and the message to the .onion contact never arrived. Found by `tests/tor.test.js` | Low (reliability) | Both replies are buffered until complete |
+| 9 | The console WebSocket accepted unmasked client frames, capped single frames but not fragmented messages (unbounded memory), and dropped its own close frame. Found by `tests/websocket.test.js` | Low (needs the loopback console) | Unmasked frames close the socket, the 8 MiB cap covers the whole message, the close frame is sent once |
 
 Read and left as they are, on purpose:
 

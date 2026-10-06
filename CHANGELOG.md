@@ -46,6 +46,8 @@ same machine, and still only calls three read-only RPC methods:
   users keep working.
 - Purging the package (or `uninstall --purge` on Windows) removes NodeSignal's
   lines from bitcoin.conf. It never deletes your identity key or history.
+- The Windows .exe now carries its own icon and version details
+  (ProductName NodeSignal, the release version) instead of Node's.
 - New `nodesignal` command: `status`, `advertise on|off`, `port-mapping on|off`,
   `rpc-access show|add|remove`, `open`, `logs`.
 
@@ -96,6 +98,11 @@ same machine, and still only calls three read-only RPC methods:
   - a malformed Cookie header can no longer stop the daemon;
   - the passphrase-change form shares the unlock backoff;
   - the user agent read on :8333 is cleaned and capped at 256 characters;
+  - the web server no longer serves files from its program folder, where a
+    from-source install keeps its config with the RPC password;
+  - a split SOCKS5 reply no longer breaks delivery to a `.onion` contact;
+  - the console WebSocket refuses unmasked frames and caps fragmented
+    messages;
   - `probe.js` and `probeTester.bat` are removed.
 
 ### Known limits
