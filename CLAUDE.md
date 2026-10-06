@@ -387,10 +387,9 @@ status table. Keep it current whenever security changes.
 
 ### Open questions for the maintainer (from the v1.3 installer work)
 
-- **Decided:** `.deb` Maintainer is `Connor-03 <ID+Connor-03@users.noreply.github.com>`
-  and Homepage is https://github.com/Connor-03/NodeSignal. **TODO (maintainer):**
-  replace `ID` with your numeric GitHub user id in `packaging/deb/build-deb.sh`
-  (the default of `MAINTAINER`); the build prints a note until you do.
+- **Decided:** `.deb` Maintainer is `Connor-03 <143026739+Connor-03@users.noreply.github.com>`
+  (GitHub's noreply form; filled in at the maintainer's request) and Homepage
+  is https://github.com/Connor-03/NodeSignal.
 - **Decided (Oct 2026): never run as root.** Dedicated `nodesignal` user,
   rpcauth + rpcwhitelist instead of the cookie; see locked decision 11.
 - **Decided (Oct 2026): Windows supervisor.** `nodesignal.exe run` (what the
