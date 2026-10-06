@@ -15,8 +15,11 @@ function peers(n) {
     subver: UAS[i % UAS.length], pingtime: 0.012 + (i % 13) * 0.05, inbound: i % 3 === 0, synced_headers: 950000,
   }));
 }
-function rpcServer({ port = 18332, host = '127.0.0.1', npeers = 22 } = {}) {
+function rpcServer({ port = 18332, host = '127.0.0.1', npeers = 22, nodesignalPeers = 0 } = {}) {
   const list = peers(npeers);
+  // peers that advertise NodeSignal via `uacomment=nodesignal` in bitcoin.conf
+  for (let i = 0; i < nodesignalPeers; i++)
+    list.push({ addr: `192.0.2.${20 + i}:8333`, subver: '/Satoshi:29.0.0(nodesignal)/', pingtime: 0.04, inbound: false, synced_headers: 950000 });
   const srv = http.createServer((req, res) => {
     let b = ''; req.on('data', (c) => (b += c));
     req.on('end', () => {
