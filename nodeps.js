@@ -1,4 +1,4 @@
-// nodeps.js — express/ws replacements built on Node's standard library only
+// nodeps.js: express/ws replacements built on Node's standard library only
 // ============================================================================
 // NodeSignal originally required `express` and `ws`, which pulled 66 packages
 // onto a machine running a Bitcoin node. That was flagged in the threat model,
@@ -6,9 +6,9 @@
 // failed (no network, corporate proxy, OneDrive-synced folder, stale PATH).
 //
 // This module removes the dependency completely:
-//   · serveStatic()  — safe static file serving with correct MIME types and
+//   · serveStatic() : safe static file serving with correct MIME types and
 //                      path-traversal rejection
-//   · WSServer       — a minimal RFC 6455 WebSocket server (text frames, ping/
+//   · WSServer      : a minimal RFC 6455 WebSocket server (text frames, ping/
 //                      pong, close, fragmentation, masking) sufficient for the
 //                      daemon's JSON API
 //

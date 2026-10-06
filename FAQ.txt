@@ -1,4 +1,4 @@
-NodeSignal — Frequently Asked Questions
+NodeSignal: Frequently Asked Questions
 =======================================================================
 
 
@@ -119,14 +119,14 @@ What if the other operator is offline?
 
 Why is a peer's line dashed instead of solid?
     Solid lines mean a confirmed two-way NodeSignal exchange. A peer you
-    added but who has never replied stays dashed. That is deliberate —
+    added but who has never replied stays dashed. That is deliberate:
     it tells you at a glance who is really reachable.
 
 What is the blinking green dot?
     That peer is established AND was seen recently, so you can message
     them right now.
 
-A peer shows "not identified" — is something broken?
+A peer shows "not identified": is something broken?
     No. Nothing answered on its port 8333. That is normal for machines
     with no Bitcoin node, such as a laptop running only NodeSignal.
     Messaging is unaffected.

@@ -1,4 +1,4 @@
-# NodeSignal — adversarial review
+# NodeSignal: adversarial review
 
 > **Update (v1.2):** several of the risks below are now addressed in code. Each
 > is tagged **[FIXED]**, **[MITIGATED]**, or **[OPEN]**. The handshake, DDoS,
@@ -18,21 +18,21 @@
 
 | Risk | State |
 |---|---|
-| Weak PIN / no key exchange | **[FIXED]** — replaced with a Noise-XX X25519 handshake |
+| Weak PIN / no key exchange | **[FIXED]**: replaced with a Noise-XX X25519 handshake |
 | Custom "Noise-like" handshake, unverifiable | **[FIXED in v1.3]**: standard Noise_XX_25519_ChaChaPoly_SHA256, passes the cacophony and snow test vectors. The old handshake is still answered for one release so v1.2 peers keep working |
 | Legacy PIN code path still shipped | **[FIXED in v1.3]**: PBKDF2/AES-GCM line protocol, `contact.pin` and stored PINs removed |
 | Reinstalled peer = remove and re-add | **[FIXED in v1.3]**: the new key is held for review; accepting must echo the exact presented fingerprint |
 | Hostile field values from authenticated peers | **[FIXED in v1.3]**: every field type-checked, length-capped, control characters stripped; claims never overwrite measured node data |
-| No forward secrecy | **[FIXED]** — ephemeral keys per session |
-| No peer authentication / MITM | **[FIXED]** — mutual static-key auth + TOFU pinning |
-| Unauthenticated disk-exhaustion DoS | **[FIXED]** — no persisted state before a completed handshake |
-| IPv6 spray defeats per-IP limits | **[FIXED]** — rate limit per /64 source block |
-| No connection cap | **[FIXED]** — `--max-conns`, default 128 |
-| Clearnet-exposed by default | **[MITIGATED]** — binds to Tailscale/localhost by default |
+| No forward secrecy | **[FIXED]**: ephemeral keys per session |
+| No peer authentication / MITM | **[FIXED]**: mutual static-key auth + TOFU pinning |
+| Unauthenticated disk-exhaustion DoS | **[FIXED]**: no persisted state before a completed handshake |
+| IPv6 spray defeats per-IP limits | **[FIXED]**: rate limit per /64 source block |
+| No connection cap | **[FIXED]**: `--max-conns`, default 128 |
+| Clearnet-exposed by default | **[MITIGATED]**: binds to Tailscale/localhost by default |
 | Plaintext at rest | **[MITIGATED in v1.3]**: with a passphrase, message text is sealed (scrypt + X25519 sealed boxes) and the daemon still receives while locked. Without one it is still plaintext. Metadata, and the identity key (needed unattended), stay readable by the daemon's user |
-| 66-package supply chain | **[FIXED]** — express and ws removed; zero dependencies |
-| Identity ↔ node-IP linkage | **[OPEN by design]** — inherent to the concept |
-| Metadata (timing/presence) leakage | **[OPEN]** — inherent to any direct-connection design. v1.3 check-ins (every ~3 min to established contacts) make presence more visible to those contacts |
+| 66-package supply chain | **[FIXED]**: express and ws removed; zero dependencies |
+| Identity ↔ node-IP linkage | **[OPEN by design]**: inherent to the concept |
+| Metadata (timing/presence) leakage | **[OPEN]**: inherent to any direct-connection design. v1.3 check-ins (every ~3 min to established contacts) make presence more visible to those contacts |
 | User-agent advertising (`uacomment=nodesignal`) | **[NEW, opt-in]**: tells every peer of your node that you run NodeSignal. Makes enumeration trivial for anyone connected to you; off by default |
 | Router port mapping (UPnP / NAT-PMP) | **[NEW, opt-in]**: opens the peer port to the internet and publishes your IP to every contact; off by default, never needed on Tailscale or Tor |
 | No independent review | **[OPEN]**: the vector tests prove `noise.js` computes the Noise spec correctly; they say nothing about the daemon around it. Nobody outside the project has audited it yet |
@@ -84,7 +84,7 @@ v1.2 replaced and v1.3 removed; they are kept as the record.)
 Measured on one CPU core: **56 ms per candidate derivation.**
 
 - 4-digit PIN = 10,000 candidates = **9.4 minutes on a single core**
-- 8-digit PIN = 10^8 candidates ≈ 1,559 CPU-hours — hours on a GPU, less on rented hardware
+- 8-digit PIN = 10^8 candidates ≈ 1,559 CPU-hours: hours on a GPU, less on rented hardware
 
 Worse, the salt is a **compile-time constant** (`NodeSignal/1`), because both
 sides must derive the same key from the PIN alone. That means one precomputed
@@ -97,13 +97,13 @@ traffic), replay protection, and any authentication of the peer.
 
 ### 2.2 Encrypted in transit, plaintext at rest
 
-Verified: send a message, then read the daemon's `state.json` — the cleartext is
+Verified: send a message, then read the daemon's `state.json`: the cleartext is
 sitting there. Once decrypted, the plaintext is persisted next to the
 ciphertext.
 
 So the "PIN-encrypted" badge is honest about the wire and misleading about the
-disk. Anyone with filesystem access — a backup, a snapshot, a stolen drive, a
-different process running as the same user — reads everything.
+disk. Anyone with filesystem access (a backup, a snapshot, a stolen drive, a
+different process running as the same user) reads everything.
 
 ### 2.3 Unauthenticated, unbounded state growth
 
@@ -113,7 +113,7 @@ rate limit, and no cap on the number of contacts.
 Measured: 400 connections from one host in **520 ms**, growing `state.json` to
 **1.6 MB**.
 
-Per-IP de-duplication limits a single attacker — but **IPv6 defeats it
+Per-IP de-duplication limits a single attacker, but **IPv6 defeats it
 entirely**. One `/64` allocation is 1.8×10^19 source addresses. At ~200 bytes
 per record, filling 10 GB needs about 50 million distinct sources, well within
 reach at the observed rate.
@@ -122,7 +122,7 @@ reach at the observed rate.
 potentially chainstate corruption.
 
 Related gaps in the same file: no `maxConnections` anywhere, and each socket may
-buffer up to 1 MB before being dropped — so N connections hold N MB.
+buffer up to 1 MB before being dropped, so N connections hold N MB.
 
 ### 2.4 The daemon holds far more RPC power than it uses
 
@@ -143,7 +143,7 @@ the node, talking to the node over the LAN.
 
 ### 2.5 Supply chain
 
-**[FIXED in v1.2]** — this previously pulled **66 packages** onto the machine
+**[FIXED in v1.2]**: this previously pulled **66 packages** onto the machine
 running your node. The daemon now uses only Node's standard library: `nodeps.js`
 provides static file serving and an RFC 6455 WebSocket server in ~250 lines,
 verified against the reference `ws` client for framing, 16/64-bit payload
@@ -154,13 +154,13 @@ The original finding, kept for the record:
 
 Node operators verify GPG signatures and reproducible builds for Core. Then this
 project asks them to trust a dependency tree they will never read. That is an
-inconsistency a serious judge will notice. The honest fix is zero dependencies —
+inconsistency a serious judge will notice. The honest fix is zero dependencies:
 Node's built-in `http` module can serve the app and a minimal WebSocket
 implementation is a few hundred lines.
 
 ---
 
-## 3. The Bitcoin-specific critiques — these matter most
+## 3. The Bitcoin-specific critiques: these matter most
 
 ### 3.1 It links a social identity to a node IP
 
@@ -192,7 +192,7 @@ named human who is at their desk right now" is operationally significant.
 
 Two separate claims, with very different strength:
 
-- **The 8333 handshake is real** — you connect and read the peer's `version`
+- **The 8333 handshake is real**: you connect and read the peer's `version`
   message. But the user agent is a free-form string the operator sets. It proves
   "something at this IP speaks Bitcoin P2P and *claims* to be Knots signaling
   BIP-110." Nothing more.
@@ -201,14 +201,14 @@ Two separate claims, with very different strength:
 
 Your own demo proves this: `--impersonate` makes a Windows laptop with **no
 Bitcoin node at all** appear on the map as Knots signaling BIP-110 + UASF.
-Do not hide that flag — **demo it deliberately**. It is the most honest thing in
+Do not hide that flag: **demo it deliberately**. It is the most honest thing in
 the project, and it preempts the question rather than being caught by it.
 
 ### 3.4 Sybil-farmable "signaling" is worse than no signaling
 
 Nothing prevents one entity running 10,000 daemons all claiming Knots +
 BIP-110. If NodeSignal ever aggregated signaling across operators, that number
-would look like measurement while being pure self-report — cheaper to fake than
+would look like measurement while being pure self-report: cheaper to fake than
 hashrate, cheaper than running real nodes.
 
 **Fake consensus data is more dangerous than absent consensus data**, because
@@ -220,7 +220,7 @@ This is the critique I would lead with if I were judging.
 
 Bitcoin's security model deliberately minimizes social trust. Nodes follow
 consensus rules, not other operators. NodeSignal builds a trusted-feeling
-channel *between node operators, keyed to node identity* — exactly the substrate
+channel *between node operators, keyed to node identity*: exactly the substrate
 for coordinated social pressure during a contentious fork.
 
 Picture a chain split with messages circulating: "connect to this peer," "the
@@ -231,7 +231,7 @@ purpose-built operator chat makes that easier, not harder.
 The counter-argument is real and worth making: operators already coordinate on
 IRC, Twitter, Telegram, and mailing lists. NodeSignal does not create the
 capability; it decentralizes a thing currently centralized on corporate
-platforms. That is a genuinely good answer — but only if you raise the risk
+platforms. That is a genuinely good answer, but only if you raise the risk
 first rather than being cornered by it.
 
 ---
@@ -242,7 +242,7 @@ first rather than being cornered by it.
   the `Secure` flag over plain http, so it is sniffable on a shared segment.
   Defensible on a tailnet; indefensible the moment someone port-forwards it.
 - **`/health` is unauthenticated** and returns nickname, peer count, and contact
-  count — a free fingerprint.
+  count: a free fingerprint.
 - **Contacts are keyed by IP address, and IP is not identity.** Dynamic IPs, NAT
   changes, or BGP hijacks silently repoint a conversation at someone else.
 - **Tor-hostile by construction.** Operators who run Tor-only do so precisely to
@@ -275,13 +275,13 @@ set; 5 is documentation; 7 has outbound SOCKS5 and hidden-service setup.)
 
 ---
 
-## 6. What the design already gets right — defend this confidently
+## 6. What the design already gets right: defend this confidently
 
 - **It does not touch the Bitcoin P2P protocol.** No custom messages to peers,
   no risk of bans, no consensus-adjacent behavior. Chat rides an entirely
   separate channel. This was the correct architectural call and it is worth
-  stating plainly, because the naive version of this project — stuffing chat
-  into Bitcoin messages — would be actively harmful to the network.
+  stating plainly, because the naive version of this project (stuffing chat
+  into Bitcoin messages) would be actively harmful to the network.
 - **Node access is read-only**, three methods, no wallet interaction.
 - **Identity data is derived, not invented.** Implementation, version, height,
   service bits, and declared BIPs are parsed from what the node actually
@@ -295,7 +295,7 @@ set; 5 is documentation; 7 has outbound SOCKS5 and hidden-service setup.)
 
 > This works, and on a small scale it is genuinely fun. But the reason I would
 > not run it on a node holding real value is that it links a social identity to
-> a node IP — and Bitcoin spent fifteen years trying to keep those apart. The
+> a node IP, and Bitcoin spent fifteen years trying to keep those apart. The
 > interesting question is not whether operators *can* chat. It is whether a
 > social layer keyed to node identity is something the network should want at
 > all.

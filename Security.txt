@@ -1,8 +1,8 @@
-NodeSignal — Security
+NodeSignal: Security
 =======================================================================
 
-This is the practical guide. For the full adversarial threat model —
-including what is still weak and why — read SECURITY-CRITIQUE.md.
+This is the practical guide. For the full adversarial threat model,
+including what is still weak and why, read SECURITY-CRITIQUE.md.
 
 
 -----------------------------------------------------------------------
@@ -111,7 +111,7 @@ NETWORKING, FROM MOST TO LEAST PRIVATE
   Tor           Recommended. No port forwarding, and your node's IP is
                 never revealed to peers. See TorSetupGuide.txt. Set
                 tor-proxy for outbound as well as a hidden service for
-                inbound — you need both halves.
+                inbound: you need both halves.
 
   Tailscale     Good. Private to your tailnet, no ports open to the
                 internet. Detected and used automatically.
@@ -168,7 +168,7 @@ KEEP THINGS UPDATED
 Bitcoin Core / Knots, Node.js, and NodeSignal itself.
 
 NodeSignal has no third-party dependencies, so there is no npm supply
-chain to audit — it uses only Node's standard library.
+chain to audit: it uses only Node's standard library.
 
 
 -----------------------------------------------------------------------

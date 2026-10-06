@@ -272,7 +272,7 @@ function buildImpersonation() {
 const rpc = { ok: false, self: null, peers: [], error: 'not configured' };
 /* Credential discovery. bitcoind/Knots can be configured half a dozen ways and
    the daemon may run as a different user than the node, so we try each source
-   in turn and REMEMBER what we tried — a silent "not connected" is useless to
+   in turn and REMEMBER what we tried: a silent "not connected" is useless to
    an operator. Re-run on every call because the cookie rotates on restart. */
 function parseBitcoinConf(file) {
   try {
@@ -299,7 +299,7 @@ function readCookie(file, tried) {
     return s;
   } catch (e) {
     tried.push({ path: file, result:
-      e.code === 'EACCES' ? 'permission denied — the daemon user cannot read it'
+      e.code === 'EACCES' ? 'permission denied: the daemon user cannot read it'
       : e.code === 'ENOENT' ? 'not found' : (e.code || 'error') });
     return null;
   }
@@ -355,7 +355,7 @@ function rpcAuth() {
     // the file. Say so plainly instead of reporting a vague failure.
     if (conf.rpcauth && !conf.rpcpassword) {
       tried.push({ path: cp, result:
-        'uses rpcauth= (hashed) — the password cannot be read from this file; ' +
+        'uses rpcauth= (hashed): the password cannot be read from this file; ' +
         'pass --rpc-user/--rpc-pass in the systemd unit, or add plain ' +
         'rpcuser=/rpcpassword= lines and restart bitcoind' });
     }
@@ -415,7 +415,7 @@ async function pollRpc() {
       // runs NodeSignal, by its own user agent comment (self-declared, public)
       nodesignal: nodesignalFromUA(p.subver) }));
     rpc._loggedFail = false;
-    if (wasDown) log(`node RPC ok via ${rpcDiag.source || 'credentials'} — ${rpc.self.ua} · height ${rpc.self.height} · ${rpc.peers.length} peers`);
+    if (wasDown) log(`node RPC ok via ${rpcDiag.source || 'credentials'}: ${rpc.self.ua} · height ${rpc.self.height} · ${rpc.peers.length} peers`);
     broadcastUi({ type: 'node', self: rpc.self, peers: rpc.peers });
   } catch (e) {
     const was = rpc.ok;
@@ -493,7 +493,7 @@ function identifyP2P(host, port) {
       info.supports = [...supports];
       resolve(info);
     };
-    const hard = setTimeout(() => finish(new Error('timeout — nothing answered on ' + host + ':' + port)), 9000);
+    const hard = setTimeout(() => finish(new Error('timeout: nothing answered on ' + host + ':' + port)), 9000);
     function onConnected(s) {
       attachReader(s);
       s.write(p2pFrame(net_.magic, 'version', Buffer.concat([
@@ -534,8 +534,8 @@ function identifyP2P(host, port) {
     });
     }
     sock.on('error', (e) => finish(new Error(
-      e.code === 'ECONNREFUSED' ? 'refused — nothing listening on ' + host + ':' + port
-        : e.code === 'ETIMEDOUT' ? 'timeout — port closed, firewalled, or unreachable'
+      e.code === 'ECONNREFUSED' ? 'refused: nothing listening on ' + host + ':' + port
+        : e.code === 'ETIMEDOUT' ? 'timeout: port closed, firewalled, or unreachable'
           : (e.message || e.code))));
   });
 }
@@ -569,7 +569,7 @@ function scheduleIdentify(host, delay) {
     catch {
       cc._idRetry = (cc._idRetry || 0) + 1;
       if (cc._idRetry >= MAX_ID_TRIES)
-        log(`identify ${host}: giving up after ${MAX_ID_TRIES} tries (no Bitcoin node there?) — messaging still works`);
+        log(`identify ${host}: giving up after ${MAX_ID_TRIES} tries (no Bitcoin node there?); messaging still works`);
       else scheduleIdentify(host);
     }
   }, wait));
@@ -579,7 +579,7 @@ function scheduleIdentify(host, delay) {
 /* ---- outbound dialling, with optional SOCKS5 (Tor) --------------------
    A .onion address cannot be resolved by DNS, so a direct net.connect()
    fails with ENOTFOUND. Reaching another operator's hidden service requires
-   handing the hostname to a SOCKS5 proxy — Tor's, normally 127.0.0.1:9050 —
+   handing the hostname to a SOCKS5 proxy (Tor's, normally 127.0.0.1:9050)
    and letting Tor do the resolution inside the network.
 
    Rules:
@@ -606,7 +606,7 @@ function socks5Connect(target, targetPort, onReady, onError) {
   const fail = (msg) => { sock.destroy(); onError(new Error(msg)); };
   sock.on('error', (e) => onError(new Error(
     e.code === 'ECONNREFUSED'
-      ? `no SOCKS proxy at ${px.host}:${px.port} — is Tor running? (set --tor-proxy if it listens elsewhere)`
+      ? `no SOCKS proxy at ${px.host}:${px.port}: is Tor running? (set --tor-proxy if it listens elsewhere)`
       : (e.code || e.message))));
   sock.on('connect', () => sock.write(Buffer.from([0x05, 0x01, 0x00])));  // greet: no-auth
   const onData = (chunk) => {
@@ -686,7 +686,7 @@ function rateOk(host) {
 /* ---- privacy: choose a safe default bind ------------------------------
    The old default (0.0.0.0) exposed both ports on every interface, including
    clearnet. Now:
-     · if a Tailscale interface exists, bind to its address by default — the
+     · if a Tailscale interface exists, bind to its address by default: the
        intended deployment, reachable by peers on the tailnet and nobody else
      · otherwise bind the WEB UI to localhost (operate via SSH tunnel), and
        the PEER port to 0.0.0.0 only if the operator opts in
@@ -1135,7 +1135,7 @@ function reqAuthed(req) {
   return validSession(cookies(req).ns_session);
 }
 const LOGIN_PAGE = `<!DOCTYPE html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>NodeSignal — sign in</title><style>
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>NodeSignal: sign in</title><style>
 body{margin:0;height:100vh;display:grid;place-items:center;background:#070a0f;color:#dde7e2;
 font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace}
 form{background:#0e131c;border:1px solid rgba(140,210,180,.2);border-radius:14px;padding:28px 30px;width:320px}
@@ -1155,7 +1155,7 @@ font:inherit;font-weight:600;font-size:13px;cursor:pointer}
 
 /* ------------------------------------------------------------ web app (:8789)
    Plain Node http + the WebSocket server from nodeps.js. No express, no ws,
-   no npm install — which removes 66 packages from a machine running a Bitcoin
+   no npm install, which removes 66 packages from a machine running a Bitcoin
    node (a finding in the threat model) and makes Windows setup dependency-free. */
 function healthPayload() {
   return {
@@ -1234,7 +1234,7 @@ const requestListener = (req, res) => {
 
 const server = http.createServer(requestListener);
 // Second listener on loopback. When the primary bind is a Tailscale address,
-// the machine's own browser would otherwise get ECONNREFUSED on localhost —
+// the machine's own browser would otherwise get ECONNREFUSED on localhost,
 // confusing when you are sitting at the very machine running the daemon.
 // This adds localhost WITHOUT exposing anything to clearnet.
 const localServer = http.createServer(requestListener);
