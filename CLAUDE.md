@@ -334,8 +334,10 @@ status table. Keep it current whenever security changes.
 
 ### Open questions for the maintainer (from the v1.3 installer work)
 
-- `.deb` Maintainer field: currently the GitHub issues URL, not an email
-  (set `MAINTAINER` when building).
+- **Decided:** `.deb` Maintainer is `Connor-03 <ID+Connor-03@users.noreply.github.com>`
+  and Homepage is https://github.com/Connor-03/NodeSignal. **TODO (maintainer):**
+  replace `ID` with your numeric GitHub user id in `packaging/deb/build-deb.sh`
+  (the default of `MAINTAINER`); the build prints a note until you do.
 - If bitcoind runs as root, the .deb runs NodeSignal as root (with a
   warning). Alternative: a dedicated user plus rpcuser / `rpccookieperms`.
 - Windows: nothing restarts a crashed daemon until the next sign-in; the

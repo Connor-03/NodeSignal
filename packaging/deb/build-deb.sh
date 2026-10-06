@@ -38,7 +38,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$(cd "${SRC_DIR:-$HERE/../..}" && pwd)"
 DIST="${DIST_DIR:-$SRC/dist}"
 NODE_LINE="${NODE_VERSION:-latest-v22.x}"
-MAINTAINER="${MAINTAINER:-NodeSignal project <https://github.com/Connor-03/NodeSignal/issues>}"
+# ID is the maintainer's numeric GitHub user id, still to be filled in (see
+# CLAUDE.md, "Open questions"). Until then the build says so.
+MAINTAINER="${MAINTAINER:-Connor-03 <ID+Connor-03@users.noreply.github.com>}"
+case "$MAINTAINER" in
+  "Connor-03 <ID+"*) echo "build-deb: note: Maintainer still has the ID placeholder; set it in packaging/deb/build-deb.sh" >&2 ;;
+esac
 
 for tool in curl tar xz sha256sum dpkg-deb node; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
