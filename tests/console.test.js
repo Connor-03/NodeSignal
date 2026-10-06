@@ -19,7 +19,9 @@ t('no PIN entry UI (the daemon uses Noise, not PINs)', () => {
 });
 t('no daemon settings fields (URL, token)', () => assert(!/id="f-(url|token|daemon)"|\?daemon=/.test(html)));
 t('composer input and send button are never disabled', () => {
-  assert(!/composer-in[^>]*disabled|class="send"[^>]*disabled|\.disabled\s*=\s*true/.test(html));
+  assert(!/composer-in[^>]*disabled|class="send"[^>]*disabled/.test(html));
+  // no script ever disables them (other buttons, e.g. a dialog's Save, may be)
+  assert(!/(composer-in['"]\)|querySelector\(['"]\.send['"]\))\.disabled\s*=\s*true/.test(script));
   assert(/function queueOrSend/.test(script) && /status:'queued'/.test(script), 'offline sends must queue');
 });
 t('page connects to same-origin /ws with no configuration', () => assert(/location\.host\+'\/ws'/.test(script)));
@@ -31,6 +33,21 @@ t('peer-supplied strings go through esc() in templates', () => {
   const raw = [...src.matchAll(/\$\{(?:p|peer|m)\.(nick|host|text|error|ua|addr)\b[^}]*\}/g)].map((m) => m[0])
     .filter((x) => !/^\$\{\w+\.\w+\?(`|')/.test(x));
   assert.deepStrictEqual(raw, [], 'unescaped: ' + raw.join(', '));
+});
+t('v1.3 features are wired: history passphrase, key review, retry, advertised peers', () => {
+  for (const op of ['vault.set', 'vault.unlock', 'vault.lock', 'vault.change', 'contact.acceptKey', 'contact.dismissKey', 'chat.retry', 'chat.cancel'])
+    assert(script.includes(`'${op}'`), op + ' not sent anywhere');
+  assert(/pendingFp/.test(script) && /\.ns\b/.test(script) && /status==='pending'/.test(script));
+  // accepting a key must echo the exact fingerprint the operator was shown
+  assert(/type:'contact\.acceptKey',host:p\.host,fp:p\.pendingFp\.got/.test(script));
+});
+t('every message to the daemon carries the per-launch action token', () => {
+  assert(/meta\[name="\$\{n\}"\]/.test(script) && /metaOf\('ns-action-token'\)/.test(script));
+  assert(/state\.ws\.send\(JSON\.stringify\(Object\.assign\(\{token:NS_TOKEN\},o\)\)\)/.test(script), 'send() must attach the token');
+  // the only raw socket write is inside send()
+  assert.strictEqual((script.match(/state\.ws\.send\(/g) || []).length, 1);
+  // a page left open across a daemon restart reloads instead of flushing the outbox with a stale token
+  assert(script.indexOf("reloadForNewDaemon();break;}") < script.indexOf('flushOutbox();'));
 });
 t('mobile: single-pane thread and no legend overlay', () => {
   assert(html.includes('#view-msgs.has-thread .thread{display:flex}'));

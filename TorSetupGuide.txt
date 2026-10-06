@@ -1,9 +1,9 @@
-NodeSignal — Tor Setup Guide
+NodeSignal: Tor Setup Guide
 =======================================================================
 
 Tor is the most private way to run NodeSignal. It needs no port
 forwarding, and it does not publish the link between your identity and
-your node's IP address — which is the single biggest privacy weakness
+your node's IP address, which is the single biggest privacy weakness
 of running this over clearnet.
 
 There are TWO halves, and you need both:
@@ -30,7 +30,7 @@ Windows:
 
 
 -----------------------------------------------------------------------
-2. INBOUND — publish a hidden service
+2. INBOUND: publish a hidden service
 -----------------------------------------------------------------------
 Edit your torrc:
 
@@ -41,11 +41,10 @@ Add:
 
     HiddenServiceDir /var/lib/tor/nodesignal/
     HiddenServicePort 8788 127.0.0.1:8788
-    HiddenServicePort 8789 127.0.0.1:8789
 
-Port 8788 is the one other operators need. 8789 is your web interface —
-only publish it if you want to reach your own console remotely over Tor,
-and if you do, set a login token first.
+Port 8788 is the one other operators need. Do not publish 8789, your web
+interface: it answers only as localhost:8789 and refuses any other
+address (an .onion included). Reach it remotely through an SSH tunnel.
 
 Restart Tor:
 
@@ -76,7 +75,7 @@ The Windows installer sets this for you if you choose Tor.
 
 
 -----------------------------------------------------------------------
-4. OUTBOUND — point NodeSignal at Tor's SOCKS proxy
+4. OUTBOUND: point NodeSignal at Tor's SOCKS proxy
 -----------------------------------------------------------------------
 This is the half that is usually missed. Add:
 
@@ -109,7 +108,7 @@ clearnet peer still reveals your IP to that peer.
 Use their .onion address exactly as they gave it to you, in the "add a
 contact" dialog. The port stays 8788.
 
-Delivery is slower than clearnet — a Tor circuit adds latency, and the
+Delivery is slower than clearnet: a Tor circuit adds latency, and the
 first connection to a new .onion can take several seconds. A message
 that eventually reports "delivered" has worked.
 
@@ -117,7 +116,7 @@ that eventually reports "delivered" has worked.
 -----------------------------------------------------------------------
 IF IT DOES NOT WORK
 -----------------------------------------------------------------------
-"no SOCKS proxy at 127.0.0.1:9050 — is Tor running?"
+"no SOCKS proxy at 127.0.0.1:9050: is Tor running?"
     Tor is not running, or listens elsewhere. Check:
         sudo systemctl status tor
     If you are using Tor Browser, the port is 9150 and the browser must
@@ -125,7 +124,7 @@ IF IT DOES NOT WORK
 
 "Tor could not reach <address> (host unreachable)"
     The .onion is wrong, or that hidden service is down. Onion addresses
-    are long and unforgiving — copy and paste, never retype.
+    are long and unforgiving: copy and paste, never retype.
 
 "ENOTFOUND ... .onion"
     tor-proxy is not configured, so NodeSignal tried a direct DNS lookup.
@@ -140,7 +139,7 @@ Peers cannot reach YOU
 Identification shows "not identified"
     Identifying a peer means connecting to its port 8333. Many operators
     do not expose 8333 over their hidden service, so this stays blank
-    over Tor. Messaging is unaffected — the two are separate layers.
+    over Tor. Messaging is unaffected: the two are separate layers.
 
 
 -----------------------------------------------------------------------

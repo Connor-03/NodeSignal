@@ -1,8 +1,8 @@
-NodeSignal — Security
+NodeSignal: Security
 =======================================================================
 
-This is the practical guide. For the full adversarial threat model —
-including what is still weak and why — read SECURITY-CRITIQUE.md.
+This is the practical guide. For the full adversarial threat model,
+including what is still weak and why, read SECURITY-CRITIQUE.md.
 
 
 -----------------------------------------------------------------------
@@ -28,8 +28,16 @@ your node disconnected by its peers.
 -----------------------------------------------------------------------
 ENCRYPTION
 -----------------------------------------------------------------------
-Every connection runs a Noise-XX handshake over X25519, with
-HKDF-SHA256 and ChaCha20-Poly1305.
+Every connection runs a standard Noise_XX_25519_ChaChaPoly_SHA256
+handshake (X25519, HKDF-SHA256, ChaCha20-Poly1305). noise.js is checked
+against published third-party test vectors (tests/noise.test.js), so
+it computes exactly what the Noise specification says. That proves the
+handshake math, not the rest of the daemon; nobody outside the project
+has reviewed it yet.
+
+v1.3 still answers the older v1.2 handshake for one release, so
+operators who have not upgraded can still reach you. It will be removed
+in the next release.
 
   · Each daemon has a persistent identity keypair, created on first run
     and stored in state.json. Its fingerprint appears in the boot log
@@ -45,8 +53,60 @@ HKDF-SHA256 and ChaCha20-Poly1305.
 There is no PIN any more. PINs were guessable and shared a fixed salt.
 
 If a peer legitimately reinstalls, their key changes and you will see a
-mismatch. Confirm out-of-band that it really was a reinstall, then
-remove and re-add the contact to pin the new key.
+mismatch. The conversation shows a review card with the pinned and the
+presented fingerprint. Ask the operator, over another channel you
+trust, to read you the fingerprint in their Status panel. Only if it
+matches, choose "Accept new key". Messages waiting for them are then
+delivered.
+
+
+-----------------------------------------------------------------------
+MESSAGE HISTORY AT REST
+-----------------------------------------------------------------------
+Set a history passphrase in the console (the banner offers it, or
+Status > Message history). From then on:
+
+  · message text is sealed before it is written to state.json, with a
+    fresh key per message; history already stored is sealed on setup
+  · after every daemon restart history is locked until you type the
+    passphrase; the daemon keeps receiving and sealing while locked
+  · the passphrase is stretched with scrypt; wrong guesses back off
+
+There is no recovery. Forget the passphrase and the history is gone;
+contacts and your identity are kept.
+
+What it does not hide: who you talk to and when (metadata), and your
+Noise identity key, which the daemon must read unattended. state.json
+is written readable only by the daemon's user. Anyone who can read the
+memory of an unlocked daemon can read your history.
+
+The passphrase travels from your browser to the daemon over the web
+interface. On a tailnet that link is encrypted by Tailscale; over plain
+http anywhere else it is not.
+
+
+-----------------------------------------------------------------------
+THE WEB CONSOLE
+-----------------------------------------------------------------------
+The console on port 8789 can unlock your history and accept a changed
+key, so it is locked down to this machine:
+
+  · it listens on 127.0.0.1 only, whatever "bind" says ("bind" now sets
+    the peer port only)
+  · it answers only to Host localhost:8789 or 127.0.0.1:8789, so a web
+    page cannot reach it by pointing its own domain at 127.0.0.1 (DNS
+    rebinding)
+  · requests and WebSocket connections whose Origin is any other site
+    are refused
+  · every action that changes something (unlock, accept a key change,
+    retry or cancel, add or remove a contact, send) must carry a random
+    token issued at each daemon start and written only into the page the
+    daemon serves. It never appears in a URL, a cookie or the log.
+
+From another computer, use an SSH tunnel that keeps the port number:
+ssh -L 8789:127.0.0.1:8789 <you>@<node>. Programs running as any user
+on the node itself can still reach the console; the optional web login
+token ("web-token") is the defence against them.
 
 
 -----------------------------------------------------------------------
@@ -55,16 +115,30 @@ PROTECT YOUR RPC CREDENTIALS
 Never expose Bitcoin RPC to the internet. It should listen on localhost
 only, which is the default.
 
-rpcuser/rpcpassword grants FULL RPC access, including wallet commands.
-NodeSignal only needs three read methods, so restrict it in bitcoin.conf:
+The cookie file and rpcuser/rpcpassword grant FULL RPC access, including
+wallet commands, so NodeSignal uses neither. The installers give it its
+own RPC user instead. In bitcoin.conf, between two "# NodeSignal RPC
+access" marker comments:
 
-    rpcwhitelist=nodesignal:getpeerinfo,getnetworkinfo,getblockchaininfo
+    rpcauth=nodesignal:<salt>$<hash>
+    rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo
+    rpcwhitelistdefault=0
 
-Prefer the cookie file over a static password where you can, and run the
-daemon as an unprivileged user.
+rpcauth is a salted HMAC-SHA256, so bitcoin.conf never holds the
+password. The whitelist is exactly the three read methods the daemon
+calls; anything else answers 403. rpcwhitelistdefault=0 is written only
+when bitcoin.conf has no whitelist settings of its own: without it, the
+first rpcwhitelist line would lock every other RPC user out. bitcoind
+reads these lines when it starts, so restart it once after installing;
+NodeSignal never restarts it. Uninstalling with purge removes the block.
 
-The Windows installer stores credentials in nodesignal-config.json and
-locks that file to your user account. Do not put passwords on a command
+On Linux the daemon runs as a dedicated "nodesignal" system user, never
+root and never the node's user, with no access to /home. On Windows it
+runs as your account, and the installers refuse an administrator window.
+
+The installers store NodeSignal's RPC password in its config file
+(/etc/nodesignal/config.json, readable by the nodesignal user only, or
+config.json locked to your account on Windows). Do not put passwords on a command
 line: on Linux they show up in `systemctl cat`, and on Windows in a
 process listing.
 
@@ -75,7 +149,7 @@ NETWORKING, FROM MOST TO LEAST PRIVATE
   Tor           Recommended. No port forwarding, and your node's IP is
                 never revealed to peers. See TorSetupGuide.txt. Set
                 tor-proxy for outbound as well as a hidden service for
-                inbound — you need both halves.
+                inbound: you need both halves.
 
   Tailscale     Good. Private to your tailnet, no ports open to the
                 internet. Detected and used automatically.
@@ -87,15 +161,32 @@ NETWORKING, FROM MOST TO LEAST PRIVATE
                 8788 can enumerate NodeSignal users. Only open the ports
                 you actually need, and read SECURITY-CRITIQUE.md first.
 
+Only ONE of two operators needs to be reachable. When a peer you cannot
+reach connects to you (to send a message, or for its regular check-in),
+whatever you have waiting for it goes back over its own connection.
+
+Two opt-in features, both off by default, trade privacy for reach:
+
+  Router port   `nodesignal port-mapping on` asks your router (UPnP or
+  mapping       NAT-PMP) to forward the peer port. It opens that port to
+                the whole internet and makes your IP public to everyone
+                you contact. Behind double NAT or CGNAT it cannot help.
+                Never needed on Tailscale or Tor.
+
+  Advertising   `nodesignal advertise on` adds uacomment=nodesignal to
+                bitcoin.conf, so your node's user agent tells every peer
+                you run NodeSignal. That is how other operators find you,
+                and also how anyone connected to your node learns it.
+
 
 -----------------------------------------------------------------------
 WHAT IS STILL WEAK
 -----------------------------------------------------------------------
 Stated plainly, because you should know before trusting it:
 
-  · Messages are stored DECRYPTED at rest, in state.json. Anyone with
-    filesystem access — a backup, a snapshot, a stolen disk — can read
-    your history.
+  · Without a history passphrase, messages are stored in the clear in
+    state.json. Anyone with filesystem access (a backup, a snapshot, a
+    stolen disk) can read them. Set one.
   · Running NodeSignal links a social identity to a node IP. That is a
     property of the design, not a bug, and it is the reason to prefer
     Tor.
@@ -115,7 +206,7 @@ KEEP THINGS UPDATED
 Bitcoin Core / Knots, Node.js, and NodeSignal itself.
 
 NodeSignal has no third-party dependencies, so there is no npm supply
-chain to audit — it uses only Node's standard library.
+chain to audit: it uses only Node's standard library.
 
 
 -----------------------------------------------------------------------
@@ -123,8 +214,9 @@ IF YOU SUSPECT A PROBLEM
 -----------------------------------------------------------------------
 Red banner about an identity mismatch
     Someone at that address presented a different key than the one you
-    pinned. Do not dismiss it. Confirm with that operator through
-    another channel before re-adding them.
+    pinned. Do not just accept it. Confirm the new fingerprint with that
+    operator through another channel, then accept it in the review card,
+    or keep the old key.
 
 Unexpected contacts appearing
     Anyone who completes a handshake with your daemon becomes a contact.

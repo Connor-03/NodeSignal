@@ -29,6 +29,36 @@ require breaking one, stop and ask.
    added. The "identify" button is a manual re-run.
 9. The constellation radar's behaviour (layout, rings, pan/zoom, click to
    chat) is frozen. Visual work around it must not change its code.
+10. The web console is this machine's only (decided Oct 2026): it binds
+   127.0.0.1 and nothing else (`--bind` applies to the peer port only),
+   accepts Host `localhost:<web-port>` / `127.0.0.1:<web-port>` only
+   (DNS rebinding), refuses any other Origin, and every state-changing
+   WebSocket op needs the per-launch `ACTION_TOKEN` that the daemon writes
+   into the page it serves (`<meta name="ns-action-token">`). Only `hello`
+   and `ping` are exempt. Never add a remote web bind; remote access is an
+   SSH tunnel with the same port. `tests/websecurity.test.js` guards this.
+11. NodeSignal never runs as root and never reads the node's cookie
+   (decided Oct 2026). Linux: setup (`cli.js setup`, run by the .deb
+   postinst and `install-node.sh`) creates the `nodesignal` system user;
+   the unit says `User=nodesignal`, `StateDirectory=nodesignal`
+   (`/var/lib/nodesignal`), `ProtectHome=yes`. RPC: setup generates a
+   random password for user `nodesignal`, keeps it in NodeSignal's 0600
+   config (`rpc-user`/`rpc-pass`, plus `rpc-url` because the daemon cannot
+   read bitcoin.conf), and writes a marked block to bitcoin.conf:
+   `rpcauth=nodesignal:<salt>$<hmac>`, `rpcwhitelist=nodesignal:` with
+   exactly the methods the daemon calls (below), and `rpcwhitelistdefault=0`
+   only when the conf has no whitelist settings of its own (otherwise the
+   first whitelist line locks every other RPC user out). Setup tells the
+   operator to restart bitcoind, as advertise does, and never restarts it.
+   Purge removes the block; it never deletes identity or history. Windows
+   has no dedicated account: the daemon runs as the signed-in user, the
+   same rpcauth block is written, and both Windows installers refuse an
+   administrator window. `nodesignal rpc-access show|add|remove` manages
+   the block by hand.
+   The RPC methods the daemon calls, from `grep "rpcCall('" nodesignald.js`
+   (`tests/setup-core.test.js` fails if this drifts from `RPC_METHODS`):
+   `getblockchaininfo`, `getnetworkinfo`, `getpeerinfo`. setup-core's own
+   install-time check uses `getblockchaininfo` and `getnetworkinfo`.
 
 There is no Bitcoin node in cloud sessions. Never run against live RPC;
 mock `getnetworkinfo`, `getblockchaininfo`, `getpeerinfo` and the 8333
@@ -86,7 +116,10 @@ docs, and commit messages.
 5. **Fail honestly.** Undeliverable messages say why. Unknown data shows as
    unknown or N/A. Nothing silently disappears.
 6. **Never put secrets on a command line.** Credentials live in
-   `nodesignal-config.json` (locked to the user) or the cookie file.
+   NodeSignal's own config (`/etc/nodesignal/config.json` 0600 owned by
+   `nodesignal`, `%LOCALAPPDATA%\NodeSignal\config.json` or
+   `nodesignal-config.json` locked to the user). The node's cookie file is
+   never read; bitcoin.conf only ever gets the rpcauth hash.
 7. **No personal data in the repo.** No real IPs, hostnames, or usernames
    in code, placeholders, or docs. This repo is public.
 
@@ -101,24 +134,30 @@ Bitcoin node --RPC (3 read methods)--> nodesignald.js
                                          `-- :8333  outbound only, identify peers
 ```
 
-The daemon serves its own web interface. The browser connects back to `/ws`
-on the same origin it loaded from (`location.host`), so it works behind an
-IP, a hostname, a domain, or a reverse proxy with no configuration.
+The daemon serves its own web interface on 127.0.0.1 only. The browser
+connects back to `/ws` on the same origin it loaded from (`location.host`),
+which must be `localhost:<port>` or `127.0.0.1:<port>`: other hostnames,
+IPs, .onion names and reverse proxies are refused on purpose (decision 10).
+From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 
 ### Files
 
 | File | Role |
 |---|---|
 | `nodesignald.js` | The daemon. RPC discovery, identify, messaging, web server. |
-| `noise.js` | Noise-XX handshake: X25519, HKDF-SHA256, ChaCha20-Poly1305. |
+| `noise.js` | Noise_XX_25519_ChaChaPoly_SHA256 (v3, standard, test-vector checked) plus the v1.2 handshake as `noise.legacy` for one release. |
+| `store.js` | History at rest: scrypt passphrase vault + X25519 sealed boxes per message. |
+| `portmap.js` | Opt-in UPnP IGD / NAT-PMP port mapping. |
 | `nodeps.js` | Static file server + RFC 6455 WebSocket server, stdlib only. |
 | `nodesignal.html` | **Operator console.** Real data only. Goes on a node. |
 | `nodesignal-demo.html` | **Retired.** Removed from the tree in `2d479c6`; the maintainer considers it obsolete. Do not restore it. The demo-only rules below apply only if it ever returns. |
-| `install.js` + `install-windows.bat` | Interactive Windows installer that verifies each answer. |
-| `install-node.sh` | Linux installer, writes a systemd unit. |
-| `start-node.bat` / `start-daemon.bat` | Manual Windows launchers. (`start-daemon.bat` still expects the retired demo file; fix when touched.) |
+| `packaging/` | One-download installers. `files.json` is THE list of program files (update it when adding a module). `build-sea.js` + `windows/sea-main.js` build `NodeSignal-Setup-windows-x64.exe` (Node SEA); `deb/` builds `nodesignal-linux-{amd64,arm64}.deb` with the official Node binary. Both require a Bitcoin node. |
+| `setup-core.js` + `cli.js` | Shared node detection / RPC check / config / uacomment and rpcauth editing, and the `nodesignal` command (status, advertise, port-mapping, rpc-access, setup). |
+| `.github/workflows/` | `ci.yml` (all tests, deb install under systemd, Windows exe selftest) and `release.yml` (tag `v*` -> release assets with stable names + SHA256SUMS.txt). |
+| `install.js` + `install-windows.bat`, `install-node.sh` | From-source installers; also require a node. |
+| `start-node.bat` | Manual Windows launcher for a from-source copy. |
 | `tools/screenshots/` | Publishable screenshots of the console from a fake daemon (`fixture-ws.js`). Optional Playwright. |
-| `tests/` | `console.test.js` (plain node), `console.e2e.js` (optional Playwright), `mock-node.js`. |
+| `tests/` | `run-all.js` runs every `*.test.js` with plain node; `console.e2e.js` (optional Playwright); `mock-node.js` (mock RPC that applies rpcauth/rpcwhitelist from a bitcoin.conf like bitcoind, and a :8333 identify listener). |
 
 ### Two interfaces, deliberately separate
 
@@ -133,10 +172,20 @@ IP, a hostname, a domain, or a reverse proxy with no configuration.
 ### Daemon options worth knowing
 
 `--config <file>` (flags override the file), `--nick`, `--web-port`,
-`--peer-port`, `--web-token`, `--bind`, `--no-rpc`, `--rpc-user`,
-`--rpc-pass`, `--rpc-cookie`, `--rpc-conf`, `--tor-proxy`, `--tor-all`,
+`--peer-port`, `--web-token`, `--bind` (peer port only), `--no-rpc`,
+`--rpc-url`, `--rpc-user`, `--rpc-pass` (normally in the config, never on a
+command line), `--rpc-conf`, `--tor-proxy`, `--tor-all`,
 `--impersonate`, `--impersonate-height`, `--max-conns`, `--rl-burst`,
-`--rl-refill-ms`.
+`--rl-refill-ms`, `--port-mapping` (opt-in), `--checkin-ms` (default 180000,
+0 disables), `--retry-scale` (tests only).
+
+Peer protocol (v3): length-prefixed frames, Noise XX handshake (msg1 32
+bytes; a 44-byte msg1 is the v1.2 handshake), then JSON frames `hello`,
+`msg` {id, ts, text}, `ack` {id}, `ping`/`pong`. Either side of a link may
+send `msg`; the dialling side hangs up when idle. Outgoing message status:
+`sending` -> `delivered`, or `pending` (retrying, with `error` and
+`nextTry`) -> `failed` (gave up or cancelled). The console adds its own
+`queued` for messages typed while the daemon is unreachable.
 
 State (contacts, history, private identity key) lives in
 `~/.nodesignal/state.json`. Upgrades must never touch it.
@@ -203,8 +252,17 @@ status table. Keep it current whenever security changes.
 
 **Done**
 - Noise-XX handshake replaced the shared PIN: mutual authentication, forward
-  secrecy, persistent X25519 identity per daemon.
-- TOFU key pinning. A changed key is REJECTED with a red banner.
+  secrecy, persistent X25519 identity per daemon. Since v1.3 it is the
+  standard Noise_XX_25519_ChaChaPoly_SHA256, checked against the cacophony and
+  snow vectors (`tests/noise.test.js`). v1.2 peers are still answered; remove
+  `noise.legacy` and the v2 branches in the release after v1.3.
+- TOFU key pinning. A changed key is REJECTED with a red banner and held as
+  `pendingFp` until the operator accepts it (echoing the exact fingerprint)
+  or keeps the old one.
+- History at rest (v1.3): optional passphrase; text sealed on arrival, the
+  daemon receives while locked. The PIN code is gone.
+- Every peer-supplied field is validated and capped; claimed node info never
+  overwrites what we measured over :8333.
 - No persisted state before a completed handshake (closes the disk-exhaustion
   DoS that could take bitcoind down with it).
 - Rate limiting per source block (/32 IPv4, /64 IPv6), which defeats IPv6
@@ -216,9 +274,20 @@ status table. Keep it current whenever security changes.
 - Zero dependencies.
 - Optional web login token; HttpOnly SameSite=Strict session cookie also
   authenticates the `/ws` upgrade. Never put the token in a query string.
+- Least RPC privilege (v1.3): own rpcauth user with an `rpcwhitelist` of the
+  three methods, no cookie, dedicated `nodesignal` system user on Linux.
+- Web front door (v1.3): loopback-only bind, Host and Origin checks,
+  per-launch action token on every state-changing op, `no-store` and
+  frame-blocking headers on the console page. A console socket error can
+  no longer crash the daemon.
 
 **Still open, in honest terms**
-- Messages are stored decrypted at rest in `state.json`.
+- Without a passphrase, messages are stored in the clear in `state.json`;
+  with one, metadata and the identity key are still readable by the daemon's
+  user.
+- No outside review of the daemon yet (vectors only prove `noise.js`).
+- Opt-in features that cost privacy: `uacomment=nodesignal` advertising and
+  router port mapping. Keep both off by default.
 - Running NodeSignal links a social identity to a node IP. Inherent to the
   design; Tor is the mitigation.
 - Metadata (who, when, how often) is not hidden.
@@ -241,7 +310,10 @@ status table. Keep it current whenever security changes.
    enabled, and when the daemon is disconnected the message is held and
    labeled honestly as "queued", then sent on reconnect. Currently
    `sendMsg()` toasts "daemon not connected" and discards it.
-3. **Add a real test suite.** Started: `tests/console.test.js` (static
+3. **Add a real test suite.** v1.3 adds `noise.test.js` (vectors),
+   `store.test.js`, `daemon.test.js` (real daemons: delivery, reply over the
+   peer's link, retry, dedupe, v1.2 interop, key change, vault, hostile
+   input) and `portmap.test.js`. Earlier: `tests/console.test.js` (static
    checks, plain node), `tests/console.e2e.js` (two daemons + mock node,
    optional Playwright, skips without it) and `tests/mock-node.js` (mock
    RPC and :8333). Still to add, in the same `tests/` folder runnable with plain `node` (no test framework, keep zero
@@ -258,31 +330,54 @@ status table. Keep it current whenever security changes.
 
 ### Then
 
-4. **Encrypt state at rest**, or stop persisting decrypted plaintext.
-5. **Retire the legacy v1 PIN code path** in `nodesignald.js` once nothing
-   depends on it, along with `encMsg`/`decMsg` and the `contact.pin` message.
-6. **Reinstall flow for TOFU.** Today a peer who reinstalls must be removed
-   and re-added. Consider an explicit, deliberate "accept new key" action
-   that shows both fingerprints.
-7. **Docs:** add `rpcwhitelist=nodesignal:getpeerinfo,getnetworkinfo,getblockchaininfo`
-   to the Linux installer's output as a recommended hardening step.
+4. **[DONE v1.3, passphrase-to-read]** Encrypt state at rest.
+5. **[DONE v1.3]** Retire the legacy v1 PIN code path.
+6. **[DONE v1.3]** Reinstall flow for TOFU ("accept new key" with both
+   fingerprints shown).
+6b. **Next release:** drop `noise.legacy` and the v2 dial/answer branches.
+6c. **Outside review** of `nodesignald.js` + `noise.js` before calling it
+   reviewed anywhere.
+7. **[DONE v1.3, stronger than planned]** The installers now write
+   `rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo`
+   themselves, for NodeSignal's own rpcauth user.
 
 ### Direction decided with the maintainer (Oct 2026)
 
 - **Installers:** bundled Node. Windows gets a single `.exe` (Node single
   executable application, no separate Node install) that registers a
-  background service; Ubuntu gets a `.deb` with a systemd unit. Both find the
-  cookie or `bitcoin.conf`, connect, and start with no questions in the common
-  case. Built by GitHub Actions and attached to GitHub Releases; the site's
+  background service; Ubuntu gets a `.deb` with a systemd unit. Both find
+  `bitcoin.conf`, add NodeSignal's own rpcauth login to it, and start with no
+  questions in the common case (one bitcoind restart needed, which they ask
+  the operator to do). Built by GitHub Actions and attached to GitHub Releases; the site's
   download buttons point at `releases/latest/download/<asset>`.
 - **Encryption, all wanted:** encrypt history and the identity key at rest;
   retire the v1 PIN path; a deliberate "accept new key" flow showing both
   fingerprints; check `noise.js` against Noise spec test vectors and get an
   outside review before presenting it as reviewed.
-- **Making it actually work, all four are real blockers:** reaching operators
+- **Making it actually work** (v1.3 builds all four: reply over the peer's
+  own connection so only one side needs to be reachable, daemon retry queue
+  with check-ins, `uacomment=nodesignal` advertising, opt-in UPnP/NAT-PMP).
+  The original blockers: reaching operators
   behind NAT (8788 unreachable without Tailscale or Tor); finding which peers
   run NodeSignal at all; offline delivery (hold and retry instead of failing);
   setup friction (RPC credentials, ports, launch steps).
+
+### Open questions for the maintainer (from the v1.3 installer work)
+
+- **Decided:** `.deb` Maintainer is `Connor-03 <ID+Connor-03@users.noreply.github.com>`
+  and Homepage is https://github.com/Connor-03/NodeSignal. **TODO (maintainer):**
+  replace `ID` with your numeric GitHub user id in `packaging/deb/build-deb.sh`
+  (the default of `MAINTAINER`); the build prints a note until you do.
+- **Decided (Oct 2026): never run as root.** Dedicated `nodesignal` user,
+  rpcauth + rpcwhitelist instead of the cookie; see locked decision 11.
+- **Decided (Oct 2026): Windows supervisor.** `nodesignal.exe run` (what the
+  sign-in launcher starts) is a parent that spawns the daemon as a child
+  (`__daemon`) and respawns it on exit, backoff 1s doubling to 60s (reset after
+  10 minutes up), giving up after 5 crashes within 10 minutes and logging the
+  reason. The selftest covers restart and give-up. Still open: the .exe has no
+  icon/version resource and is not code-signed.
+- Not yet run on real Windows or real arm64 hardware; CI covers the
+  Windows selftest.
 
 ### Website handoff (do this when NodeSignal is finished, not before)
 

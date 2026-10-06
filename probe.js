@@ -1,4 +1,4 @@
-// probe.js — is that host:port actually reachable from this machine?
+// probe.js: is that host:port actually reachable from this machine?
 // ============================================================================
 // Run:  node probe.js 108.203.190.226 8333 3333 22 80
 //       node probe.js 192.168.1.50 8333
@@ -6,7 +6,7 @@
 // Or double-click probe.bat.
 //
 // Tests each port and tells you what the result means. This talks only to the
-// address you give it and reads nothing — it just opens a TCP connection and
+// address you give it and reads nothing: it just opens a TCP connection and
 // closes it.
 // ============================================================================
 
@@ -36,7 +36,7 @@ function probe(port) {
     };
     sock.setTimeout(TIMEOUT);
     sock.once('connect', () => finish('OPEN', 'something is listening and accepted the connection'));
-    sock.once('timeout', () => finish('TIMEOUT', 'no reply at all — dropped by a firewall, not forwarded, or NAT loopback'));
+    sock.once('timeout', () => finish('TIMEOUT', 'no reply at all (dropped by a firewall, not forwarded, or NAT loopback)'));
     sock.once('error', (e) => {
       if (e.code === 'ECONNREFUSED') finish('REFUSED', 'host reachable, but nothing listening on this port');
       else if (e.code === 'EHOSTUNREACH') finish('UNREACHABLE', 'no route to that host');
@@ -79,13 +79,13 @@ function probe(port) {
     if (open.length && refused.length) {
       console.log(`  Port(s) ${open.join(', ')} are open; ${refused.join(', ')} refused.`);
       console.log('  Refused means you REACHED the machine and it said "nothing here".');
-      console.log('  So routing and firewall are fine — the service just is not listening');
+      console.log('  So routing and firewall are fine; the service just is not listening');
       console.log('  on that port. Start it, or check the port number.');
     } else if (refused.length === results.length) {
       console.log('  Every port refused. You are reaching the machine fine, but nothing is');
       console.log('  listening on any port you tested. Check that the service is running.');
     } else {
-      console.log('  Mixed results — see the per-port detail above.');
+      console.log('  Mixed results: see the per-port detail above.');
     }
   }
   console.log('');

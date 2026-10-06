@@ -1,0 +1,15 @@
+{
+  "comment": "The one list of files the daemon needs at runtime (daemon) and the installer helpers shipped beside it (tools). Every build and installer reads this file; a missing entry fails the build.",
+  "daemon": [
+    "nodesignald.js",
+    "noise.js",
+    "nodeps.js",
+    "portmap.js",
+    "store.js",
+    "nodesignal.html"
+  ],
+  "tools": [
+    "setup-core.js",
+    "cli.js"
+  ]
+}

@@ -1,85 +1,176 @@
-NodeSignal — Windows Installation Guide
+NodeSignal: Windows Installation Guide
 =======================================================================
 
-There is no npm step any more. NodeSignal has zero dependencies: it uses
-only Node.js itself. If you are following an older guide that says
-"npm.cmd install", skip that line — it is obsolete.
+The recommended way to install NodeSignal on Windows is the single
+download from GitHub Releases:
+
+    NodeSignal-Setup-windows-x64.exe
+
+It includes its own Node.js, needs no administrator rights, and asks
+only for a display name and two optional extras. Installing from source
+is described at the end.
 
 
 -----------------------------------------------------------------------
-1. Install Node.js
+WHAT YOU NEED
 -----------------------------------------------------------------------
-Download the LTS build from https://nodejs.org and run it, leaving
-"Add to PATH" ticked.
+  · Windows 10 or 11, 64-bit
+  · Bitcoin Core or Bitcoin Knots on the same PC (pruned is fine)
 
-IMPORTANT: after installing, close every open Command Prompt window.
-A window opened before the install still has the old PATH and will
-report "node is not recognized".
+NodeSignal REQUIRES a Bitcoin node. The installer refuses to continue
+on a PC without one and tells you where to get Core or Knots.
 
-Open a NEW Command Prompt and check:
-
-    node -v
-
-
------------------------------------------------------------------------
-2. Put the files in one folder
------------------------------------------------------------------------
-For example  C:\NodeSignal\
-
-Required:
-
-    nodesignald.js        the daemon
-    noise.js              encryption
-    nodeps.js             http + websocket layer
-    install.js            the setup program
-    install-windows.bat   what you double-click
-
-Plus ONE interface file:
-
-    nodesignal.html       if this machine runs a Bitcoin node
-    nodesignal-demo.html  if it does not (demo peer)
+For NodeSignal to see your peers, the node must accept RPC: in Bitcoin
+Core or Knots open Settings > Options and tick "Enable RPC server", or
+add server=1 to bitcoin.conf, then restart it. bitcoind does this by
+default.
 
 
 -----------------------------------------------------------------------
-3. Run the installer
+1. Download
 -----------------------------------------------------------------------
-Double-click:
+    https://github.com/Connor-03/NodeSignal/releases/latest/download/NodeSignal-Setup-windows-x64.exe
 
-    install-windows.bat
+The file is NOT code-signed, so Windows SmartScreen will say "Windows
+protected your PC". Check the download first. Windows PowerShell, in
+your Downloads folder:
 
-It asks a short series of questions and checks each answer against your
-real system as it goes:
+    Get-FileHash .\NodeSignal-Setup-windows-x64.exe -Algorithm SHA256
 
-  · whether this machine runs a Bitcoin node
-  · your RPC details — it tries your cookie file and bitcoin.conf first
-    and only asks if it cannot work them out. It then actually connects
-    to bitcoind and prints the node's version, chain height and peer
-    count, so you know it works before setup finishes
-  · a display name other operators will see
-  · how peers reach you: Tailscale, Tor, localhost only, or clearnet
-  · which ports to use — it verifies they are genuinely free
-  · whether the web interface needs a login token, and can generate one
+Compare the result with the line for that file in SHA256SUMS.txt from
+the same release:
 
-It then writes:
+    https://github.com/Connor-03/NodeSignal/releases/latest/download/SHA256SUMS.txt
 
-    nodesignal-config.json   your settings, locked to your user account
-    run-nodesignal.bat       the launcher
-    a Desktop shortcut       (optional)
-
-and offers to add the Windows Firewall rule for the peer port.
-
-Finally it starts the daemon once to prove the configuration works.
+If it matches, choose "More info", then "Run anyway". The checksum
+catches a damaged or swapped download; it cannot prove the release
+itself is genuine.
 
 
 -----------------------------------------------------------------------
-4. Run it
+2. Run it
 -----------------------------------------------------------------------
-Double-click run-nodesignal.bat (or the Desktop shortcut) and leave the
-window open — that window IS the daemon.
+Double-click NodeSignal-Setup-windows-x64.exe. A console window opens
+and the installer:
 
-Then open the address the installer printed, normally:
+  1. looks for your Bitcoin node: a running bitcoind or bitcoin-qt, the
+     data folder %APPDATA%\Bitcoin (or the custom folder Bitcoin Core
+     remembers), and Bitcoin Core in Program Files. With none it stops
+     and nothing is installed.
+  2. refuses to run as administrator. NodeSignal runs as your own
+     account and never needs admin rights; double-click it normally.
+  3. gives NodeSignal its own RPC login. It adds an rpcauth= line for a
+     user called nodesignal to bitcoin.conf (a salted hash; the
+     password stays in NodeSignal's config.json, locked to your
+     account), plus an rpcwhitelist= line allowing exactly the three
+     read-only methods it calls:
+         rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo
+     and rpcwhitelistdefault=0 if bitcoin.conf has no whitelist lines
+     of its own, so anything else using your node's RPC keeps working.
+     The first change keeps the original as
+     bitcoin.conf.nodesignal-backup. NodeSignal never reads the
+     cookie file. An upgrade reuses the same login and changes nothing.
+  4. asks for a display name other operators will see (default: this
+     PC's name)
+  5. offers the two optional extras below, both defaulting to No
+  6. stops an older NodeSignal if one is running, and installs to
+     %LOCALAPPDATA%\NodeSignal (program in app\, settings in
+     config.json, log in nodesignal.log)
+  7. sets NodeSignal to start hidden when you sign in (a small launcher
+     in your Startup folder, no admin needed), adds a "NodeSignal"
+     Desktop shortcut and an entry in Settings > Apps for uninstalling
+  8. starts NodeSignal now, waits until it answers, and opens it in
+     your browser
+
+RESTART YOUR NODE after the first install: close Bitcoin Core or Knots
+and start it again. It reads bitcoin.conf only when it starts, so until
+then it does not know the nodesignal login and NodeSignal shows "Bitcoin
+RPC not connected" (it retries every 30 seconds). The installer says so
+and never restarts the node for you.
+
+Bitcoin Core's GUI (bitcoin-qt) only answers RPC with server=1 in
+bitcoin.conf, or with "Enable RPC server" ticked in its Options.
+
+There is no separate Windows account for NodeSignal, as there is on
+Linux: it runs as you, without admin rights, and its files are locked
+to your account.
+
+Your contacts, message history and encryption identity live in
+%USERPROFILE%\.nodesignal and are never touched by an upgrade.
+
+If Windows Firewall asks whether NodeSignal may communicate on
+networks, allowing private networks is enough unless you turned on port
+mapping.
+
+
+-----------------------------------------------------------------------
+3. Two optional extras (both off unless you say yes)
+-----------------------------------------------------------------------
+Advertise NodeSignal in your node's user agent: adds
+"uacomment=nodesignal" to bitcoin.conf (a one-time backup is kept as
+bitcoin.conf.nodesignal-backup). It is PUBLIC: every peer your node
+connects to will see it. It takes effect after you close and restart
+Bitcoin Core or Knots yourself; NodeSignal never restarts it.
+
+Router port mapping: NodeSignal asks your router (UPnP / NAT-PMP) to
+forward its peer port, so operators outside your network can reach you
+directly. It also means your node's public IP is visible to the
+operators you message, on clearnet. The installer then tries to add the
+Windows Firewall rule for the peer port; that needs admin, so usually
+it prints the command for you to run once in an ADMIN PowerShell:
+
+    netsh advfirewall firewall add rule name="NodeSignal 8788" dir=in action=allow protocol=TCP localport=8788
+
+Change either later. Windows PowerShell or Command Prompt:
+
+    & "$env:LOCALAPPDATA\NodeSignal\nodesignal.exe" advertise on      (PowerShell)
+    "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" port-mapping off       (Command Prompt)
+
+(on|off for both.)
+
+
+-----------------------------------------------------------------------
+4. Use it
+-----------------------------------------------------------------------
+Double-click the NodeSignal shortcut on your Desktop, or open:
 
     http://localhost:8789
+
+Commands, from Command Prompt (the program is not on PATH, so use its
+full path):
+
+    "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" status     is it running, is the node connected?
+    "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" logs       last lines of the log, and where it is
+    "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" restart
+    "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" stop
+    "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" start
+    "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" open
+
+Settings live in %LOCALAPPDATA%\NodeSignal\config.json (locked to your
+user account). The keys are the daemon's option names without the
+dashes, for example "nick" or "web-token". Edit it, then run the
+restart command above.
+
+
+-----------------------------------------------------------------------
+5. Upgrade or uninstall
+-----------------------------------------------------------------------
+Upgrade: download the newer NodeSignal-Setup-windows-x64.exe and run
+it. It stops the running copy, replaces the program and starts it
+again. Settings and history are kept.
+
+Uninstall: Settings > Apps > NodeSignal > Uninstall, or from Command
+Prompt:
+
+    "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" uninstall
+
+It stops NodeSignal, removes the program, the sign-in launcher, the
+Desktop shortcut and the Apps entry, and offers to remove
+uacomment=nodesignal and NodeSignal's RPC login from bitcoin.conf. Your
+settings and history are kept. --purge also removes the settings, the
+log and the RPC login (without asking), but still never your identity
+key and history in %USERPROFILE%\.nodesignal: delete that folder
+yourself if you want them gone. Restart your node after either.
 
 
 -----------------------------------------------------------------------
@@ -88,17 +179,63 @@ Notes
 PRUNED NODES are fully supported. NodeSignal only calls getpeerinfo,
 getnetworkinfo and getblockchaininfo, none of which need block history.
 
+A CUSTOM DATA FOLDER (for example on another drive) is found through
+the setting Bitcoin Core keeps in the registry, or while the node is
+running. If NodeSignal still cannot find it, point it at the right
+bitcoin.conf. Command Prompt:
+
+    "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" rpc-access add --bitcoin-conf "D:\Bitcoin\bitcoin.conf"
+
+then restart Bitcoin Core or Knots. "rpc-access show" prints what is
+there (never the password).
+
 FIREWALL: if other operators cannot reach you, the peer port is blocked.
-Run this once in an ADMIN PowerShell:
-
-    netsh advfirewall firewall add rule name="NodeSignal 8788" dir=in action=allow protocol=TCP localport=8788
-
-CHANGING SETTINGS later: edit nodesignal-config.json and restart, or run
-install-windows.bat again to redo setup.
-
-UNATTENDED INSTALL: the installer reads piped input, so you can script
-it:  node install.js < answers.txt
+Run the netsh command from section 3 once in an ADMIN PowerShell.
 
 TOR: see TorSetupGuide.txt. Tor needs no port forwarding.
 
 Problems: see Troubleshooting.txt
+
+
+-----------------------------------------------------------------------
+From source (secondary)
+-----------------------------------------------------------------------
+For a git checkout with your own Node.js. There is no npm step:
+NodeSignal has zero dependencies. If you are following an older guide
+that says "npm.cmd install", skip that line; it is obsolete.
+
+1. Install the LTS build of Node.js from https://nodejs.org, leaving
+   "Add to PATH" ticked. Close every open Command Prompt window
+   afterwards: a window opened before the install still has the old
+   PATH and will report "node is not recognized". Open a NEW Command
+   Prompt and check:
+
+       node -v
+
+2. Get the repository (git clone, or download the ZIP and extract it),
+   for example to C:\NodeSignal\. Keep every file together.
+
+3. Double-click install-windows.bat. It runs install.js, which asks a
+   short series of questions and checks each answer against your real
+   system: it refuses to continue without a Bitcoin node, actually
+   adds NodeSignal's own RPC login (rpcauth and rpcwhitelist, as
+   above) to bitcoin.conf, connects to bitcoind if the node already
+   knows that login and prints the node's version and chain height,
+   asks for a display name, how peers reach you (Tailscale,
+   Tor, localhost only, or clearnet), verifies the ports are free,
+   offers a login token and the same two optional extras. It writes
+   nodesignal-config.json (locked to your user account),
+   run-nodesignal.bat and, if you want, a Desktop shortcut, then starts
+   the daemon once to prove the configuration works.
+
+4. Double-click run-nodesignal.bat and leave the window open: that
+   window IS the daemon. From source there is no start at sign-in.
+
+UNATTENDED from source: the installer reads piped input, so you can
+script it. Command Prompt, in the repository folder:
+
+    node install.js < answers.txt
+
+start-node.bat is a manual launcher that runs the daemon in a window,
+using nodesignal-config.json when it exists. Like install.js, never run
+it from an administrator window.

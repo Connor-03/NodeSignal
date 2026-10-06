@@ -1,0 +1,25 @@
+#!/bin/sh
+# nodesignal prerm: stop (and on removal, disable) the service.
+set -e
+
+if [ -d /run/systemd/system ]; then
+  case "$1" in
+    remove|deconfigure)
+      systemctl stop nodesignal.service >/dev/null 2>&1 || true
+      systemctl disable nodesignal.service >/dev/null 2>&1 || true
+      ;;
+    upgrade)
+      systemctl stop nodesignal.service >/dev/null 2>&1 || true
+      ;;
+  esac
+fi
+
+if [ "$1" = "remove" ]; then
+  for c in /etc/bitcoin/bitcoin.conf /var/lib/bitcoind/bitcoin.conf /var/lib/bitcoin/bitcoin.conf /home/*/.bitcoin/bitcoin.conf /root/.bitcoin/bitcoin.conf; do
+    if [ -f "$c" ] && grep -qs '^[[:space:]]*uacomment[[:space:]]*=[[:space:]]*nodesignal' "$c"; then
+      echo "Note: $c still advertises NodeSignal (uacomment=nodesignal)."
+      echo "      Remove that line yourself and restart your node if you no longer want it."
+    fi
+  done
+fi
+exit 0

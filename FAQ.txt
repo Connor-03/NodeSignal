@@ -1,4 +1,4 @@
-NodeSignal — Frequently Asked Questions
+NodeSignal: Frequently Asked Questions
 =======================================================================
 
 
@@ -36,10 +36,11 @@ Does it work with Bitcoin Knots?
     Yes.
 
 Do I need a full node?
-    To see your node's peers on the map, yes — that data comes from your
-    node. But you can also run NodeSignal with no node at all: it still
-    sends and receives messages, it just has no peer map of its own.
-    Choose "messaging peer only" during setup.
+    Yes. NodeSignal is for node operators: the map, peer identification
+    and discovery all come from your node, and the installers refuse to
+    finish without Bitcoin Core or Knots on the machine. If the node is
+    installed but not running yet, setup still completes and the daemon
+    connects once bitcoind is up.
 
 Can I use a pruned node?
     Yes, fully. NodeSignal only calls getpeerinfo, getnetworkinfo and
@@ -52,8 +53,12 @@ Do I need to install anything with npm?
     No. NodeSignal has zero dependencies and uses only Node.js itself.
     If a guide tells you to run "npm install", it is out of date.
 
+Do I need to install Node.js?
+    Not with the installers: the Windows .exe and the Ubuntu .deb carry
+    their own copy. Only the from-source install needs Node.js 18+.
+
 What are the ports?
-    8789  web interface and API      (inbound)
+    8789  web interface and API      (this machine only)
     8788  messaging between daemons  (inbound)
     8333  peer identification        (outbound only)
     8332  your bitcoind RPC          (localhost only)
@@ -71,8 +76,15 @@ Does Tor require port forwarding?
     No.
 
 Can I use Tailscale?
-    Yes. The daemon detects a Tailscale interface and binds to it
-    automatically, keeping itself off the public internet.
+    Yes. The daemon detects a Tailscale interface and binds its peer
+    port to it automatically, keeping itself off the public internet.
+
+Can I open the console from another computer?
+    Through an SSH tunnel: on that computer run
+    ssh -L 8789:127.0.0.1:8789 <you>@<node> and open
+    http://localhost:8789. The console listens on the node's loopback
+    only and refuses any other address, so no web page anywhere can
+    reach it, including through DNS rebinding.
 
 Can I use clearnet?
     Yes, but it publishes the link between your identity and your node's
@@ -82,8 +94,19 @@ Does it support IPv4 and IPv6?
     Yes, both.
 
 Do I need to forward ports?
-    Only for clearnet, where peers need to reach TCP 8788. Tor and
-    Tailscale need no forwarding.
+    Usually not. Only one of two operators needs to be reachable: when a
+    peer you cannot reach connects to you, what you have waiting for it
+    goes back over its connection. Tor and Tailscale need no forwarding
+    at all. If neither of you is reachable, "nodesignal port-mapping on"
+    asks your router to forward the port (opt-in: it makes your IP
+    public).
+
+How do I find other operators who run NodeSignal?
+    Peers whose node advertises it are marked "advertises NodeSignal" on
+    the map. To be found yourself, run "nodesignal advertise on" and
+    restart bitcoind; it adds uacomment=nodesignal to bitcoin.conf, which
+    every peer of your node can see. It is self-declared, like any user
+    agent.
 
 
 USING IT
@@ -92,32 +115,49 @@ USING IT
 Can I message someone who is not running NodeSignal?
     No. They need the daemon running. You can still see them on your map
     as one of your node's peers, and identify their node, but messages
-    have nowhere to arrive.
+    have nowhere to arrive. A message to them waits and retries for a
+    day, then reports that it gave up.
+
+What if the other operator is offline?
+    The message waits on your daemon and is retried (30 seconds at
+    first, then up to hourly) for 7 days, and goes out the moment they
+    reconnect. It shows "not delivered yet, retrying" with the reason.
+    You can cancel it or retry now.
 
 Why is a peer's line dashed instead of solid?
     Solid lines mean a confirmed two-way NodeSignal exchange. A peer you
-    added but who has never replied stays dashed. That is deliberate —
+    added but who has never replied stays dashed. That is deliberate:
     it tells you at a glance who is really reachable.
 
 What is the blinking green dot?
     That peer is established AND was seen recently, so you can message
     them right now.
 
-A peer shows "not identified" — is something broken?
+A peer shows "not identified": is something broken?
     No. Nothing answered on its port 8333. That is normal for machines
     with no Bitcoin node, such as a laptop running only NodeSignal.
     Messaging is unaffected.
 
 What is the PIN?
     There is no PIN any more. Older versions used a shared PIN, which
-    was weak. Encryption now uses an authenticated key exchange with no
-    shared secret to agree in advance.
+    was weak. Encryption now uses a standard Noise handshake with no
+    shared secret to agree in advance. v1.3 removed the PIN code.
 
 Where is my data?
-    ~/.nodesignal/state.json  (Linux)
+    /var/lib/nodesignal/state.json  (Linux, .deb or install-node.sh)
+    ~/.nodesignal/state.json  (Linux, if you run install.js yourself)
     C:\\Users\\<you>\\.nodesignal\\state.json  (Windows)
     It holds your contacts, message history and encryption identity.
     Upgrades never touch it.
+
+Does NodeSignal need root, or my node's cookie?
+    Neither. On Linux it runs as its own "nodesignal" system user. It
+    logs in to your node with its own RPC user, limited by rpcwhitelist
+    to getblockchaininfo, getnetworkinfo and getpeerinfo; setup writes
+    the rpcauth line (a hash) to bitcoin.conf and keeps the password in
+    NodeSignal's own locked config. Restart your node once after
+    installing so it reads that line. On Windows it runs as you, without
+    admin rights.
 
 How do I change settings after installing?
     Edit nodesignal-config.json and restart, or run the installer again.
@@ -131,18 +171,22 @@ Is it encrypted?
     See Security.txt.
 
 Are messages encrypted on disk?
-    No. This is a known weakness. Anyone with filesystem access can read
-    your history.
+    Yes, once you set a history passphrase (the console offers it).
+    Message text is then sealed on disk and you unlock it after each
+    restart; the daemon keeps receiving while locked. Without a
+    passphrase, history is stored in the clear. Metadata (who and when)
+    is not hidden either way. There is no passphrase recovery.
 
 What is the red "identity mismatch" banner?
     That address presented a different encryption key than the one
     pinned on first contact. Either they reinstalled, or someone is
-    impersonating them. Confirm out-of-band before re-adding them.
+    impersonating them. The conversation shows both fingerprints;
+    confirm the new one with them out-of-band before you accept it.
 
 Can someone pretend to run Bitcoin Knots when they do not?
     Yes. Every claim about a node is self-declared. NodeSignal has an
-    --impersonate option that does exactly this, deliberately, so the
-    limitation is visible rather than hidden.
+    --impersonate option (for testing) that does exactly this, and flags
+    it as simulated, so the limitation is visible rather than hidden.
 
 Is it safe to run on my node?
     It opens two new listening ports on a machine you probably keep

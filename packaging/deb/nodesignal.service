@@ -1,0 +1,48 @@
+# NodeSignal systemd unit, installed by the nodesignal .deb.
+# Runs as the dedicated "nodesignal" system user that "nodesignal setup"
+# creates, never as root and never as the node's user. It logs in to the node
+# with its own rpcauth user (limited by rpcwhitelist), so it needs no access
+# to the node's data directory or cookie.
+# Settings live in /etc/nodesignal/config.json (keys are the daemon's flag
+# names), so no secret ever appears on this command line.
+[Unit]
+Description=NodeSignal: encrypted chat between Bitcoin node operators
+Documentation=https://github.com/Connor-03/NodeSignal
+After=network-online.target bitcoind.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nodesignal
+Group=nodesignal
+StateDirectory=nodesignal
+StateDirectoryMode=0700
+ExecStart=/opt/nodesignal/node /opt/nodesignal/nodesignald.js --config /etc/nodesignal/config.json --web-root /opt/nodesignal
+WorkingDirectory=/opt/nodesignal
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+# Hardening. The daemon only needs to read its config, write
+# /var/lib/nodesignal, and open TCP/UDP sockets.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

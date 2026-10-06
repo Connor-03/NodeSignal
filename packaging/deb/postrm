@@ -1,0 +1,58 @@
+#!/bin/sh
+# nodesignal postrm: purge removes /etc/nodesignal, the old systemd drop-in
+# and NodeSignal's rpcauth/rpcwhitelist block in bitcoin.conf.
+# It NEVER removes the state directory (/var/lib/nodesignal, or an older
+# install's ~/.nodesignal): that holds the identity key and message history.
+# The nodesignal system user is kept too, as Debian does for system users.
+# NODESIGNAL_TEST_ROOT runs it against a fake filesystem with no systemctl.
+set -e
+
+R="${NODESIGNAL_TEST_ROOT:-}"
+BEGIN='# NodeSignal RPC access: begin'
+END='# NodeSignal RPC access: end'
+
+# Delete the lines from the begin marker to the end marker (and the blank
+# line setup put between the block and a following [section]). Rewritten in
+# place with cat so bitcoin.conf keeps its owner, mode and inode. A begin
+# marker with no end marker is left alone rather than guessed at.
+remove_rpc_block() {
+  conf="$1"
+  [ -f "$conf" ] || return 0
+  grep -q "^$BEGIN" "$conf" || return 0
+  if ! grep -q "^$END" "$conf"; then
+    echo "Left $conf alone: its NodeSignal block has no end marker. Remove the rpcauth=nodesignal lines by hand."
+    return 0
+  fi
+  tmp="$(mktemp)"
+  awk -v b="$BEGIN" -v e="$END" '
+    s == 0 && index($0, b) == 1 { s = 1; next }
+    s == 1 { if (index($0, e) == 1) s = 2; next }
+    s == 2 { s = 3; if ($0 ~ /^\r?$/) { held = $0; pend = 1; next } }
+    pend == 1 { pend = 0; if ($0 !~ /^[ \t]*\[/) print held }
+    { print }
+    END { if (pend == 1) print held }
+  ' "$conf" > "$tmp"
+  cat "$tmp" > "$conf"
+  rm -f "$tmp"
+  echo "Removed NodeSignal's rpcauth and rpcwhitelist lines from $conf."
+  echo "Restart your Bitcoin node for that to take effect (for example: sudo systemctl restart bitcoind)."
+}
+
+case "$1" in
+  purge)
+    if [ -f "$R/etc/nodesignal/bitcoin-conf" ]; then
+      remove_rpc_block "$R$(head -n 1 "$R/etc/nodesignal/bitcoin-conf")"
+    fi
+    rm -rf "$R/etc/nodesignal"
+    rm -rf "$R/etc/systemd/system/nodesignal.service.d"
+    echo "NodeSignal settings removed. Your identity key and history were kept in"
+    echo "/var/lib/nodesignal; delete it yourself if you want."
+    ;;
+esac
+
+if [ -z "$R" ] && [ -d /run/systemd/system ]; then
+  case "$1" in
+    remove|purge) systemctl daemon-reload >/dev/null 2>&1 || true ;;
+  esac
+fi
+exit 0
