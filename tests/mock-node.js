@@ -75,6 +75,7 @@ function rpcServer({ port = 18332, host = '127.0.0.1', npeers = 22, nodesignalPe
     });
   });
   srv.reload = () => { ac = readAuthConf(conf); };          // a node restart, as far as RPC logins go
+  srv.peers = list;                                         // what getpeerinfo answers: tests may change it
   return new Promise((r) => srv.listen(port, host, () => r(srv)));
 }
 const MAGIC = Buffer.from('f9beb4d9', 'hex');
