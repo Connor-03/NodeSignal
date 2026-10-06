@@ -116,9 +116,11 @@ IP, a hostname, a domain, or a reverse proxy with no configuration.
 | `nodeps.js` | Static file server + RFC 6455 WebSocket server, stdlib only. |
 | `nodesignal.html` | **Operator console.** Real data only. Goes on a node. |
 | `nodesignal-demo.html` | **Retired.** Removed from the tree in `2d479c6`; the maintainer considers it obsolete. Do not restore it. The demo-only rules below apply only if it ever returns. |
-| `install.js` + `install-windows.bat` | Interactive Windows installer that verifies each answer. |
-| `install-node.sh` | Linux installer, writes a systemd unit. |
-| `start-node.bat` / `start-daemon.bat` | Manual Windows launchers. (`start-daemon.bat` still expects the retired demo file; fix when touched.) |
+| `packaging/` | One-download installers. `files.json` is THE list of program files (update it when adding a module). `build-sea.js` + `windows/sea-main.js` build `NodeSignal-Setup-windows-x64.exe` (Node SEA); `deb/` builds `nodesignal-linux-{amd64,arm64}.deb` with the official Node binary. Both require a Bitcoin node. |
+| `setup-core.js` + `cli.js` | Shared node detection / RPC check / config / uacomment editing, and the `nodesignal` command (status, advertise, port-mapping, setup). |
+| `.github/workflows/` | `ci.yml` (all tests, deb install under systemd, Windows exe selftest) and `release.yml` (tag `v*` -> release assets with stable names + SHA256SUMS.txt). |
+| `install.js` + `install-windows.bat`, `install-node.sh` | From-source installers; also require a node. |
+| `start-node.bat` | Manual Windows launcher for a from-source copy. |
 | `tools/screenshots/` | Publishable screenshots of the console from a fake daemon (`fixture-ws.js`). Optional Playwright. |
 | `tests/` | `console.test.js` (plain node), `console.e2e.js` (optional Playwright), `mock-node.js`. |
 
@@ -315,6 +317,17 @@ status table. Keep it current whenever security changes.
   behind NAT (8788 unreachable without Tailscale or Tor); finding which peers
   run NodeSignal at all; offline delivery (hold and retry instead of failing);
   setup friction (RPC credentials, ports, launch steps).
+
+### Open questions for the maintainer (from the v1.3 installer work)
+
+- `.deb` Maintainer field: currently the GitHub issues URL, not an email
+  (set `MAINTAINER` when building).
+- If bitcoind runs as root, the .deb runs NodeSignal as root (with a
+  warning). Alternative: a dedicated user plus rpcuser / `rpccookieperms`.
+- Windows: nothing restarts a crashed daemon until the next sign-in; the
+  .exe has no icon/version resource and is not code-signed.
+- Not yet run on real Windows or real arm64 hardware; CI covers the
+  Windows selftest.
 
 ### Website handoff (do this when NodeSignal is finished, not before)
 
