@@ -147,6 +147,8 @@ contacts, who will see a fingerprint mismatch.
 | `FAQ.txt` | common questions |
 | `Security.txt` | practical security guidance |
 | `SECURITY-CRITIQUE.md` | full adversarial threat model, including what is still weak |
+| `CHANGELOG.md` | what changed in each release |
+| `RELEASING.md` | how a release is built, dry-run and published |
 | `Troubleshooting.txt` | when something does not work |
 
 ## Honest limitations

@@ -8,7 +8,13 @@
 #   SHA256SUMS.txt
 #
 # Triggered by pushing a tag v* (for example v1.3.0), or by hand with a
-# version (the tag v<version> is created at the current commit if missing).
+# version. A run by hand is a DRY RUN unless "dry_run" is unticked: it builds,
+# tests and checks everything, and uploads the release notes and checksums as
+# an artifact, but creates no tag and no release. Unticked, the tag
+# v<version> is created at the current commit if missing.
+# Before publishing: the version must match package.json and the daemon's
+# user agent, and CHANGELOG.md must have a "## <version>" section, which
+# becomes the top of the release notes. See RELEASING.md.
 name: Release
 
 on:
@@ -19,6 +25,10 @@ on:
       version:
         description: 'Version to release, without the v (for example 1.3.0)'
         required: true
+      dry_run:
+        description: 'Dry run: build and check everything, publish nothing'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -33,7 +43,9 @@ jobs:
     outputs:
       version: ${{ steps.v.outputs.version }}
       tag: ${{ steps.v.outputs.tag }}
+      publish: ${{ steps.v.outputs.publish }}
     steps:
+      - uses: actions/checkout@v4
       - id: v
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -45,6 +57,37 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "tag=v$v" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = "push" ] || [ "${{ inputs.dry_run }}" = "false" ]; then publish=true; else publish=false; fi
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "version $v, publish: $publish"
+      - name: The version agrees everywhere
+        env:
+          V: ${{ steps.v.outputs.version }}
+          PUBLISH: ${{ steps.v.outputs.publish }}
+        run: |
+          status=0
+          pkg="$(node -p 'require("./package.json").version')"
+          [ "$pkg" = "$V" ] || { echo "::error::package.json says $pkg, releasing $V"; status=1; }
+          ua="$(sed -n "s#^const UA = '/NodeSignal:\([0-9.]*\)/';#\1#p" nodesignald.js)"
+          case "$V" in "$ua" | "$ua".*) ;; *) echo "::error::nodesignald.js user agent says $ua, releasing $V"; status=1 ;; esac
+          head="$(grep -m1 -E "^## $(printf '%s' "$V" | sed 's/[.]/[.]/g')( |$)" CHANGELOG.md || true)"
+          if [ -z "$head" ]; then echo "::error::CHANGELOG.md has no '## $V' section"; status=1
+          elif printf '%s' "$head" | grep -qi 'not yet released'; then
+            if [ "$PUBLISH" = "true" ]; then echo "::error::CHANGELOG.md still says '$head'; put the release date there first"; status=1
+            else echo "::warning::CHANGELOG.md still says '$head' (fine for a dry run)"; fi
+          fi
+          exit $status
+
+  tests:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Every test suite
+        run: node tests/run-all.js
 
   deb:
     needs: version
@@ -101,7 +144,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [version, deb, windows]
+    needs: [version, tests, deb, windows]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -109,6 +152,9 @@ jobs:
       TAG: ${{ needs.version.outputs.tag }}
       VERSION: ${{ needs.version.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
+        with:
+          path: src
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -125,14 +171,21 @@ jobs:
       - name: Release notes
         run: |
           RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          # this version's CHANGELOG section, without its own heading
+          awk -v v="$VERSION" '
+            index($0, "## " v) == 1 && (length($0) == length(v) + 3 || substr($0, length(v) + 4, 1) == " ") { on = 1; next }
+            on && /^## / { exit }
+            on { print }
+          ' src/CHANGELOG.md > changes.md
+          test -s changes.md || { echo "::error::no CHANGELOG.md section for $VERSION"; exit 1; }
           cat > notes.md <<NOTES
           NodeSignal $VERSION
 
-          NodeSignal requires a Bitcoin node (Bitcoin Core or Bitcoin Knots) on the same machine. The installers refuse to continue without one.
+          NodeSignal requires a Bitcoin node (Bitcoin Core or Bitcoin Knots) on the same machine. The installers refuse to continue without one. Restart your node once after installing so it reads NodeSignal's new RPC login.
 
           | Download | For |
           |---|---|
-          | NodeSignal-Setup-windows-x64.exe | Windows 10 or 11, 64-bit. Double-click; no admin needed. |
+          | NodeSignal-Setup-windows-x64.exe | Windows 10 or 11, 64-bit. Double-click it normally; it refuses to run as administrator and needs no admin rights. |
           | nodesignal-linux-amd64.deb | Ubuntu, Debian and other 64-bit PCs. |
           | nodesignal-linux-arm64.deb | Raspberry Pi OS 64-bit and other arm64 boards. |
 
@@ -150,9 +203,23 @@ jobs:
           Built by GitHub Actions from commit $GITHUB_SHA: $RUN_URL
 
           Install guides: WindowsInstallGuide.txt and LinuxInstallGuide.txt in the repository.
+
+          ## What changed
           NOTES
+          cat changes.md >> notes.md
           cat notes.md
+      - name: Keep the notes and checksums (dry runs too)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: |
+            notes.md
+            dist/SHA256SUMS.txt
+      - name: Dry run, nothing published
+        if: needs.version.outputs.publish != 'true'
+        run: echo "::notice::Dry run for $TAG. Built, tested and checked; no tag and no release were created. Notes and checksums are in the release-notes artifact."
       - name: Create or update the release
+        if: needs.version.outputs.publish == 'true'
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release edit "$TAG" --notes-file notes.md
