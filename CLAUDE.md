@@ -446,24 +446,25 @@ dates, partners); no tokens, private hostnames, IPs or peer addresses; the
 daemon's own web app is private and must not be linked; BIP-110 is a failed
 proposal, mention only as history.
 
-Maintainer's approved copy, to be kept word for word where used:
+Maintainer's approved copy, to be kept word for word where used. Corrected in
+Oct 2026 at the maintainer's request: the original said "carried by the
+Bitcoin P2P network" (messages never travel over Bitcoin P2P), "verified node
+operators" (the node is verified, not the person) and "what they are signaling
+for" (user-agent declarations, not signalling). `docs/website/HANDOFF.md`
+records the change.
 
 > Inspired by my research into the Core vs Knots debate, I wanted an
-> effective communication system, carried by the Bitcoin P2P network, that
-> lets verified node operators talk to each other, display what they are
-> signaling for, and hold a proper discussion on relay and consensus. It uses
-> node peers for contact discovery, maps the connections, and opens its own
-> authenticated channel between daemons so two operators can chat with no
-> third party in between.
+> effective communication system, found through the Bitcoin P2P network, that
+> lets operators of verified nodes talk to each other, display what their
+> nodes declare support for, and hold a proper discussion on relay and
+> consensus. It uses node peers for contact discovery, maps the connections,
+> and opens its own authenticated channel between daemons so two operators
+> can chat with no third party in between.
 
-Short version: "Encrypted messaging between node operators, carried by the
+Short version: "Encrypted messaging between node operators, found through the
 P2P network they already run. No third party in the middle."
 
-**Flag this, do not silently fix it:** "carried by the (Bitcoin) P2P network"
-contradicts the README and section 1 of this file. Messages never travel over
-Bitcoin P2P; the node only provides discovery and identity. Propose wording
-such as "found through the P2P network they already run" and let the
-maintainer approve it. Related story link: https://bpi.connoraherne.com.
+Related story link: https://bpi.connoraherne.com.
 
 ---
 

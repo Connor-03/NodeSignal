@@ -7,59 +7,46 @@ verification; they do not need to appear on the site.
 
 ---
 
-## Needs the maintainer's approval (read first)
+## Approved copy (use word for word)
 
-The maintainer's approved copy says messages are "carried by the Bitcoin P2P
-network". **That is not how NodeSignal works.** Messages never travel over
-Bitcoin P2P: the Bitcoin protocol has no message type that can carry chat,
-and nodes disconnect peers that send unknown messages. The node only
-provides **discovery** (`getpeerinfo`) and **identity** (a read-only
-`version`/`verack` handshake on port 8333). The messages themselves go
-daemon to daemon on TCP 8788, in a separate encrypted channel. The README
-says this in bold, and it is the project's founding design decision.
+The maintainer's original copy said messages are "carried by the Bitcoin P2P
+network". That is not how NodeSignal works: the node only provides
+**discovery** (`getpeerinfo`) and **identity** (a read-only
+`version`/`verack` handshake on port 8333), and messages go daemon to daemon
+on TCP 8788 in a separate encrypted channel. The maintainer asked for the copy
+to be corrected (Oct 2026). These are the versions to use, word for word.
 
-Until the maintainer approves new wording, use the approved text exactly as
-written below, or leave it out. Do not reword it on your own.
-
-**Long version, approved copy (word for word):**
+**Long version:**
 
 > Inspired by my research into the Core vs Knots debate, I wanted an
-> effective communication system, carried by the Bitcoin P2P network, that
-> lets verified node operators talk to each other, display what they are
-> signaling for, and hold a proper discussion on relay and consensus. It uses
-> node peers for contact discovery, maps the connections, and opens its own
-> authenticated channel between daemons so two operators can chat with no
-> third party in between.
+> effective communication system, found through the Bitcoin P2P network, that
+> lets operators of verified nodes talk to each other, display what their
+> nodes declare support for, and hold a proper discussion on relay and
+> consensus. It uses node peers for contact discovery, maps the connections,
+> and opens its own authenticated channel between daemons so two operators
+> can chat with no third party in between.
 
-Proposed change, for the maintainer to approve or reject: replace "carried by
-the Bitcoin P2P network" with "found through the Bitcoin P2P network".
+What changed from the original, and why:
 
-**Short version, approved copy (word for word):**
+- "carried by" became "found through": peers are found through the P2P
+  network; messages never travel over it.
+- "verified node operators" became "operators of verified nodes": NodeSignal
+  verifies that an address answers a real Bitcoin handshake and keeps the same
+  key; the person behind it is not verified.
+- "display what they are signaling for" became "display what their nodes
+  declare support for": these are BIP numbers an operator writes into their
+  node's user agent, a declaration, not version-bit or miner signalling.
 
-> Encrypted messaging between node operators, carried by the P2P network
+**Short version (also the one-line pitch):**
+
+> Encrypted messaging between node operators, found through the P2P network
 > they already run. No third party in the middle.
-
-Proposed change: "Encrypted messaging between node operators, found through
-the P2P network they already run. No third party in the middle."
-
-Two smaller points in the long version, for the maintainer to consider (no
-change proposed without him):
-
-- "verified node operators": what NodeSignal verifies is that an address
-  answers a real Bitcoin `version` handshake and holds the same identity key
-  as last time. Who the operator is, and what their node claims to be, is
-  self-declared.
-- "display what they are signaling for": this is BIP numbers that an
-  operator wrote into their node's user agent. It is a declaration, not
-  version-bit or miner signalling.
 
 Related story link (from the maintainer): https://bpi.connoraherne.com
 
 ---
 
 ## One-line pitch
-
-Pending the approval above, use the proposed short version:
 
 Encrypted messaging between node operators, found through the P2P network
 they already run. No third party in the middle.
