@@ -4,13 +4,20 @@
 // the daemon files, setup-core.js and cli.js embedded as SEA assets.
 //
 //   (no arguments)      interactive installer: double-click it
-//   run                 run the daemon (what the hidden Startup launcher calls)
+//   run                 the supervisor (what the hidden Startup launcher calls):
+//                       starts the daemon as a child process and restarts it
+//                       when it stops (see "process control" below)
 //   start | stop | restart
 //   selftest --rpc-url U --rpc-user X --rpc-pass Y
 //                       non-interactive install into a temp folder, run, check
 //                       /health, clean up; exit 0 or 1 (for CI, mock node only)
 //   uninstall [--purge]
 //   anything else       handled by cli.js (status, advertise, port-mapping, ...)
+//
+// Internal, not for people: __daemon (the daemon itself, started by the
+// supervisor), __crash (exits 7) and __supervise-test --scale F (the
+// supervisor with __crash as its child and timing multiplied by F); the last
+// two exist only for the selftest.
 //
 // --root <dir> moves the whole install (default %LOCALAPPDATA%\NodeSignal).
 //
@@ -211,11 +218,17 @@ function processImage(pid) {
   }
   try { return path.basename(fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0')[0]); } catch { return null; }
 }
-function killPid(pid) {
+// tree: Windows also ends the process's children (taskkill /T), which is how
+// the supervisor and its daemon go down together. hard: SIGKILL elsewhere.
+// On Windows every kill is forced: a hidden console process has no window to
+// receive a polite close. The daemon writes state atomically within 100 ms
+// of every change, so little can be lost.
+function killPid(pid, { tree = false, hard = false } = {}) {
   if (IS_WIN) {
-    try { execFileSync('taskkill', ['/PID', String(pid), '/F'], { stdio: 'ignore', timeout: 15000, windowsHide: true }); return true; } catch { return false; }
+    const a = ['/PID', String(pid), ...(tree ? ['/T'] : []), '/F'];
+    try { execFileSync('taskkill', a, { stdio: 'ignore', timeout: 15000, windowsHide: true }); return true; } catch { return false; }
   }
-  try { process.kill(pid, 'SIGTERM'); return true; } catch { return false; }
+  try { process.kill(pid, hard ? 'SIGKILL' : 'SIGTERM'); return true; } catch { return false; }
 }
 // Remove our own exe after we exit: a running .exe cannot delete itself.
 function scheduleSelfDelete(exe, dir) {
@@ -226,19 +239,58 @@ function scheduleSelfDelete(exe, dir) {
   child.unref();
 }
 
-/* ------------------------------------------------------------ process control */
-function readPid(L) { try { return Number(fs.readFileSync(L.pid, 'utf8').trim()) || 0; } catch { return 0; } }
+/* ------------------------------------------------------------ process control
+   `run` is a supervisor. It writes its own pid to nodesignal.pid, starts the
+   daemon as a child (this same executable with `__daemon`), writes the
+   child's pid to nodesignal-daemon.pid, and starts it again when it stops:
+   1s, 2s, 4s ... capped at 60s, back to 1s once a daemon has stayed up 10
+   minutes, and it gives up (logging why, exit 1) at the 5th crash within 10
+   minutes. Every line it writes to nodesignal.log starts "supervisor:".
+
+   Stopping: `stop`, `restart`, the installer and `uninstall` all call
+   stopRunning(). On Windows that is `taskkill /PID <supervisor> /T /F`,
+   which ends the supervisor and the daemon together. Elsewhere it sends
+   SIGTERM to the supervisor, which forwards SIGTERM to the daemon, waits for
+   it and exits 0. Either way the daemon pid file is checked afterwards and a
+   daemon left behind is ended too. The daemon also guards itself: its stdin
+   is a pipe from the supervisor, and when that closes (the supervisor died,
+   or was ended without /T) it shuts down cleanly instead of running on
+   unsupervised. */
+const daemonPidPath = (L) => path.join(L.root, 'nodesignal-daemon.pid');
+function readPidFile(file) { try { return Number(fs.readFileSync(file, 'utf8').trim()) || 0; } catch { return 0; } }
+function readPid(L) { return readPidFile(L.pid); }
 function ourImages(L) { return new Set([path.basename(L.exe).toLowerCase(), path.basename(process.execPath).toLowerCase()]); }
-async function stopRunning(L, quiet = false) {
-  const pid = readPid(L);
+// A live process running our executable (never ourselves): a stale pid file
+// must not make us kill an unrelated program that reused the number.
+function isOurs(L, pid) {
   if (!pid || pid === process.pid) return false;
   const img = processImage(pid);
-  if (!img || !ourImages(L).has(img.toLowerCase())) { try { fs.unlinkSync(L.pid); } catch { } return false; }
-  if (!quiet) say(`  Stopping the running NodeSignal (pid ${pid})...`);
-  killPid(pid);
-  for (let i = 0; i < 40 && processImage(pid); i++) await sleep(250);
-  try { fs.unlinkSync(L.pid); } catch { }
-  return true;
+  return !!img && ourImages(L).has(img.toLowerCase());
+}
+async function waitGone(pid, ms) {
+  for (let t = 0; t < ms && processImage(pid); t += 250) await sleep(250);
+  return !processImage(pid);
+}
+async function stopRunning(L, quiet = false) {
+  const sup = readPid(L);
+  const kid = readPidFile(daemonPidPath(L));
+  let stopped = false;
+  // nodesignal.pid holds the supervisor (or, from a version before the
+  // supervisor, the daemon itself; ending it works the same way)
+  if (isOurs(L, sup)) {
+    if (!quiet) say(`  Stopping the running NodeSignal (pid ${sup})...`);
+    killPid(sup, { tree: true });
+    if (!(await waitGone(sup, 15000)) && !IS_WIN) { killPid(sup, { hard: true }); await waitGone(sup, 3000); }
+    stopped = true;
+  }
+  // The daemon normally goes with its supervisor; this catches one left behind.
+  if (isOurs(L, kid)) {
+    killPid(kid);
+    if (!(await waitGone(kid, 5000))) { killPid(kid, { hard: true }); await waitGone(kid, 5000); }
+    stopped = true;
+  }
+  for (const f of [L.pid, daemonPidPath(L)]) { try { fs.unlinkSync(f); } catch { } }
+  return stopped;
 }
 function startDetached(L, startupFile) {
   if (IN_SEA && IS_WIN && startupFile && fs.existsSync(startupFile)) { runLauncher(startupFile); return; }
@@ -251,7 +303,7 @@ function startDetached(L, startupFile) {
 
 /* ------------------------------------------------------------ run */
 const LOG_MAX = 5 * 1024 * 1024;
-function redirectOutput(file) {
+function redirectOutput(file, { fatalMonitor = true } = {}) {
   let fd = null, size = 0;
   const open = () => { fd = fs.openSync(file, 'a'); size = fs.fstatSync(fd).size; };
   const rotate = () => {
@@ -274,26 +326,182 @@ function redirectOutput(file) {
   process.stderr.write = wrap(process.stderr.write.bind(process.stderr));
   // A crash is printed by Node straight to the console, not through
   // process.stderr.write, so record it here. The monitor does not change
-  // how the process exits.
-  process.on('uncaughtExceptionMonitor', (err, origin) => {
+  // how the process exits. Under the supervisor, which already copies the
+  // daemon's raw stderr into the log, it is off so a crash is not logged twice.
+  if (fatalMonitor) process.on('uncaughtExceptionMonitor', (err, origin) => {
     try { fs.writeSync(fd, `${new Date().toISOString()}  fatal (${origin}): ${(err && err.stack) || err}\n`); } catch { }
   });
 }
-function cmdRun(L) {
+function installedOk(L) {
   const main = path.join(L.app, 'nodesignald.js');
-  if (!fs.existsSync(main)) { say(`NodeSignal is not installed in ${L.root} (missing ${main}). Run the installer.`); return 1; }
-  if (!fs.existsSync(L.config)) { say(`Missing ${L.config}. Run the installer again.`); return 1; }
+  if (!fs.existsSync(main)) { say(`NodeSignal is not installed in ${L.root} (missing ${main}). Run the installer.`); return false; }
+  if (!fs.existsSync(L.config)) { say(`Missing ${L.config}. Run the installer again.`); return false; }
+  return true;
+}
+// `run`: the supervisor.
+function cmdRun(L) {
+  if (!installedOk(L)) return 1;
+  return supervise(L, { childArgs: ['__daemon'] });
+}
+// `__daemon`: the daemon itself, in this process. Started by the supervisor.
+function cmdDaemon(L) {
+  if (!installedOk(L)) return 1;
+  const main = path.join(L.app, 'nodesignald.js');
   fs.mkdirSync(L.root, { recursive: true });
-  redirectOutput(L.log);
-  process.stdout.write(`\n---- NodeSignal ${VERSION} starting, pid ${process.pid}, ${new Date().toISOString()} ----\n`);
-  fs.writeFileSync(L.pid, String(process.pid));
-  process.on('exit', () => {
-    try { if (readPid(L) === process.pid) fs.unlinkSync(L.pid); } catch { }
-  });
+  redirectOutput(L.log, { fatalMonitor: !process.env.NODESIGNAL_STDERR_CAPTURED });
+  process.stdout.write(`\n---- NodeSignal ${VERSION} daemon starting, pid ${process.pid}, ${new Date().toISOString()} ----\n`);
+  if (process.env.NODESIGNAL_SUPERVISOR_PID) {
+    // Orphan guard: stdin is a pipe from the supervisor. It closes when the
+    // supervisor is gone (or, on Windows, asks us to stop), and then we shut
+    // down cleanly through the daemon's own SIGTERM handler.
+    let leaving = false;
+    const leave = () => {
+      if (leaving) return; leaving = true;
+      setTimeout(() => process.exit(0), 5000);
+      if (process.listenerCount('SIGTERM')) process.emit('SIGTERM', 'SIGTERM'); else process.exit(0);
+    };
+    for (const ev of ['end', 'close', 'error']) process.stdin.on(ev, leave);
+    process.stdin.resume();
+  }
   process.chdir(L.app);
   process.argv = [process.execPath, main, '--config', L.config, '--web-root', L.app];
   Module.createRequire(main)(main);
   return null; // keep running: the daemon owns the event loop now
+}
+
+/* supervise: run `childArgs` (a subcommand of this executable) as a child and
+   restart it on exit. Timing is exactly as documented above unless `scale`
+   is given; only the selftest (__supervise-test) passes one, to fit the same
+   policy into a few seconds. Never resolves for `run`: it exits the process. */
+const SUPERVISOR = { backoffMs: 1000, maxBackoffMs: 60000, crashLimit: 5, windowMs: 10 * 60000, stableMs: 10 * 60000, stopGraceMs: 10000 };
+function supervise(L, { childArgs, scale = 1 }) {
+  fs.mkdirSync(L.root, { recursive: true });
+  const tty = !!process.stdout.isTTY;
+  const write = (line) => {
+    try { fs.appendFileSync(L.log, line); } catch { }
+    if (tty) process.stdout.write(line);
+  };
+  const log = (s) => write(`${new Date().toISOString()}  supervisor: ${s}\n`);
+
+  const other = readPid(L);
+  if (isOurs(L, other)) {
+    say(`NodeSignal is already running (pid ${other}).`);
+    log(`not starting a second copy: NodeSignal is already running (pid ${other})`);
+    return 0;
+  }
+  fs.writeFileSync(L.pid, String(process.pid));
+  const kidFile = daemonPidPath(L);
+  const scaled = scale === 1 ? '' : ` (test scale ${scale})`;
+  write(`\n---- NodeSignal ${VERSION} starting, ${new Date().toISOString()} ----\n`);
+  log(`started, pid ${process.pid}; it restarts the daemon if it stops${scaled}`);
+
+  const C = SUPERVISOR;
+  const pre = IN_SEA ? [] : [__filename];
+  const rootArgs = L.custom ? ['--root', L.root] : [];
+  const crashes = [];       // times of recent crashes, for the give-up rule
+  let child = null, startedAt = 0, streak = 0, timer = null, stopping = false;
+
+  const cleanup = () => {
+    if (child) { try { child.kill('SIGKILL'); } catch { } }
+    try { if (readPid(L) === process.pid) fs.unlinkSync(L.pid); } catch { }
+    try { fs.unlinkSync(kidFile); } catch { }
+  };
+  process.on('exit', cleanup);
+  const finishStop = () => { log('stopped'); cleanup(); process.exit(0); };
+
+  function start() {
+    timer = null;
+    startedAt = Date.now();
+    // stdin: the daemon's orphan guard. stderr: captured into the log, so
+    // a crash Node prints straight to the console is kept.
+    const c = spawn(process.execPath, [...pre, ...childArgs, ...rootArgs], {
+      stdio: ['pipe', tty ? 'inherit' : 'ignore', tty ? 'inherit' : 'pipe'],
+      windowsHide: true,
+      env: Object.assign({}, process.env, { NODESIGNAL_SUPERVISOR_PID: String(process.pid) }, tty ? {} : { NODESIGNAL_STDERR_CAPTURED: '1' }),
+    });
+    child = c;
+    let done = false, rest = '';
+    const flush = () => { if (rest) { write(`${new Date().toISOString()}  daemon stderr: ${rest}\n`); rest = ''; } };
+    const finish = (code, signal, err) => {
+      if (done) return; done = true;
+      flush();
+      exited(c, code, signal, err);
+    };
+    c.stdin.on('error', () => { });
+    if (c.stderr) {
+      c.stderr.setEncoding('utf8');
+      c.stderr.on('data', (d) => {
+        rest += d;
+        let i;
+        while ((i = rest.indexOf('\n')) >= 0) { write(`${new Date().toISOString()}  daemon stderr: ${rest.slice(0, i).replace(/\r$/, '')}\n`); rest = rest.slice(i + 1); }
+        if (rest.length > 65536) flush();
+      });
+    }
+    // 'close' comes after stderr is drained, so a crash's stack lands above
+    // the exit line; 'exit' plus a second covers a stream that never closes.
+    c.on('close', (code, signal) => finish(code, signal, null));
+    c.on('exit', (code, signal) => setTimeout(() => finish(code, signal, null), 1000));
+    c.on('error', (e) => {
+      if (c.pid === undefined) finish(null, null, e);   // could not be started at all
+      else log(`daemon pid ${c.pid}: ${e.message}`);
+    });
+    if (c.pid !== undefined) {
+      try { fs.writeFileSync(kidFile, String(c.pid)); } catch { }
+      log(`started the daemon, pid ${c.pid}`);
+    }
+  }
+
+  function exited(c, code, signal, err) {
+    if (child === c) child = null;
+    if (readPidFile(kidFile) === c.pid) { try { fs.unlinkSync(kidFile); } catch { } }
+    const up = Date.now() - startedAt;
+    const who = c.pid !== undefined ? `the daemon (pid ${c.pid})` : 'the daemon';
+    const how = err ? `could not be started (${err.code || err.message})`
+      : signal ? `was ended by signal ${signal}` : `exited with code ${code}`;
+    log(`${who} ${how} after ${(up / 1000).toFixed(1)}s`);
+    if (stopping) return finishStop();
+    // Any exit we did not ask for is a crash, exit code 0 included. The daemon
+    // is a server that only exits 0 from its own signal handler, so an
+    // unrequested 0 means something else stopped it (a stray signal, a
+    // console Ctrl+C that reached the daemon first); the operator still
+    // expects it to be running, and counting it keeps a loop of clean exits
+    // under the same give-up rule instead of spinning forever.
+    const now = Date.now();
+    if (up >= C.stableMs * scale) streak = 0;      // it ran long enough: back to 1s
+    streak++;
+    crashes.push(now);
+    while (crashes.length && now - crashes[0] >= C.windowMs * scale) crashes.shift();
+    const last = err ? `last error ${err.code || err.message}` : signal ? `last exit signal ${signal}` : `last exit code ${code}`;
+    if (crashes.length >= C.crashLimit) {
+      log(`gave up: ${C.crashLimit} crashes within 10 minutes; ${last}; see the lines above${scaled}`);
+      cleanup();
+      process.exit(1);
+    }
+    const delay = Math.min(C.backoffMs * 2 ** (streak - 1), C.maxBackoffMs);
+    log(`restarting in ${delay / 1000}s (crash ${crashes.length} within 10 minutes; gives up at ${C.crashLimit})${scaled}`);
+    timer = setTimeout(start, delay * scale);
+  }
+
+  function requestStop(why) {
+    if (stopping) return;
+    stopping = true;
+    clearTimeout(timer); timer = null;
+    if (!child) return finishStop();
+    const c = child;
+    log(`${why}: stopping the daemon (pid ${c.pid})`);
+    // Linux/macOS: forward SIGTERM. Windows has no SIGTERM to send, so close
+    // the daemon's stdin, which its orphan guard turns into a clean shutdown.
+    if (IS_WIN) { try { c.stdin.end(); } catch { } } else { try { c.kill('SIGTERM'); } catch { } }
+    setTimeout(() => {
+      if (child !== c) return;
+      log(`the daemon did not stop within ${C.stopGraceMs / 1000}s; ending it`);
+      try { c.kill('SIGKILL'); } catch { }
+    }, C.stopGraceMs).unref();
+  }
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', ...(IS_WIN ? ['SIGBREAK'] : [])]) process.on(sig, () => requestStop(sig));
+
+  start();
+  return null; // keep running: the child and the timers own the event loop
 }
 
 /* ------------------------------------------------------------ install */
@@ -567,7 +775,7 @@ async function cmdUninstall(L, args) {
       sure = (await P.ask('  Type DELETE to confirm: ')) === 'DELETE';
     }
     if (sure) {
-      for (const f of [L.config, L.log, L.log + '.1', L.pid]) { try { fs.unlinkSync(f); } catch { } }
+      for (const f of [L.config, L.log, L.log + '.1', L.pid, daemonPidPath(L)]) { try { fs.unlinkSync(f); } catch { } }
       fs.rmSync(dataDir, { recursive: true, force: true });
       say(`  - Removed settings and ${dataDir}`);
     } else say('  - Kept settings and history (not confirmed).');
@@ -593,7 +801,7 @@ async function cmdSelftest(args) {
   const L = layout(tmp);
   say(`NodeSignal ${VERSION} selftest in ${tmp} (${IN_SEA ? 'single executable' : 'source'}, ${process.platform})`);
   const freePort = () => new Promise((r) => { const s = require('net').createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => r(p)); }); });
-  let res = null;
+  let res = null, G = null;
   try {
     // bitcoin.conf editing round trip
     const conf = path.join(tmp, 'bitcoin.conf');
@@ -628,17 +836,65 @@ async function cmdSelftest(args) {
     let logText = '';
     try { logText = fs.readFileSync(L.log, 'utf8'); } catch { }
     check('log file written', /NodeSignal/.test(logText));
+
+    // (a) restart: end only the daemon child; the supervisor must start a new one
+    const sup = readPid(L);
+    const kid1 = readPidFile(daemonPidPath(L));
+    check('supervisor and daemon are separate processes', sup > 0 && kid1 > 0 && sup !== kid1 && isOurs(L, kid1), `supervisor ${sup}, daemon ${kid1}`);
+    killPid(kid1, { hard: true });
+    let kid2 = 0;
+    for (let i = 0; i < 80 && !kid2; i++) {
+      await sleep(250);
+      const p = readPidFile(daemonPidPath(L));
+      if (p && p !== kid1 && isOurs(L, p)) kid2 = p;
+    }
+    const back = kid2 ? await core.waitForHealth(webPort, { timeoutMs: 25000 }) : null;
+    check('supervisor restarts a killed daemon', !!kid2 && !!back && readPid(L) === sup && !processImage(kid1),
+      kid2 ? `daemon ${kid1} -> ${kid2}${back ? ', /health answers again' : ', no /health'}` : 'no new daemon');
+    try { logText = fs.readFileSync(L.log, 'utf8'); } catch { }
+    check('log records the restart', new RegExp(`supervisor: the daemon \\(pid ${kid1}\\) (exited|was ended)`).test(logText)
+      && /supervisor: restarting in 1s/.test(logText) && new RegExp(`supervisor: started the daemon, pid ${kid2}`).test(logText));
     const st = spawnSync(L.exe, ['status', '--root', L.root], { encoding: 'utf8', timeout: 60000, windowsHide: true });
     check('"status" command works', st.status === 0 && /selftest/.test(st.stdout || ''), st.status === 0 ? '' : String(st.stdout || st.error || '').trim().split('\n').pop());
     const v = spawnSync(L.exe, ['version'], { encoding: 'utf8', timeout: 30000, windowsHide: true });
     check('"version" command works', String(v.stdout || '').trim() === VERSION);
+    // (c) stop ends the supervisor and the daemon, leaving no orphan
+    const supNow = readPid(L), kidNow = readPidFile(daemonPidPath(L));
     const stopped = await stopRunning(L, true);
     check('stop ends the daemon', stopped && !(await core.httpGetJson(`http://127.0.0.1:${webPort}/health`, 1500)).ok);
+    check('stop leaves no supervisor and no daemon running', !!supNow && !!kidNow && !processImage(supNow) && !processImage(kidNow),
+      `supervisor ${supNow}, daemon ${kidNow}`);
+    check('stop removes both pid files', !fs.existsSync(L.pid) && !fs.existsSync(daemonPidPath(L)));
+
+    // (b) give up: the real supervisor with a child that exits 7 at once,
+    // timing scaled down; same policy, so 5 starts, 4 doubling waits, give up.
+    const SCALE = 0.1;
+    G = layout(path.join(tmp, 'giveup'));
+    fs.mkdirSync(G.root, { recursive: true });
+    const [gExe, gPre] = IN_SEA ? [L.exe, []] : [process.execPath, [__filename]];
+    const gr = spawnSync(gExe, [...gPre, '__supervise-test', '--root', G.root, '--scale', String(SCALE)],
+      { encoding: 'utf8', timeout: 120000, windowsHide: true });
+    let gLog = '';
+    try { gLog = fs.readFileSync(G.log, 'utf8'); } catch { }
+    const lines = gLog.split(/\r?\n/);
+    const startTimes = lines.filter((l) => /supervisor: started the daemon, pid \d+/.test(l)).map((l) => Date.parse(l.slice(0, 24)));
+    const crashes = lines.filter((l) => /supervisor: the daemon \(pid \d+\) exited with code 7/.test(l)).length;
+    const delays = lines.map((l) => l.match(/supervisor: restarting in (\d+)s/)).filter(Boolean).map((m) => Number(m[1]));
+    check('give-up: supervisor exits non-zero', gr.status !== null && gr.status !== 0, `exit ${gr.status}${gr.error ? ', ' + gr.error.message : ''}`);
+    check('give-up: exactly 5 starts and 5 crashes', startTimes.length === 5 && crashes === 5, `${startTimes.length} starts, ${crashes} crashes`);
+    check('give-up: backoff doubles 1s, 2s, 4s, 8s', delays.join(',') === '1,2,4,8', delays.map((d) => d + 's').join(', '));
+    const gaps = startTimes.slice(1).map((t, i) => t - startTimes[i]);
+    check('give-up: each wait really elapsed (scaled)', gaps.length === 4 && gaps.every((g, i) => g + 5 >= 1000 * 2 ** i * SCALE),
+      gaps.map((g) => g + 'ms').join(', '));
+    check('give-up: reason logged', /supervisor: gave up: 5 crashes within 10 minutes; last exit code 7; see the lines above/.test(gLog));
+    check('give-up: pid files removed', !fs.existsSync(G.pid) && !fs.existsSync(daemonPidPath(G)));
+    if (!/gave up/.test(gLog)) say(gLog.split('\n').slice(-20).join('\n'));
   } catch (e) {
     check('selftest ran to completion', false, e && e.stack ? e.stack.split('\n').slice(0, 3).join(' | ') : String(e));
     try { say(fs.readFileSync(L.log, 'utf8').split('\n').slice(-30).join('\n')); } catch { }
   } finally {
     await stopRunning(L, true);
+    if (G) await stopRunning(G, true);
     for (let i = 0; i < 10; i++) {
       try { fs.rmSync(tmp, { recursive: true, force: true }); break; } catch { await sleep(500); }
     }
@@ -656,6 +912,13 @@ async function main() {
   switch (cmd) {
     case '': case 'install': return cmdInstall(L);
     case 'run': return cmdRun(L);
+    case '__daemon': return cmdDaemon(L);
+    case '__crash': return 7;
+    case '__supervise-test': {
+      const scale = Number(opt(args, 'scale'));
+      if (!(scale >= 0.001 && scale <= 1)) { say('__supervise-test needs --scale between 0.001 and 1'); return 2; }
+      return supervise(L, { childArgs: ['__crash'], scale });
+    }
     case 'selftest': return cmdSelftest(args);
     case 'start': startDetached(L); return (await core.waitForHealth(portOf(L), { timeoutMs: 20000 })) ? (say('NodeSignal is running.'), 0) : (say(`No answer yet; see ${L.log}`), 1);
     case 'stop': say((await stopRunning(L, true)) ? 'NodeSignal stopped.' : 'NodeSignal was not running.'); return 0;

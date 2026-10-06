@@ -340,8 +340,12 @@ status table. Keep it current whenever security changes.
   (the default of `MAINTAINER`); the build prints a note until you do.
 - If bitcoind runs as root, the .deb runs NodeSignal as root (with a
   warning). Alternative: a dedicated user plus rpcuser / `rpccookieperms`.
-- Windows: nothing restarts a crashed daemon until the next sign-in; the
-  .exe has no icon/version resource and is not code-signed.
+- **Decided (Oct 2026): Windows supervisor.** `nodesignal.exe run` (what the
+  sign-in launcher starts) is a parent that spawns the daemon as a child
+  (`__daemon`) and respawns it on exit, backoff 1s doubling to 60s (reset after
+  10 minutes up), giving up after 5 crashes within 10 minutes and logging the
+  reason. The selftest covers restart and give-up. Still open: the .exe has no
+  icon/version resource and is not code-signed.
 - Not yet run on real Windows or real arm64 hardware; CI covers the
   Windows selftest.
 
