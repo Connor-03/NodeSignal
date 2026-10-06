@@ -1,5 +1,5 @@
 <!--
-  NodeSignal — node operator console
+  NodeSignal: node operator console
   ===================================================================
   Served by nodesignald.js on the machine running your Bitcoin node.
   Open http://<node-ip>:8789 and it works: no configuration, no setup
@@ -357,7 +357,7 @@
 
     <section class="view" id="view-msgs">
       <aside class="conv-list">
-        <div class="conv-head"><h2>messages</h2><p id="conv-sub">—</p></div>
+        <div class="conv-head"><h2>messages</h2><p id="conv-sub"></p></div>
         <div class="conv-scroll" id="conv-scroll"></div>
       </aside>
       <div class="thread" id="thread">
@@ -497,7 +497,7 @@ function handle(m){
     case 'chat.readack': { const p=byHost(m.host); if(p){p.unread=0;renderAll();} break; }
     case 'security':
       if(m.kind==='fp-mismatch'){
-        toast('⚠ identity mismatch for '+m.host+' — connection rejected');
+        toast('⚠ identity mismatch for '+m.host+': connection rejected');
         const ban=document.getElementById('banner');
         ban.className='banner bad show';
         ban.innerHTML='⚠ SECURITY: '+esc(m.host)+' presented a different identity key than the one pinned on first contact. '+
@@ -539,13 +539,13 @@ function rebuild(nodePeers, contacts){
       if(np.latency!=null){existing.latency=np.latency;existing.unmeasured=false;}
       if(!existing.ua&&np.ua)existing.ua=np.ua;
       if(existing.impl==='Unknown'&&np.impl)existing.impl=np.impl;
-      if(existing.version==='—'&&np.version)existing.version=np.version;
+      if(!existing.version&&np.version)existing.version=np.version;
       existing.inbound=np.inbound; existing.isNodePeer=true;
       continue;
     }
     next.push({
       id:uid(), kind:'peer', host, addr:np.addr, port:8788,
-      nick:'', impl:np.impl||'Unknown', version:np.version||'—', ua:np.ua||null,
+      nick:'', impl:np.impl||'Unknown', version:np.version||'', ua:np.ua||null,
       declared:np.declared||[], supports:[], services:[], network:null,
       height:np.height??null, latency:np.latency??null, unmeasured:np.latency==null,
       inbound:!!np.inbound, isNodePeer:true,
@@ -561,7 +561,7 @@ function contactModel(c,angles){
   const ni=c.peerInfo||{};
   return {
     id:uid(), kind:'contact', host:c.host, addr:c.host+':'+(c.port||8788), port:c.port||8788,
-    nick:c.nick||'', impl:ni.impl||'Unknown', version:ni.version||'—', ua:ni.ua||null,
+    nick:c.nick||'', impl:ni.impl||'Unknown', version:ni.version||'', ua:ni.ua||null,
     declared:ni.declared||[], supports:ni.supports||[], services:ni.services||[], network:ni.network||null,
     height:ni.height??null,
     latency:ni.latency!=null?ni.latency:null, unmeasured:ni.latency==null,
@@ -574,7 +574,7 @@ function contactModel(c,angles){
     established:!!c.established,
     peerFp:c.peerFp||null,
     // online = established AND seen within the daemon's freshness window. Drives
-    // the blinking dot — only shown for peers we could actually message now.
+    // the blinking dot, only shown for peers we could actually message now.
     online:!!c.online,
     angle:angles.has(c.host)?angles.get(c.host):Math.random()*Math.PI*2,
   };
@@ -616,8 +616,8 @@ function computeLayout(){
   const peak=Math.max(300,...peers.filter(p=>!p.unmeasured&&p.latency!=null).map(p=>p.latency),0);
   const scaleMax=RING_STEPS.find(s=>s>=peak)||RING_STEPS[RING_STEPS.length-1];
   const rings=RING_STEPS.filter(s=>s<=scaleMax);
-  // Rings are placed at EVEN radial spacing — each latency step is the same
-  // distance apart on screen — instead of a near-log curve that crushed the
+  // Rings are placed at EVEN radial spacing (each latency step is the same
+  // distance apart on screen) instead of a near-log curve that crushed the
   // high-latency nodes together at the outer edge. A latency lands between its
   // bracketing rings, interpolated by log within the bracket so ordering holds.
   const ringR=i=>RMIN+(rings.length<2?0:(i/(rings.length-1))*(RMAX-RMIN));
@@ -716,7 +716,7 @@ function initNav(){
     pointers.set(e.pointerId,{x:e.clientX,y:e.clientY});
     if(pointers.size===1){
       didDrag=false;
-      // Capture is taken only once a drag begins — capturing here would
+      // Capture is taken only once a drag begins; capturing here would
       // retarget the click and stop node circles from opening their chat.
       start={sx:e.clientX,sy:e.clientY,view:{...view},captured:false};
       svg.style.cursor='grabbing';
@@ -865,7 +865,7 @@ function showTip(p,g){
   const rows=[
     ['role', p.kind==='contact'?'NodeSignal contact':'node peer'+(p.inbound?' (inbound)':'')],
     ['impl', p.impl==='Unknown'?'not identified':p.impl],
-    ['version', p.version||'—'],
+    ['version', p.version||'n/a'],
     ['latency', (p.unmeasured||p.latency==null)?'unmeasured':p.latency+' ms'],
   ];
   if(p.height!=null)rows.push(['height',Number(p.height).toLocaleString()]);
@@ -922,7 +922,7 @@ function renderConvList(){
     const c=color(p),m=lastMsg(p);
     let prev,cls='';
     if(!m){prev='no messages yet';}
-    else if(m.locked){prev='🔒 encrypted — set the PIN to read';cls='locked';}
+    else if(m.locked){prev='🔒 encrypted: set the PIN to read';cls='locked';}
     else prev=(m.from==='me'?'you: ':'')+(m.text||'');
     return `<div class="conv ${state.active===p.id?'active':''}" onclick="openChat('${p.id}')">
       ${state.active===p.id?`<span class="bar" style="background:${c}"></span>`:''}
@@ -951,7 +951,7 @@ function renderThread(){
     : `<button class="actbtn" onclick="doPin('${p.id}')">set PIN</button>
        <div class="lock-pill">node peer</div>`;
 
-  const sub=[p.impl==='Unknown'?'not identified':p.impl, p.version!=='—'?p.version:null, p.addr||p.host,
+  const sub=[p.impl==='Unknown'?'not identified':p.impl, p.version?p.version:null, p.addr||p.host,
     p.height!=null?('height '+Number(p.height).toLocaleString()):null].filter(Boolean).join(' · ');
 
   const head=`<div class="thread-head" style="--accent:${c}">
@@ -961,7 +961,7 @@ function renderThread(){
 
   let body=p.msgs.map(m=>{
     if(m.locked)
-      return `<div class="bubble them locked">🔒 encrypted message — set the shared PIN to read it<span class="ts">${fmtTime(m.ts)}</span></div>`;
+      return `<div class="bubble them locked">🔒 encrypted message: set the shared PIN to read it<span class="ts">${fmtTime(m.ts)}</span></div>`;
     const cls=m.from+(m.status==='sending'?' sending':m.status==='failed'?' failed':'');
     const tail=m.status==='sending'?' · sending':m.status==='failed'?' · not delivered':m.status==='delivered'?' · delivered':'';
     return `<div class="bubble ${cls}">${esc(m.text)}<span class="ts">${fmtTime(m.ts)}${tail}</span></div>`;
@@ -970,7 +970,7 @@ function renderThread(){
   if(!p.msgs.length){
     body = p.kind==='contact'
       ? `<div class="sysline">No messages yet. Anything you send goes directly to this operator's daemon at ${esc(p.host)}:${p.port}.</div>`
-      : `<div class="sysline">This is a peer of your Bitcoin node, not yet a NodeSignal contact.<br>Send a message to try reaching them — it only arrives if they run nodesignald on port 8788.</div>`;
+      : `<div class="sysline">This is a peer of your Bitcoin node, not yet a NodeSignal contact.<br>Send a message to try reaching them; it only arrives if they run nodesignald on port 8788.</div>`;
   }
 
   const box=document.getElementById('msgs');
@@ -1033,7 +1033,7 @@ function doRemove(id){
 
 /* ===================== NOTIFICATIONS =====================
    A slide-in card per incoming message plus a live unread count in the tab
-   badge and the page title. Purely presentational — nothing here changes
+   badge and the page title. Purely presentational: nothing here changes
    message state; unread counts still come from the daemon. */
 const NOTIF_MS=9000;
 function notifHost(){
@@ -1052,7 +1052,7 @@ function notify(peer,text,locked){
        <div class="av" style="background:${c}22;border-color:${c};color:${c}">${glyph(peer)}</div>
        <div class="txt">
          <div class="who" style="color:${c}">${esc((peer.nick||peer.host))}</div>
-         <div class="prev${locked?' locked':''}">${locked?'🔒 encrypted message — set the shared PIN to read it':esc(text||'')}</div>
+         <div class="prev${locked?' locked':''}">${locked?'🔒 encrypted message: set the shared PIN to read it':esc(text||'')}</div>
          <div class="when">now</div>
        </div>
        <button class="x" title="dismiss">×</button>
@@ -1088,10 +1088,10 @@ function renderChrome(){
 
   if(state.wsState!=='open'){
     name.textContent=state.daemon?state.daemon.nick:'NodeSignal';
-    desc.textContent=state.wsState==='connecting'?'connecting to daemon…':'daemon connection lost — retrying';
+    desc.textContent=state.wsState==='connecting'?'connecting to daemon…':'daemon connection lost, retrying';
     pulseEl.classList.add('bad');
     ban.className='banner bad show';
-    ban.innerHTML='daemon connection lost — retrying automatically. If it does not return: <code>sudo systemctl status nodesignal</code>';
+    ban.innerHTML='daemon connection lost, retrying automatically. If it does not return: <code>sudo systemctl status nodesignal</code>';
     return;
   }
   if(state.node){
@@ -1104,7 +1104,7 @@ function renderChrome(){
     name.textContent=state.daemon?state.daemon.nick:'NodeSignal';
     desc.textContent='Bitcoin RPC not connected';
     ban.className='banner warn show';
-    ban.innerHTML='Bitcoin RPC not connected'+(state.rpcError?' — <code>'+esc(state.rpcError)+'</code>':'')+
+    ban.innerHTML='Bitcoin RPC not connected'+(state.rpcError?': <code>'+esc(state.rpcError)+'</code>':'')+
       ' · the peer map stays empty until the daemon can read getpeerinfo';
   }
 }
@@ -1122,19 +1122,19 @@ function renderDrawer(){
   const kv=(k,v,cls)=>`<div class="kv"><span class="k">${k}</span><span class="v ${cls||''}">${esc(v)}</span></div>`;
   d.innerHTML=
     `<div class="sec">daemon</div>
-     ${kv('nick',state.daemon?state.daemon.nick:'—')}
-     ${kv('version',state.daemon?state.daemon.ua:'—')}
+     ${kv('nick',state.daemon?state.daemon.nick:'n/a')}
+     ${kv('version',state.daemon?state.daemon.ua:'n/a')}
      ${state.daemon&&state.daemon.fingerprint?kv('identity fp',state.daemon.fingerprint.slice(0,16)+'…','ok'):''}
      ${state.daemon&&state.daemon.secure===false?kv('encryption','PIN fallback','bad'):(state.daemon&&state.daemon.secure?kv('encryption','Noise handshake','ok'):'')}
      ${kv('web socket',state.wsState,state.wsState==='open'?'ok':'bad')}
-     ${kv('peer port',state.daemon?state.daemon.peerPort:'—')}
+     ${kv('peer port',state.daemon?state.daemon.peerPort:'n/a')}
      <div class="sec">bitcoin node</div>
      ${kv('rpc',n?'connected':'not connected',n?'ok':'bad')}
      ${n?kv('implementation',n.impl):''}
      ${n?kv('version',n.version):''}
      ${n?kv('height',Number(n.height).toLocaleString()):''}
      ${n?kv('network',n.network):''}
-     ${n?kv('pruned',n.pruned?('yes — from '+Number(n.pruneHeight||0).toLocaleString()):'no'):''}
+     ${n?kv('pruned',n.pruned?('yes, from '+Number(n.pruneHeight||0).toLocaleString()):'no'):''}
      ${n?kv('connections',n.connections):''}
      ${n&&n.declared&&n.declared.length?kv('signaling',n.declared.join(', ')):''}
      ${!n&&state.rpcError?kv('error',state.rpcError,'bad'):''}
@@ -1163,7 +1163,7 @@ function submitAdd(){
     nick:document.getElementById('f-nick').value.trim(),
     pin:document.getElementById('f-pin').value.trim()});
   closeAdd();
-  toast('contact added — reading their node over :8333');
+  toast('contact added, reading their node over :8333');
 }
 function toast(m){
   const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');
