@@ -13,87 +13,113 @@
     · NodeSignal contacts, their message history, delivery status
 
   There is deliberately no demo mode and no dev tools in this build. The
-  browser holds no keys and performs no cryptography: message encryption
-  (PBKDF2 -> AES-256-GCM) happens in the daemon, which also means this
-  page works over plain http on a private tailnet, where the browser's
-  Web Crypto API is unavailable.
+  browser holds no keys and performs no cryptography: the daemon runs the
+  Noise handshake (X25519, ChaCha20-Poly1305) and pins each peer's key,
+  which also means this page works over plain http on a private tailnet,
+  where the browser's Web Crypto API is unavailable.
 -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0e131c" />
 <title>NodeSignal</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 <style>
   :root{
-    --bg:#070a0f; --panel:#0e131c; --panel-2:#141b26; --elev:#1a2230;
+    --bg:#070a0f; --panel:#0e131c; --panel-2:#141b26; --elev:#1a2230; --elev-2:#212b3b;
     --line:rgba(120,200,170,.10); --line-strong:rgba(140,210,180,.20);
-    --ink:#dde7e2; --ink-dim:#90a49b; --ink-faint:#5d7069;
+    /* text tiers: ink ~14:1, dim ~7:1, faint ~4.8:1 on --panel */
+    --ink:#dde7e2; --ink-dim:#a3b5ad; --ink-faint:#71857d;
     --btc:#f7931a; --btc-bright:#ffb454; --signal:#39e08a;
     --cyan:#4dd2ff; --violet:#b48cff; --pink:#ff7ab8; --amber:#ffd166;
     --unread:#ff453a;
     --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
     --display:"Space Grotesk",system-ui,sans-serif;
-    --body:"Inter",system-ui,sans-serif;
+    --body:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+    /* type scale */
+    --fs-2xs:10.5px; --fs-xs:11.5px; --fs-sm:12.5px; --fs:13.5px; --fs-md:15px; --fs-lg:18px;
+    /* spacing scale (4px grid) */
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:20px; --s6:24px; --s8:32px;
+    --r-sm:7px; --r:10px; --r-lg:14px;
+    --topbar:58px;
+    --shadow:0 20px 50px -14px rgba(0,0,0,.75);
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:var(--fs);line-height:1.5;
     -webkit-font-smoothing:antialiased;overflow:hidden}
-  #app{display:flex;flex-direction:column;height:100vh}
+  #app{display:flex;flex-direction:column;height:100vh;height:100dvh}
+  button{font:inherit;color:inherit}
+  :focus-visible{outline:2px solid var(--btc);outline-offset:2px}
+  code{font-family:var(--mono);font-size:.92em;color:var(--btc-bright);background:rgba(247,147,26,.1);padding:1px 5px;border-radius:4px}
+  .mono{font-family:var(--mono)}
+  .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 
   /* ---------- top bar ---------- */
-  .topbar{display:flex;align-items:center;gap:18px;padding:0 18px;height:56px;flex:none;
-    border-bottom:1px solid var(--line);background:var(--panel)}
-  .brand{display:flex;align-items:center;gap:10px;user-select:none}
-  .brand .mark{width:28px;height:28px;border-radius:7px;flex:none;background:var(--btc);
-    display:grid;place-items:center;font-family:var(--mono);font-weight:700;color:#150d02;font-size:15px}
-  .brand b{font-family:var(--display);font-weight:600;font-size:16px;letter-spacing:-.2px}
-  .brand span{color:var(--ink-faint);font-size:10.5px;font-family:var(--mono)}
-  .brand .stack{display:flex;flex-direction:column;line-height:1.1}
-  .tabs{display:flex;gap:3px;background:var(--bg);padding:3px;border-radius:9px;border:1px solid var(--line)}
-  .tab{appearance:none;border:0;cursor:pointer;color:var(--ink-dim);font-family:var(--mono);font-weight:500;
-    font-size:12.5px;padding:7px 14px;border-radius:7px;background:transparent;display:flex;align-items:center;gap:7px;transition:.15s}
+  .topbar{display:flex;align-items:center;gap:var(--s4);padding:0 var(--s4) 0 var(--s5);height:var(--topbar);flex:none;
+    border-bottom:1px solid var(--line);background:var(--panel);min-width:0}
+  .brand{display:flex;align-items:center;gap:10px;user-select:none;flex:none}
+  .brand .mark{width:30px;height:30px;border-radius:8px;flex:none;background:var(--btc);
+    display:grid;place-items:center;font-family:var(--mono);font-weight:700;color:#150d02;font-size:15px;
+    box-shadow:0 0 0 1px rgba(255,255,255,.12) inset}
+  .brand .stack{display:flex;flex-direction:column;line-height:1.15}
+  .brand b{font-family:var(--display);font-weight:600;font-size:16.5px;letter-spacing:-.2px}
+  .brand span{color:var(--ink-faint);font-size:var(--fs-2xs);font-family:var(--mono);letter-spacing:.2px}
+  .tabs{display:flex;gap:3px;background:var(--bg);padding:3px;border-radius:var(--r);border:1px solid var(--line);flex:none}
+  .tab{appearance:none;border:0;cursor:pointer;color:var(--ink-dim);font-family:var(--body);font-weight:500;
+    font-size:var(--fs-sm);padding:7px 14px;border-radius:var(--r-sm);background:transparent;display:flex;align-items:center;gap:7px;transition:.15s}
+  .tab .ic{font-size:12px;opacity:.8}
   .tab:hover{color:var(--ink)}
-  .tab.active{background:var(--elev);color:var(--ink)}
-  .tab-count{font-family:var(--mono);font-size:10.5px;background:var(--unread);color:#fff;
-    border-radius:20px;padding:1px 6px;min-width:17px;text-align:center}
-  .spacer{flex:1}
-  .selfnode{display:flex;align-items:center;gap:9px;padding:6px 11px;border:1px solid var(--line);
-    border-radius:9px;background:var(--bg);max-width:420px}
+  .tab.active{background:var(--elev);color:var(--ink);box-shadow:0 1px 0 rgba(255,255,255,.04) inset}
+  .tab-count{font-family:var(--mono);font-size:10.5px;font-weight:600;background:var(--unread);color:#fff;
+    border-radius:20px;padding:0 6px;min-width:18px;line-height:17px;text-align:center}
+  .spacer{flex:1;min-width:0}
+  .selfnode{display:flex;align-items:center;gap:10px;padding:6px 12px;border:1px solid var(--line);
+    border-radius:var(--r);background:var(--bg);min-width:0;max-width:440px;cursor:pointer;transition:border-color .15s;text-align:left}
+  .selfnode:hover{border-color:var(--line-strong)}
   .selfnode .pulse{width:8px;height:8px;border-radius:50%;background:var(--ink-faint);flex:none}
   .selfnode .pulse.ok{background:var(--signal);box-shadow:0 0 7px var(--signal)}
   .selfnode .pulse.bad{background:var(--unread);box-shadow:0 0 7px var(--unread)}
-  .selfnode .meta{line-height:1.15;min-width:0}
-  .selfnode .meta .t{font-size:11.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .selfnode .meta .s{font-size:10px;color:var(--ink-faint);font-family:var(--mono);
+  .selfnode .pulse.wait{background:var(--amber);animation:breathe 1.6s ease-in-out infinite}
+  .selfnode .meta{line-height:1.25;min-width:0}
+  .selfnode .meta .t{font-size:var(--fs-sm);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .selfnode .meta .s{font-size:var(--fs-2xs);color:var(--ink-faint);font-family:var(--mono);
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .icon-btn{appearance:none;border:1px solid var(--line);background:var(--bg);color:var(--ink-dim);
-    width:36px;height:36px;border-radius:9px;cursor:pointer;display:grid;place-items:center;transition:.15s;font-size:15px}
+  .icon-btn{appearance:none;border:1px solid var(--line);background:var(--bg);color:var(--ink-dim);flex:none;
+    width:38px;height:38px;border-radius:var(--r);cursor:pointer;display:grid;place-items:center;transition:.15s;font-size:16px}
   .icon-btn:hover{color:var(--ink);border-color:var(--line-strong)}
   .icon-btn.on{color:var(--btc);border-color:rgba(247,147,26,.45)}
 
   /* ---------- banner ---------- */
-  .banner{flex:none;display:none;align-items:center;gap:10px;padding:9px 18px;font-family:var(--mono);font-size:11.5px;
-    border-bottom:1px solid var(--line)}
+  .banner{flex:none;display:none;align-items:center;gap:var(--s3);padding:9px var(--s5);font-size:var(--fs-sm);
+    border-bottom:1px solid var(--line);line-height:1.45}
   .banner.show{display:flex}
-  .banner.warn{background:rgba(255,209,102,.08);color:var(--amber);border-bottom-color:rgba(255,209,102,.3)}
-  .banner.bad{background:rgba(255,69,58,.08);color:var(--unread);border-bottom-color:rgba(255,69,58,.3)}
-  .banner code{background:rgba(255,255,255,.06);padding:1px 5px;border-radius:4px}
+  .banner .bi{flex:none;width:20px;height:20px;border-radius:6px;display:grid;place-items:center;font-size:12px;font-weight:700}
+  .banner .bt{flex:1;min-width:0}
+  .banner .bt b{font-weight:600}
+  .banner .ba{flex:none;appearance:none;border:1px solid currentColor;background:transparent;color:inherit;opacity:.9;
+    border-radius:var(--r-sm);padding:4px 10px;font-size:var(--fs-xs);cursor:pointer;font-family:var(--body)}
+  .banner .ba:hover{opacity:1;background:rgba(255,255,255,.04)}
+  .banner.warn{background:rgba(255,209,102,.07);color:var(--amber);border-bottom-color:rgba(255,209,102,.25)}
+  .banner.warn .bi{background:rgba(255,209,102,.16)}
+  .banner.bad{background:rgba(255,69,58,.07);color:#ff8078;border-bottom-color:rgba(255,69,58,.28)}
+  .banner.bad .bi{background:rgba(255,69,58,.18)}
+  .banner code{background:rgba(255,255,255,.07);color:inherit}
 
   .views{flex:1;position:relative;overflow:hidden}
   .view{position:absolute;inset:0;display:none}
   .view.active{display:flex}
 
-  /* ---------- peers / constellation ---------- */
+  /* ---------- peers / constellation (radar visuals unchanged) ---------- */
   #view-peers{flex-direction:column}
-  .radar-head{display:flex;align-items:baseline;gap:12px;padding:13px 22px 2px;flex:none}
-  .radar-head h1{margin:0;font-family:var(--mono);font-weight:600;font-size:15px;letter-spacing:.4px}
-  .radar-head h1::before{content:"◈ ";color:var(--btc)}
-  .radar-head .lede{color:var(--ink-faint);font-size:11.5px;font-family:var(--mono)}
+  .radar-head{display:flex;align-items:baseline;gap:var(--s3);padding:var(--s4) var(--s6) var(--s1);flex:none;min-width:0}
+  .radar-head h1{margin:0;font-family:var(--display);font-weight:600;font-size:var(--fs-lg);letter-spacing:-.2px;white-space:nowrap}
+  .radar-head h1::before{content:"◈ ";color:var(--btc);font-family:var(--mono);font-size:15px}
+  .radar-head .lede{color:var(--ink-faint);font-size:var(--fs-xs);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   .radar-wrap{flex:1;position:relative;min-height:0;
     background-image:radial-gradient(rgba(140,210,180,.055) 1px,transparent 1px);
     background-size:26px 26px;background-position:center}
@@ -119,169 +145,253 @@
   .self-lbl{font-family:var(--mono);font-weight:600;fill:#150d02;text-anchor:middle;pointer-events:none}
   .pulse-dot{fill:var(--btc-bright)}
 
-  .legend{position:absolute;left:20px;bottom:20px;z-index:3;background:rgba(14,19,28,.9);border:1px solid var(--line);
-    border-radius:10px;padding:10px 12px;font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);
-    display:flex;flex-direction:column;gap:5px;backdrop-filter:blur(4px);max-width:230px}
-  .legend .row{display:flex;align-items:center;gap:7px}
+  .glass{background:rgba(14,19,28,.9);border:1px solid var(--line);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+  .legend{position:absolute;left:var(--s5);bottom:var(--s5);z-index:3;background:rgba(14,19,28,.9);border:1px solid var(--line);
+    border-radius:var(--r);padding:var(--s3) 14px;font-family:var(--mono);font-size:var(--fs-2xs);color:var(--ink-dim);
+    display:flex;flex-direction:column;gap:6px;backdrop-filter:blur(6px);max-width:240px}
+  .legend .row{display:flex;align-items:center;gap:8px}
   .legend .sw{width:9px;height:9px;border-radius:3px;flex:none}
   .legend .sep{height:1px;background:var(--line);margin:3px 0}
-  .legend .k{display:flex;align-items:center;gap:7px;color:var(--ink-faint)}
+  .legend .k{display:flex;align-items:center;gap:8px;color:var(--ink-faint)}
   .legend .k i{display:inline-block;width:22px;height:0;border-top:2px solid var(--signal)}
   .legend .k i.dash{border-top:1px dashed var(--ink-faint)}
-  .hud{position:absolute;right:20px;top:14px;z-index:3;font-family:var(--mono);font-size:10.5px;color:var(--ink-faint);
-    background:rgba(14,19,28,.85);border:1px solid var(--line);border-radius:8px;padding:6px 10px;backdrop-filter:blur(4px)}
+  .hud{position:absolute;right:var(--s5);top:var(--s3);z-index:3;font-family:var(--mono);font-size:var(--fs-2xs);color:var(--ink-faint);
+    background:rgba(14,19,28,.88);border:1px solid var(--line);border-radius:var(--r-sm);padding:6px 11px;backdrop-filter:blur(6px)}
   .hud b{color:var(--ink);font-weight:600}
-  .viewctl{position:absolute;right:24px;bottom:24px;z-index:4;display:flex;flex-direction:column;gap:6px}
-  .vc{width:38px;height:38px;border-radius:10px;border:1px solid var(--line-strong);background:rgba(14,19,28,.92);
-    color:var(--ink-dim);font-size:17px;cursor:pointer;display:grid;place-items:center;backdrop-filter:blur(4px);
+  .viewctl{position:absolute;right:var(--s6);bottom:var(--s6);z-index:4;display:flex;flex-direction:column;gap:6px}
+  .vc{width:40px;height:40px;border-radius:var(--r);border:1px solid var(--line-strong);background:rgba(14,19,28,.92);
+    color:var(--ink-dim);font-size:17px;cursor:pointer;display:grid;place-items:center;backdrop-filter:blur(6px);
     transition:.15s;font-family:var(--mono);line-height:1}
   .vc:hover{color:var(--ink);border-color:var(--btc)}
-  .empty{position:absolute;inset:0;display:grid;place-items:center;z-index:3;pointer-events:none}
-  .empty .card{text-align:center;color:var(--ink-faint);background:var(--panel);border:1px dashed var(--line-strong);
-    border-radius:14px;padding:24px 28px;max-width:400px;pointer-events:auto}
-  .empty .card b{display:block;color:var(--ink);font-family:var(--mono);font-size:14px;margin-bottom:8px}
-  .empty .card p{margin:0;font-size:12.5px;line-height:1.6}
-  .empty .card code{font-family:var(--mono);color:var(--btc-bright);background:rgba(247,147,26,.1);padding:1px 5px;border-radius:4px}
+  .fab{position:absolute;right:var(--s6);bottom:172px;z-index:4;width:54px;height:54px;border-radius:var(--r-lg);border:0;
+    background:var(--btc);color:#150d02;font-size:28px;line-height:1;cursor:pointer;display:grid;place-items:center;
+    box-shadow:0 8px 22px -8px rgba(247,147,26,.85),0 0 0 1px rgba(255,255,255,.14) inset;transition:transform .12s}
+  .fab:hover{transform:translateY(-2px)}
+  .fab:active{transform:scale(.96)}
+
+  /* ---------- empty / loading states ---------- */
+  .empty{position:absolute;inset:0;display:grid;place-items:center;z-index:3;pointer-events:none;padding:var(--s5);
+    background:radial-gradient(ellipse at center,rgba(7,10,15,.55),rgba(7,10,15,0) 70%)}
+  .state-card{text-align:center;color:var(--ink-dim);background:var(--panel);border:1px solid var(--line-strong);
+    border-radius:var(--r-lg);padding:var(--s6) var(--s6) 22px;max-width:420px;width:100%;pointer-events:auto;box-shadow:var(--shadow)}
+  .state-card .sc-ic{width:46px;height:46px;border-radius:12px;margin:0 auto 14px;display:grid;place-items:center;font-size:20px;
+    background:var(--elev);border:1px solid var(--line-strong);color:var(--ink-dim)}
+  .state-card .sc-ic.warn{color:var(--amber);border-color:rgba(255,209,102,.3);background:rgba(255,209,102,.06)}
+  .state-card .sc-ic.bad{color:#ff8078;border-color:rgba(255,69,58,.3);background:rgba(255,69,58,.06)}
+  .state-card .sc-ic.ok{color:var(--signal);border-color:rgba(57,224,138,.3);background:rgba(57,224,138,.06)}
+  .state-card h3{margin:0 0 6px;color:var(--ink);font-family:var(--display);font-weight:600;font-size:var(--fs-md);letter-spacing:-.1px}
+  .state-card p{margin:0;font-size:var(--fs-sm);line-height:1.6}
+  .state-card p+p{margin-top:8px}
+  .state-card .where{display:block;margin-top:10px;font-size:var(--fs-2xs);color:var(--ink-faint);font-family:var(--mono)}
+  .state-card .acts{display:flex;gap:var(--s2);justify-content:center;margin-top:var(--s4);flex-wrap:wrap}
+  .spinner{width:22px;height:22px;border-radius:50%;border:2px solid var(--line-strong);border-top-color:var(--btc);animation:spin .9s linear infinite}
 
   /* ---------- tooltip ---------- */
-  .tip{position:fixed;z-index:60;pointer-events:none;opacity:0;transform:translateY(4px);transition:.12s;
-    min-width:250px;max-width:320px;background:var(--elev);border:1px solid var(--line-strong);border-radius:11px;
-    box-shadow:0 20px 50px -12px rgba(0,0,0,.75);overflow:hidden}
-  .tip.show{opacity:1;transform:translateY(0)}
+  .tip{position:fixed;left:0;top:0;z-index:60;pointer-events:none;opacity:0;transform:translateY(4px);transition:opacity .12s,transform .12s;
+    min-width:256px;max-width:min(330px,calc(100vw - 20px));background:var(--elev);border:1px solid var(--line-strong);border-radius:12px;
+    box-shadow:var(--shadow);overflow:hidden;visibility:hidden}
+  .tip.show{opacity:1;transform:translateY(0);visibility:visible}
   .tip .accent{height:3px;width:100%}
-  .tip .inner{padding:12px 14px}
-  .tip .nick{font-family:var(--mono);font-weight:600;font-size:13.5px;margin-bottom:2px;display:flex;align-items:center;gap:7px}
-  .tip .ip{font-family:var(--mono);font-size:11px;color:var(--ink-faint);margin-bottom:10px}
-  .tip .row{display:flex;justify-content:space-between;gap:10px;font-size:12px;margin:5px 0}
-  .tip .row .k{color:var(--ink-faint);font-family:var(--mono)}
-  .tip .row .v{font-family:var(--mono);text-align:right}
-  .tip .ua{font-family:var(--mono);font-size:10.5px;color:var(--ink-dim);background:var(--bg);border:1px solid var(--line);
-    border-radius:6px;padding:6px 8px;margin:9px 0 2px;word-break:break-all;line-height:1.4}
+  .tip .inner{padding:var(--s3) 14px 13px}
+  .tip .nick{font-family:var(--mono);font-weight:600;font-size:var(--fs);margin-bottom:2px;display:flex;align-items:center;gap:7px}
+  .tip .ip{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-faint);margin-bottom:10px;word-break:break-all}
+  .tip .row{display:flex;justify-content:space-between;gap:10px;font-size:var(--fs-sm);margin:5px 0}
+  .tip .row .k{color:var(--ink-faint);font-family:var(--mono);font-size:var(--fs-xs)}
+  .tip .row .v{font-family:var(--mono);font-size:var(--fs-xs);text-align:right}
+  .tip .ua{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--ink-dim);background:var(--bg);border:1px solid var(--line);
+    border-radius:6px;padding:6px 8px;margin:9px 0 2px;word-break:break-all;line-height:1.45}
   .chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
-  .chip{font-family:var(--mono);font-size:10.5px;padding:2px 7px;border-radius:5px;border:1px solid}
+  .chip{font-family:var(--mono);font-size:var(--fs-2xs);padding:2px 7px;border-radius:5px;border:1px solid}
   .chip.none{background:var(--bg);color:var(--ink-faint);border-color:var(--line)}
   .chip.cap{color:var(--ink-dim);border-color:var(--line-strong);background:rgba(255,255,255,.03)}
-  .tip .hint{margin-top:10px;font-size:11px;color:var(--ink-faint);border-top:1px solid var(--line);padding-top:8px;font-family:var(--mono)}
+  .tip .hint{margin-top:10px;font-size:var(--fs-xs);color:var(--ink-faint);border-top:1px solid var(--line);padding-top:8px}
 
   /* ---------- messages ---------- */
   #view-msgs{flex-direction:row}
-  .conv-list{width:320px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--panel)}
-  .conv-head{padding:15px 18px 11px;border-bottom:1px solid var(--line)}
-  .conv-head h2{margin:0;font-family:var(--mono);font-weight:600;font-size:14px;letter-spacing:.3px}
-  .conv-head p{margin:2px 0 0;font-size:11px;color:var(--ink-faint);font-family:var(--mono)}
-  .conv-scroll{overflow-y:auto;flex:1}
-  .conv{display:flex;gap:12px;padding:12px 16px;cursor:pointer;border-bottom:1px solid var(--line);
-    transition:.12s;align-items:center;position:relative}
+  .conv-list{width:340px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--panel);min-width:0}
+  .conv-head{padding:var(--s4) var(--s5) var(--s3);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:var(--s3)}
+  .conv-head .ch-t{flex:1;min-width:0}
+  .conv-head h2{margin:0;font-family:var(--display);font-weight:600;font-size:var(--fs-lg);letter-spacing:-.2px}
+  .conv-head p{margin:1px 0 0;font-size:var(--fs-xs);color:var(--ink-faint)}
+  .conv-add{appearance:none;flex:none;width:34px;height:34px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--bg);
+    color:var(--btc-bright);font-size:19px;line-height:1;cursor:pointer;display:grid;place-items:center;transition:.15s}
+  .conv-add:hover{border-color:var(--btc)}
+  .conv-scroll{overflow-y:auto;flex:1;padding:var(--s2) 0}
+  .conv{display:flex;gap:var(--s3);padding:11px var(--s4) 11px 18px;margin:0 var(--s2);cursor:pointer;border-radius:var(--r);
+    transition:background .12s;align-items:center;position:relative}
+  .conv+.conv{margin-top:2px}
   .conv:hover{background:var(--panel-2)}
   .conv.active{background:var(--elev)}
-  .conv .bar{position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:42px;border-radius:0 3px 3px 0}
-  .avatar{width:42px;height:42px;border-radius:11px;flex:none;display:grid;place-items:center;
+  .conv .bar{position:absolute;left:4px;top:50%;transform:translateY(-50%);width:3px;height:28px;border-radius:3px}
+  .avatar{width:42px;height:42px;border-radius:12px;flex:none;display:grid;place-items:center;
     font-family:var(--display);font-weight:700;font-size:17px;position:relative;border:1.5px solid}
-  .avatar .u{position:absolute;top:-6px;left:-6px;min-width:18px;height:18px;border-radius:20px;background:var(--unread);
-    color:#fff;font-family:var(--mono);font-size:11px;font-weight:600;display:grid;place-items:center;
+  .avatar .u{position:absolute;top:-6px;left:-6px;min-width:19px;height:19px;border-radius:20px;background:var(--unread);
+    color:#fff;font-family:var(--mono);font-size:10.5px;font-weight:600;display:grid;place-items:center;
     border:2px solid var(--panel);padding:0 4px}
   .avatar .lv{position:absolute;bottom:-3px;right:-3px;width:12px;height:12px;border-radius:50%;
     background:var(--signal);border:2px solid var(--panel)}
   .conv-main{flex:1;min-width:0}
-  .conv-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
-  .conv-name{font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-family:var(--mono)}
-  .conv-time{font-family:var(--mono);font-size:10px;color:var(--ink-faint);flex:none}
-  .conv-prev{font-size:12px;color:var(--ink-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
-  .conv-prev.locked{color:var(--ink-faint);font-family:var(--mono)}
-  .conv-empty{padding:38px 24px;text-align:center;color:var(--ink-faint);font-size:12.5px;line-height:1.6;font-family:var(--mono)}
+  .conv-top{display:flex;justify-content:space-between;align-items:baseline;gap:var(--s2)}
+  .conv-name{font-weight:600;font-size:var(--fs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .conv-name.addr{font-family:var(--mono);font-size:var(--fs-sm)}
+  .conv-time{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--ink-faint);flex:none}
+  .conv-prev{font-size:var(--fs-sm);color:var(--ink-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .conv.unread .conv-prev{color:var(--ink);font-weight:500}
+  .conv.unread .conv-time{color:var(--btc-bright)}
+  .conv-prev.locked{font-family:var(--mono);font-size:var(--fs-xs)}
+  .conv-prev .q{color:var(--amber)}
+  .conv-prev .f{color:#ff8078}
+  .list-empty{padding:var(--s8) var(--s6);text-align:center;color:var(--ink-faint);font-size:var(--fs-sm);line-height:1.6}
+  .list-empty b{display:block;color:var(--ink);font-family:var(--display);font-weight:600;font-size:var(--fs-md);margin-bottom:6px}
+  .list-empty .btn{margin-top:var(--s4)}
+  .skel{display:flex;gap:var(--s3);align-items:center;padding:11px var(--s4) 11px 18px;margin:0 var(--s2)}
+  .skel i{display:block;border-radius:6px;background:linear-gradient(90deg,var(--panel-2),var(--elev),var(--panel-2));background-size:200% 100%;animation:shimmer 1.4s linear infinite}
+  .skel .a{width:42px;height:42px;border-radius:12px;flex:none}
+  .skel .l{flex:1;display:flex;flex-direction:column;gap:7px}
 
-  .thread{flex:1;display:flex;flex-direction:column;min-width:0}
-  .thread-head{display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--line);
-    flex:none;background:var(--panel);position:relative}
+  .thread{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
+  .thread-head{display:flex;align-items:center;gap:var(--s3);padding:var(--s3) var(--s5);border-bottom:1px solid var(--line);
+    flex:none;background:var(--panel);position:relative;min-width:0}
   .thread-head::after{content:"";position:absolute;left:0;bottom:-1px;height:2px;width:100%;opacity:.5;background:var(--accent,transparent)}
-  .thread-head .avatar{width:37px;height:37px;border-radius:10px;font-size:15px}
-  .thread-head .th-meta{line-height:1.2;min-width:0;margin-right:auto}
-  .thread-head .th-meta .n{font-family:var(--mono);font-weight:600;font-size:14px}
-  .thread-head .th-meta .s{font-size:11px;color:var(--ink-faint);font-family:var(--mono);
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .thread-head .back{display:none}
+  .thread-head .avatar{width:40px;height:40px;border-radius:11px;font-size:16px}
+  .th-meta{line-height:1.3;min-width:0;flex:1}
+  .th-meta .n{font-weight:600;font-size:var(--fs-md);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .th-meta .n.addr{font-family:var(--mono);font-size:var(--fs)}
+  .th-meta .s{font-size:var(--fs-xs);color:var(--ink-faint);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .th-acts{display:flex;align-items:center;gap:var(--s2);flex:none}
   .actbtn{appearance:none;border:1px solid var(--line-strong);background:var(--bg);color:var(--ink-dim);
-    font-family:var(--mono);font-size:11px;padding:5px 11px;border-radius:7px;cursor:pointer;flex:none;
-    transition:.15s;margin-left:8px}
+    font-family:var(--body);font-size:var(--fs-xs);font-weight:500;padding:6px 12px;border-radius:var(--r-sm);cursor:pointer;flex:none;
+    transition:.15s;white-space:nowrap}
   .actbtn:hover{border-color:var(--btc);color:var(--btc-bright)}
   .actbtn.danger:hover{border-color:var(--unread);color:var(--unread)}
-  .lock-pill{font-family:var(--mono);font-size:11px;display:flex;align-items:center;gap:6px;padding:5px 10px;
-    border-radius:7px;border:1px solid var(--line-strong);color:var(--ink-dim);flex:none;margin-left:8px}
-  .lock-pill.enc{color:var(--signal);border-color:rgba(57,224,138,.35);background:rgba(57,224,138,.08)}
+  .actbtn.primary{border-color:rgba(247,147,26,.5);color:var(--btc-bright)}
+  .th-status{display:flex;flex-wrap:wrap;gap:6px;padding:var(--s2) var(--s5);border-bottom:1px solid var(--line);background:var(--panel);flex:none}
+  .pill{font-family:var(--mono);font-size:var(--fs-2xs);display:inline-flex;align-items:center;gap:6px;padding:3px 9px;
+    border-radius:20px;border:1px solid var(--line-strong);color:var(--ink-dim);background:var(--bg);white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+  .pill .d{width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+  .pill.ok{color:var(--signal);border-color:rgba(57,224,138,.35);background:rgba(57,224,138,.07)}
+  .pill.wait{color:var(--amber);border-color:rgba(255,209,102,.3);background:rgba(255,209,102,.05)}
+  .pill.dash{border-style:dashed;color:var(--ink-faint)}
 
-  .msgs{flex:1;overflow-y:auto;padding:20px 22px;display:flex;flex-direction:column;gap:9px}
-  .bubble{max-width:min(560px,74%);padding:9px 12px;border-radius:12px;font-size:13px;line-height:1.45;word-break:break-word}
-  .bubble .ts{display:block;font-family:var(--mono);font-size:9.5px;opacity:.55;margin-top:4px}
-  .bubble.them{align-self:flex-start;background:var(--elev);border:1px solid var(--line);border-bottom-left-radius:4px}
-  .bubble.them.locked{font-family:var(--mono);font-size:11.5px;color:var(--amber);
+  .msgs{flex:1;overflow-y:auto;padding:var(--s5) var(--s6) var(--s4);display:flex;flex-direction:column;gap:3px}
+  .day{align-self:center;font-family:var(--mono);font-size:var(--fs-2xs);color:var(--ink-faint);letter-spacing:.4px;text-transform:uppercase;
+    margin:var(--s3) 0 var(--s2);padding:2px 10px;border-radius:20px;border:1px solid var(--line);background:var(--panel)}
+  .day:first-child{margin-top:0}
+  .bubble{max-width:min(560px,76%);padding:8px 12px 7px;border-radius:14px;font-size:var(--fs);line-height:1.5;word-break:break-word;white-space:pre-wrap}
+  .bubble.gap{margin-top:var(--s2)}
+  .bubble .ts{display:block;font-family:var(--mono);font-size:10px;opacity:.6;margin-top:3px;white-space:normal}
+  .bubble.them{align-self:flex-start;background:var(--elev);border:1px solid var(--line)}
+  .bubble.them.tail{border-bottom-left-radius:5px}
+  .bubble.them.locked{font-family:var(--mono);font-size:var(--fs-xs);color:var(--amber);
     border-color:rgba(255,209,102,.3);background:rgba(255,209,102,.05)}
-  .bubble.me{align-self:flex-end;background:var(--btc);color:#160f04;border-bottom-right-radius:4px}
+  .bubble.me{align-self:flex-end;background:var(--btc);color:#160f04}
+  .bubble.me.tail{border-bottom-right-radius:5px}
   .bubble.me .ts{color:#160f04}
   .bubble.me.sending{background:rgba(247,147,26,.16);color:var(--btc-bright);border:1px dashed rgba(247,147,26,.55)}
   .bubble.me.sending .ts{color:var(--btc-bright)}
-  .bubble.me.failed{background:rgba(255,69,58,.12);color:#ff8078;border:1px dashed rgba(255,69,58,.55)}
-  .bubble.me.failed .ts{color:#ff8078}
-  .sysline{align-self:center;max-width:80%;text-align:center;font-family:var(--mono);font-size:11px;
-    color:var(--ink-faint);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 12px;line-height:1.5}
+  .bubble.me.queued{background:rgba(255,209,102,.07);color:var(--amber);border:1px dashed rgba(255,209,102,.5)}
+  .bubble.me.queued .ts{color:var(--amber);opacity:.85}
+  .bubble.me.failed{background:rgba(255,69,58,.10);color:#ff9a93;border:1px dashed rgba(255,69,58,.55)}
+  .bubble.me.failed .ts{color:#ff9a93;opacity:.9}
+  .bubble .why{display:block;margin-top:4px;font-family:var(--mono);font-size:var(--fs-2xs);white-space:normal;opacity:.95}
+  .bubble .retry{appearance:none;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer;padding:0;margin-left:6px;font:inherit}
+  .intro{align-self:center;max-width:460px;width:100%;margin:auto 0;text-align:center;color:var(--ink-dim);font-size:var(--fs-sm);line-height:1.6;
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--s5) var(--s6)}
+  .intro b{display:block;color:var(--ink);font-family:var(--display);font-weight:600;font-size:var(--fs-md);margin-bottom:6px}
+  .intro .where{display:inline-block;margin-top:8px;font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-faint)}
 
-  .composer{flex:none;border-top:1px solid var(--line);padding:13px 18px;display:flex;gap:10px;align-items:center;background:var(--panel)}
-  .composer input{flex:1;background:var(--bg);border:1px solid var(--line-strong);border-radius:10px;color:var(--ink);
+  .composer{flex:none;border-top:1px solid var(--line);padding:var(--s3) var(--s5) 10px;background:var(--panel)}
+  .composer .row{display:flex;gap:10px;align-items:center}
+  .composer input{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line-strong);border-radius:var(--r);color:var(--ink);
     padding:11px 14px;font-family:var(--body);font-size:14px;outline:none;transition:border-color .15s}
   .composer input:focus{border-color:var(--btc)}
-  .send{appearance:none;border:0;width:44px;height:44px;border-radius:11px;cursor:pointer;flex:none;
+  .composer .hint{font-size:var(--fs-2xs);color:var(--ink-faint);margin-top:6px;padding-left:2px;font-family:var(--mono)}
+  .composer .hint.q{color:var(--amber)}
+  .send{appearance:none;border:0;width:44px;height:44px;border-radius:var(--r);cursor:pointer;flex:none;
     background:var(--btc);color:#150d02;display:grid;place-items:center;font-size:16px}
-  .thread-empty{flex:1;display:grid;place-items:center;color:var(--ink-faint);text-align:center}
-  .thread-empty .big{font-size:40px;margin-bottom:10px;opacity:.4}
+  .send:hover{filter:brightness(1.06)}
+  .thread-empty{flex:1;display:grid;place-items:center;color:var(--ink-faint);text-align:center;padding:var(--s6)}
+  .thread-empty .big{width:56px;height:56px;border-radius:16px;margin:0 auto 14px;display:grid;place-items:center;font-size:24px;
+    background:var(--panel);border:1px solid var(--line-strong);color:var(--ink-dim)}
+  .thread-empty b{display:block;color:var(--ink);font-family:var(--display);font-weight:600;font-size:var(--fs-md);margin-bottom:4px}
+  .thread-empty p{margin:0;font-size:var(--fs-sm)}
 
-  /* ---------- panels ---------- */
-  .scrim{position:fixed;inset:0;background:rgba(3,5,8,.68);backdrop-filter:blur(3px);z-index:80;display:none;place-items:center;padding:20px}
-  .scrim.show{display:grid}
-  .modal{background:var(--panel);border:1px solid var(--line-strong);border-radius:16px;width:100%;max-width:430px;
-    box-shadow:0 30px 80px -20px rgba(0,0,0,.85);overflow:hidden;animation:pop .16s ease}
-  .modal-head{padding:17px 22px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
-  .modal-head b{font-family:var(--mono);font-weight:600;font-size:15px}
-  .modal-head .x{margin-left:auto;cursor:pointer;color:var(--ink-faint);font-size:20px;background:none;border:0}
-  .modal-body{padding:19px 22px;display:flex;flex-direction:column;gap:14px;max-height:70vh;overflow-y:auto}
-  .field label{display:block;font-size:11px;color:var(--ink-dim);font-family:var(--mono);margin-bottom:6px;
-    letter-spacing:.3px;text-transform:uppercase}
-  .field input{width:100%;background:var(--bg);border:1px solid var(--line-strong);border-radius:9px;color:var(--ink);
-    padding:10px 12px;font-family:var(--body);font-size:13.5px;outline:none;transition:border-color .15s}
-  .field input:focus{border-color:var(--btc)}
-  .field .help{font-size:11px;color:var(--ink-faint);margin-top:5px;font-family:var(--mono);line-height:1.45}
-  .modal-foot{padding:15px 22px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end}
-  .btn{appearance:none;border:1px solid var(--line-strong);background:var(--elev);color:var(--ink);padding:9px 17px;
-    border-radius:9px;font-family:var(--mono);font-weight:500;font-size:13px;cursor:pointer}
-  .btn:hover{background:var(--panel-2)}
+  /* ---------- buttons, modal ---------- */
+  .btn{appearance:none;border:1px solid var(--line-strong);background:var(--elev);color:var(--ink);padding:9px 16px;
+    border-radius:var(--r);font-family:var(--body);font-weight:500;font-size:var(--fs-sm);cursor:pointer;text-decoration:none;
+    display:inline-flex;align-items:center;justify-content:center;gap:7px;transition:.15s}
+  .btn:hover{background:var(--elev-2)}
   .btn.primary{background:var(--btc);color:#150d02;border-color:transparent;font-weight:600}
+  .btn.primary:hover{filter:brightness(1.06);background:var(--btc)}
+  .btn.block{width:100%}
+  .scrim{position:fixed;inset:0;background:rgba(3,5,8,.68);backdrop-filter:blur(3px);z-index:80;display:none;place-items:center;padding:var(--s5)}
+  .scrim.show{display:grid}
+  .modal{background:var(--panel);border:1px solid var(--line-strong);border-radius:16px;width:100%;max-width:440px;
+    box-shadow:0 30px 80px -20px rgba(0,0,0,.85);overflow:hidden;animation:pop .16s ease}
+  .modal-head{padding:18px 22px 6px;display:flex;align-items:flex-start;gap:10px}
+  .modal-head .mt{flex:1}
+  .modal-head b{display:block;font-family:var(--display);font-weight:600;font-size:var(--fs-lg);letter-spacing:-.2px}
+  .modal-head span{display:block;font-size:var(--fs-sm);color:var(--ink-faint);margin-top:2px}
+  .x{appearance:none;cursor:pointer;color:var(--ink-faint);font-size:20px;background:none;border:0;line-height:1;padding:4px;border-radius:6px}
+  .x:hover{color:var(--ink)}
+  .modal-body{padding:var(--s4) 22px var(--s5);display:flex;flex-direction:column;gap:var(--s4);max-height:70vh;overflow-y:auto}
+  .field label{display:block;font-size:var(--fs-xs);color:var(--ink-dim);font-weight:500;margin-bottom:6px}
+  .field label small{color:var(--ink-faint);font-weight:400}
+  .field input{width:100%;background:var(--bg);border:1px solid var(--line-strong);border-radius:var(--r);color:var(--ink);
+    padding:10px 12px;font-family:var(--body);font-size:var(--fs);outline:none;transition:border-color .15s}
+  .field input.mono{font-family:var(--mono);font-size:var(--fs-sm)}
+  .field input:focus{border-color:var(--btc)}
+  .field .help{font-size:var(--fs-xs);color:var(--ink-faint);margin-top:6px;line-height:1.5}
+  .callout{display:flex;gap:10px;font-size:var(--fs-xs);line-height:1.55;color:var(--ink-dim);background:var(--bg);
+    border:1px solid var(--line);border-radius:var(--r);padding:10px 12px}
+  .callout .ci{color:var(--signal);flex:none}
+  .modal-foot{padding:14px 22px;border-top:1px solid var(--line);display:flex;gap:10px;justify-content:flex-end;background:rgba(7,10,15,.35)}
 
-  .drawer{position:fixed;top:0;right:0;height:100%;width:340px;background:var(--panel);border-left:1px solid var(--line-strong);
-    z-index:70;transform:translateX(100%);transition:transform .22s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;
-    box-shadow:-20px 0 60px -20px rgba(0,0,0,.7)}
-  .drawer.open{transform:translateX(0)}
-  .drawer-head{padding:17px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
-  .drawer-head b{font-family:var(--mono);font-weight:600;font-size:14px}
-  .drawer-head .x{margin-left:auto;background:none;border:0;color:var(--ink-faint);font-size:20px;cursor:pointer}
-  .drawer-body{padding:16px 20px;display:flex;flex-direction:column;gap:14px;overflow-y:auto}
-  .sec{font-family:var(--mono);font-size:10px;color:var(--ink-faint);letter-spacing:.6px;text-transform:uppercase}
-  .kv{display:flex;justify-content:space-between;gap:12px;font-family:var(--mono);font-size:11.5px;padding:4px 0;
-    border-bottom:1px solid var(--line)}
-  .kv .k{color:var(--ink-faint)}
-  .kv .v{color:var(--ink);text-align:right;word-break:break-all}
+  /* ---------- status drawer ---------- */
+  .drawer-scrim{position:fixed;inset:0;z-index:69;background:rgba(3,5,8,.45);opacity:0;pointer-events:none;transition:opacity .2s}
+  .drawer-scrim.show{opacity:1;pointer-events:auto}
+  .drawer{position:fixed;top:0;right:0;height:100%;width:380px;max-width:100vw;background:var(--panel);border-left:1px solid var(--line-strong);
+    z-index:70;transform:translateX(100%);visibility:hidden;transition:transform .22s cubic-bezier(.4,0,.2,1),visibility 0s .22s;
+    display:flex;flex-direction:column;box-shadow:-20px 0 60px -20px rgba(0,0,0,.7)}
+  .drawer.open{transform:translateX(0);visibility:visible;transition:transform .22s cubic-bezier(.4,0,.2,1)}
+  .drawer-head{padding:18px var(--s5) 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px}
+  .drawer-head b{font-family:var(--display);font-weight:600;font-size:var(--fs-lg);letter-spacing:-.2px;flex:1}
+  .drawer-body{padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3);overflow-y:auto}
+  .card{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-lg);padding:14px 14px 10px}
+  .card-h{display:flex;align-items:center;gap:var(--s2);margin-bottom:var(--s2)}
+  .card-h h4{margin:0;flex:1;font-family:var(--display);font-weight:600;font-size:var(--fs);letter-spacing:-.1px}
+  .kv{display:flex;justify-content:space-between;align-items:baseline;gap:var(--s3);font-size:var(--fs-sm);padding:6px 0;
+    border-top:1px solid var(--line)}
+  .card-h+.kv{border-top:0}
+  .kv .k{color:var(--ink-faint);flex:none}
+  .kv .v{color:var(--ink);text-align:right;word-break:break-word;font-family:var(--mono);font-size:var(--fs-xs);min-width:0}
   .kv .v.ok{color:var(--signal)}
-  .kv .v.bad{color:var(--unread)}
-  .note{font-size:11.5px;color:var(--ink-dim);line-height:1.55;background:var(--bg);border:1px solid var(--line);
-    border-radius:9px;padding:11px 12px;font-family:var(--mono)}
-  .note code{color:var(--btc-bright);background:rgba(247,147,26,.1);padding:1px 5px;border-radius:4px}
+  .kv .v.bad{color:#ff8078}
+  .fp{margin-top:var(--s2);padding:10px 12px;border-radius:var(--r);background:var(--panel);border:1px solid var(--line);
+    display:flex;align-items:center;gap:10px}
+  .fp .fl{font-size:var(--fs-2xs);color:var(--ink-faint);margin-bottom:2px}
+  .fp code{display:block;background:none;padding:0;color:var(--signal);font-size:var(--fs-xs);letter-spacing:.6px;word-spacing:2px;line-height:1.55}
+  .fp .copy{margin-left:auto;flex:none}
+  .errbox{margin-top:var(--s2);font-family:var(--mono);font-size:var(--fs-xs);color:#ff9a93;background:rgba(255,69,58,.07);
+    border:1px solid rgba(255,69,58,.25);border-radius:var(--r);padding:9px 11px;word-break:break-word;line-height:1.5}
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--s2)}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:9px 6px;text-align:center}
+  .stat b{display:block;font-family:var(--mono);font-size:var(--fs-md);font-weight:600}
+  .stat span{font-size:var(--fs-2xs);color:var(--ink-faint)}
+  .note{font-size:var(--fs-xs);color:var(--ink-dim);line-height:1.6;padding:2px 4px}
+  .drawer-foot{display:flex;gap:var(--s2);margin-top:var(--s1)}
+  .drawer-foot .btn{flex:1}
 
-  .toast{position:fixed;bottom:22px;left:50%;transform:translate(-50%,20px);z-index:90;opacity:0;background:var(--elev);
-    border:1px solid var(--line-strong);border-radius:10px;padding:11px 17px;font-size:12.5px;
-    box-shadow:0 20px 50px -15px rgba(0,0,0,.75);transition:.25s;pointer-events:none;font-family:var(--mono);
-    max-width:82vw;text-align:center}
+  .toast{position:fixed;bottom:calc(96px + env(safe-area-inset-bottom));left:50%;transform:translate(-50%,20px);z-index:90;opacity:0;background:var(--elev);
+    border:1px solid var(--line-strong);border-radius:var(--r);padding:11px 17px;font-size:var(--fs-sm);
+    box-shadow:var(--shadow);transition:.25s;pointer-events:none;max-width:min(520px,calc(100vw - 32px));text-align:center}
   .toast.show{opacity:1;transform:translate(-50%,0)}
 
   /* ---------- notifications ---------- */
-  .notifs{position:fixed;right:18px;top:70px;z-index:95;display:flex;flex-direction:column;gap:10px;
-    width:330px;max-width:calc(100vw - 36px);pointer-events:none}
-  .notif{pointer-events:auto;background:var(--elev);border:1px solid var(--line-strong);border-radius:12px;
+  .notifs{position:fixed;right:18px;top:calc(var(--topbar) + 14px);z-index:95;display:flex;flex-direction:column;gap:10px;
+    width:340px;max-width:calc(100vw - 36px);pointer-events:none}
+  .notif{pointer-events:auto;background:var(--elev);border:1px solid var(--line-strong);border-radius:var(--r-lg);
     box-shadow:0 18px 44px -14px rgba(0,0,0,.8);overflow:hidden;cursor:pointer;
     animation:slideIn .26s cubic-bezier(.2,.9,.3,1);position:relative}
   .notif.out{animation:slideOut .22s ease forwards}
@@ -290,15 +400,12 @@
   .notif .av{width:34px;height:34px;border-radius:10px;flex:none;display:grid;place-items:center;
     font-family:var(--display);font-weight:700;font-size:15px;border:1.5px solid}
   .notif .txt{flex:1;min-width:0}
-  .notif .who{font-family:var(--mono);font-weight:600;font-size:12.5px;white-space:nowrap;
-    overflow:hidden;text-overflow:ellipsis}
-  .notif .prev{font-size:12px;color:var(--ink-dim);margin-top:3px;line-height:1.4;
+  .notif .who{font-weight:600;font-size:var(--fs-sm);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .notif .prev{font-size:var(--fs-sm);color:var(--ink-dim);margin-top:2px;line-height:1.45;
     display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
-  .notif .prev.locked{font-family:var(--mono);color:var(--amber);font-size:11.5px}
-  .notif .x{background:none;border:0;color:var(--ink-faint);font-size:16px;cursor:pointer;
-    padding:0 2px;line-height:1;flex:none}
-  .notif .x:hover{color:var(--ink)}
-  .notif .when{font-family:var(--mono);font-size:9.5px;color:var(--ink-faint);margin-top:5px}
+  .notif .prev.locked{font-family:var(--mono);color:var(--amber);font-size:var(--fs-xs)}
+  .notif .x{font-size:16px;padding:0 2px;flex:none}
+  .notif .when{font-family:var(--mono);font-size:10px;color:var(--ink-faint);margin-top:5px}
   @keyframes slideIn{from{opacity:0;transform:translateX(26px)}to{opacity:1;transform:translateX(0)}}
   @keyframes slideOut{to{opacity:0;transform:translateX(26px);height:0;margin-top:-10px}}
   .tab-count{animation:pop-badge .3s cubic-bezier(.2,1.4,.4,1)}
@@ -308,8 +415,56 @@
   ::-webkit-scrollbar-thumb:hover{background:var(--ink-faint);background-clip:content-box}
   @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0}}
   @keyframes pop{from{transform:scale(.96);opacity:0}to{transform:scale(1);opacity:1}}
-  @media (max-width:820px){.conv-list{width:100%}.thread{display:none}.legend{display:none}.radar-head .lede{display:none}}
-  @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;animation-iteration-count:1!important}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes breathe{50%{opacity:.35}}
+  @keyframes shimmer{to{background-position:-200% 0}}
+
+  /* ---------- tablet ---------- */
+  @media (max-width:1100px){
+    .selfnode{max-width:300px}
+    .radar-head .lede{display:none}
+  }
+  /* ---------- phone / narrow: single-pane messages ---------- */
+  @media (max-width:820px){
+    .topbar{gap:10px;padding:0 var(--s3)}
+    .brand .stack span{display:none}
+    .selfnode{padding:6px 10px;max-width:none;flex:0 1 auto}
+    .selfnode .meta .s{display:none}
+    .legend{display:none!important}   /* renderLegend sets an inline display */
+    .radar-head{padding:var(--s3) var(--s4) 0}
+    .hud{right:var(--s3);top:var(--s2)}
+    .viewctl{right:var(--s4);bottom:calc(var(--s4) + env(safe-area-inset-bottom))}
+    .fab{right:var(--s4);bottom:calc(164px + env(safe-area-inset-bottom))}
+    .conv-list{width:100%;border-right:0}
+    .thread{display:none}
+    #view-msgs.has-thread .conv-list{display:none}
+    #view-msgs.has-thread .thread{display:flex}
+    .thread-head{padding:10px var(--s3)}
+    .thread-head .back{display:grid;width:34px;height:34px}
+    .th-acts .actbtn{padding:6px 9px}
+    .th-status{padding:var(--s2) var(--s3)}
+    .msgs{padding:var(--s4) var(--s3) var(--s3)}
+    .bubble{max-width:86%}
+    .composer{padding:10px var(--s3) calc(10px + env(safe-area-inset-bottom))}
+    .composer .hint{display:none}
+    .composer .hint.q{display:block}
+    .drawer{width:100vw;border-left:0}
+    .notifs{right:var(--s3);left:var(--s3);width:auto;max-width:none}
+    .scrim{place-items:end center;padding:0}
+    .modal{max-width:none;border-radius:18px 18px 0 0;border-bottom:0}
+    .modal-foot{padding-bottom:calc(14px + env(safe-area-inset-bottom))}
+  }
+  @media (max-width:520px){
+    .brand .stack{display:none}
+    .tab{padding:7px 11px}
+    .tab .ic{display:none}
+    .selfnode .meta{display:none}
+    .selfnode{padding:0;width:38px;height:38px;justify-content:center;flex:none}
+    .radar-head h1{font-size:var(--fs-md)}
+    .th-acts .actbtn.opt{display:none}
+    .stats{grid-template-columns:repeat(2,1fr)}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}}
 </style>
 </head>
 <body>
@@ -319,25 +474,25 @@
       <div class="mark">N</div>
       <div class="stack"><b>NodeSignal</b><span>node operator console</span></div>
     </div>
-    <nav class="tabs">
-      <button class="tab active" id="tab-peers" onclick="switchTab('peers')">◈ peers</button>
-      <button class="tab" id="tab-msgs" onclick="switchTab('msgs')">✉ messages <span class="tab-count" id="tab-unread" style="display:none">0</span></button>
+    <nav class="tabs" aria-label="views">
+      <button class="tab active" id="tab-peers" onclick="switchTab('peers')"><span class="ic">◈</span>peers</button>
+      <button class="tab" id="tab-msgs" onclick="switchTab('msgs')"><span class="ic">✉</span>messages <span class="tab-count" id="tab-unread" style="display:none">0</span></button>
     </nav>
     <div class="spacer"></div>
-    <div class="selfnode" id="selfnode">
-      <div class="pulse" id="self-pulse"></div>
-      <div class="meta"><div class="t" id="self-name">connecting…</div><div class="s" id="self-desc">attaching to daemon</div></div>
-    </div>
-    <button class="icon-btn" id="status-toggle" title="Status" onclick="toggleDrawer()">⚙</button>
+    <button class="selfnode" id="selfnode" onclick="toggleDrawer()" title="Open status">
+      <span class="pulse wait" id="self-pulse"></span>
+      <span class="meta"><span class="t" id="self-name" style="display:block">connecting…</span><span class="s" id="self-desc" style="display:block">reaching the daemon</span></span>
+    </button>
+    <button class="icon-btn" id="status-toggle" title="Status" aria-label="Status" onclick="toggleDrawer()">⚙</button>
   </header>
 
-  <div class="banner" id="banner"></div>
+  <div class="banner" id="banner" role="status"></div>
 
   <div class="views">
     <section class="view active" id="view-peers">
       <div class="radar-head">
-        <h1>peer constellation</h1>
-        <span class="lede">// rings = rtt latency · colour = implementation · drag to pan · scroll to zoom</span>
+        <h1>Peer constellation</h1>
+        <span class="lede">rings = rtt latency · colour = implementation · drag to pan · scroll to zoom</span>
       </div>
       <div class="radar-wrap">
         <svg class="radar" id="radar" preserveAspectRatio="xMidYMid meet">
@@ -346,7 +501,8 @@
         <div class="crt"></div>
         <div class="hud" id="hud"></div>
         <div class="legend" id="legend"></div>
-        <div class="empty" id="empty"><div class="card" id="empty-card"></div></div>
+        <div class="empty" id="empty"><div class="state-card" id="empty-card"></div></div>
+        <button class="fab" title="Add a contact by address" aria-label="Add a contact" onclick="openAdd()">+</button>
         <div class="viewctl">
           <button class="vc" onclick="zoomBy(1/1.25)" title="Zoom in">+</button>
           <button class="vc" onclick="zoomBy(1.25)" title="Zoom out">−</button>
@@ -357,12 +513,13 @@
 
     <section class="view" id="view-msgs">
       <aside class="conv-list">
-        <div class="conv-head"><h2>messages</h2><p id="conv-sub"></p></div>
+        <div class="conv-head">
+          <div class="ch-t"><h2>Messages</h2><p id="conv-sub"></p></div>
+          <button class="conv-add" title="Add a contact by address" aria-label="Add a contact" onclick="openAdd()">+</button>
+        </div>
         <div class="conv-scroll" id="conv-scroll"></div>
       </aside>
-      <div class="thread" id="thread">
-        <div class="thread-empty"><div><div class="big">✉</div><div>select a conversation</div></div></div>
-      </div>
+      <div class="thread" id="thread"></div>
     </section>
   </div>
 </div>
@@ -371,35 +528,39 @@
 
 <!-- add contact -->
 <div class="scrim" id="scrim">
-  <div class="modal">
-    <div class="modal-head"><b>add a contact</b><button class="x" onclick="closeAdd()">×</button></div>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-title">
+    <div class="modal-head">
+      <div class="mt"><b id="add-title">Add a contact</b><span>Another operator running nodesignald.</span></div>
+      <button class="x" onclick="closeAdd()" aria-label="Close">×</button>
+    </div>
     <div class="modal-body">
       <div class="field">
-        <label>address</label>
-        <input id="f-ip" placeholder="100.x.y.z  or  something.onion" autocomplete="off" spellcheck="false"/>
-        <div class="help">The other operator's host. Their nodesignald listens on :8788. Their node details are read automatically over :8333.</div>
+        <label for="f-ip">Address</label>
+        <input id="f-ip" class="mono" placeholder="100.x.y.z  or  something.onion" autocomplete="off" spellcheck="false"
+               onkeydown="if(event.key==='Enter')submitAdd()"/>
+        <div class="help">Their daemon listens on :8788. Add <code>:port</code> if they use another one. Their node is identified automatically over :8333.</div>
       </div>
-      <div class="field"><label>nickname</label><input id="f-nick" placeholder="optional" autocomplete="off"/></div>
       <div class="field">
-        <label>shared PIN</label>
-        <input id="f-pin" placeholder="blank for none" autocomplete="off"/>
-        <div class="help">Both operators must set the SAME PIN. Encryption happens in the daemon (PBKDF2 → AES-256-GCM); this page never handles keys.</div>
+        <label for="f-nick">Nickname <small>(optional, only you see it)</small></label>
+        <input id="f-nick" placeholder="e.g. kiwi-relay" autocomplete="off" onkeydown="if(event.key==='Enter')submitAdd()"/>
       </div>
+      <div class="callout"><span class="ci">🔒</span><span>No PIN to agree. The first connection runs a Noise handshake and pins their identity key. If that key ever changes, the connection is rejected and you'll see a warning.</span></div>
     </div>
     <div class="modal-foot">
-      <button class="btn" onclick="closeAdd()">cancel</button>
-      <button class="btn primary" onclick="submitAdd()">add contact</button>
+      <button class="btn" onclick="closeAdd()">Cancel</button>
+      <button class="btn primary" onclick="submitAdd()">Add contact</button>
     </div>
   </div>
 </div>
 
 <!-- status drawer -->
-<aside class="drawer" id="drawer">
-  <div class="drawer-head"><b>Status</b><button class="x" onclick="toggleDrawer()">×</button></div>
+<div class="drawer-scrim" id="drawer-scrim" onclick="toggleDrawer(false)"></div>
+<aside class="drawer" id="drawer" aria-label="Status">
+  <div class="drawer-head"><b>Status</b><button class="x" onclick="toggleDrawer(false)" aria-label="Close">×</button></div>
   <div class="drawer-body" id="drawer-body"></div>
 </aside>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status"></div>
 
 <script>
 "use strict";
@@ -430,6 +591,7 @@ function hostOf(addr){                       // "1.2.3.4:8333" or "[2001:db8::1]
   return i>0&&addr.indexOf(':')===i?addr.slice(0,i):addr;
 }
 const implShort=p=>p.impl==='Unknown'?'unknown':p.impl.split(' ').pop();
+state.everOpen=false;          // has this page ever reached the daemon?
 
 /* ===================== WEBSOCKET ===================== */
 function wsEndpoint(){
@@ -440,18 +602,18 @@ let reconnectDelay=1000;
 function connect(){
   let ws;
   try{ ws=new WebSocket(wsEndpoint()); }
-  catch(e){ state.wsState='error'; renderChrome(); return schedule(); }
+  catch(e){ state.wsState='error'; renderAll(); return schedule(); }
   state.ws=ws; state.wsState='connecting'; renderChrome();
-  ws.onopen=()=>{ state.wsState='open'; reconnectDelay=1000; renderChrome(); };
+  ws.onopen=()=>{ state.wsState='open'; state.everOpen=true; reconnectDelay=1000; renderAll(); };
   ws.onmessage=ev=>{ let m; try{m=JSON.parse(ev.data);}catch{return;} handle(m); };
-  ws.onclose=()=>{ state.wsState='closed'; renderChrome(); schedule(); };
+  ws.onclose=()=>{ state.wsState='closed'; renderAll(); schedule(); };
   ws.onerror=()=>{};
 }
 function schedule(){
   setTimeout(()=>{ if(state.wsState!=='open')connect(); }, reconnectDelay);
   reconnectDelay=Math.min(15000, reconnectDelay*1.7);
 }
-const send=o=>{ if(state.ws&&state.ws.readyState===1)state.ws.send(JSON.stringify(o)); };
+const send=o=>{ if(state.ws&&state.ws.readyState===1){state.ws.send(JSON.stringify(o));return true;} return false; };
 
 function handle(m){
   switch(m.type){
@@ -460,6 +622,7 @@ function handle(m){
       state.node=m.node&&m.node.self?m.node.self:null;
       state.rpcError=m.node?m.node.error:null;
       rebuild(m.node&&m.node.peers?m.node.peers:[], m.contacts||[]);
+      flushOutbox();
       renderAll(); break;
     case 'node':
       state.node=m.self||null; state.rpcError=m.error||null;
@@ -491,17 +654,15 @@ function handle(m){
       const p=byHost(m.host); if(!p)break;
       const msg=p.msgs.find(x=>x.id===m.id);
       if(msg){msg.status=m.status; if(m.error)msg.error=m.error;}
-      if(m.status==='failed')toast('not delivered: '+(m.error||''));
+      if(m.status==='failed')toast('not delivered: '+(m.error||'unknown error'));
       renderAll(); break;
     }
     case 'chat.readack': { const p=byHost(m.host); if(p){p.unread=0;renderAll();} break; }
     case 'security':
       if(m.kind==='fp-mismatch'){
         toast('⚠ identity mismatch for '+m.host+': connection rejected');
-        const ban=document.getElementById('banner');
-        ban.className='banner bad show';
-        ban.innerHTML='⚠ SECURITY: '+esc(m.host)+' presented a different identity key than the one pinned on first contact. '+
-          'The connection was rejected. This means either the operator reinstalled, or someone is impersonating them.';
+        state.security={host:m.host,expected:m.expected,got:m.got};
+        renderChrome();
       }
       break;
     case 'identified':
@@ -512,6 +673,29 @@ function handle(m){
 }
 const wireMsg=w=>({id:w.id,from:w.from,ts:w.ts,text:w.text,locked:!!w.locked,status:w.status||null,error:w.error||null});
 const byHost=h=>state.peers.find(p=>p.host===h);
+
+/* ===================== OUTBOX =====================
+   The composer is never disabled. A message sent while the daemon is
+   unreachable is held here, shown as "queued", and handed to the daemon as
+   soon as it sends a fresh state. Kept in localStorage so a reload while
+   offline does not lose it. Only the daemon ever reports "sending". */
+const OUTBOX_KEY='nodesignal.outbox.v1';
+function loadOutbox(){
+  try{ const a=JSON.parse(localStorage.getItem(OUTBOX_KEY)||'[]');
+    return Array.isArray(a)?a.filter(q=>q&&typeof q.host==='string'&&typeof q.text==='string'):[]; }
+  catch{ return []; }
+}
+function saveOutbox(){ try{ localStorage.setItem(OUTBOX_KEY,JSON.stringify(state.outbox)); }catch{} }
+const queuedFor=host=>state.outbox.filter(q=>q.host===host);
+function flushOutbox(){
+  if(!state.outbox.length)return;
+  const left=[];
+  for(const q of state.outbox){ if(!send({type:'chat.send',host:q.host,port:q.port,text:q.text}))left.push(q); }
+  const sent=state.outbox.length-left.length;
+  state.outbox=left; saveOutbox();
+  if(sent)toast(sent===1?'queued message handed to the daemon':sent+' queued messages handed to the daemon');
+}
+state.outbox=loadOutbox();
 
 /* ===================== MODEL =====================
    Two sources, merged onto one map:
@@ -594,7 +778,6 @@ function upsertContact(c){
   }
   layoutDirty=true;
 }
-
 /* ===================== LAYOUT ===================== */
 const CX=470,CY=390;
 let LAYOUT=null,layoutSig='';
@@ -842,12 +1025,22 @@ function renderEmpty(){
   const wrap=document.getElementById('empty'),card=document.getElementById('empty-card');
   if(state.peers.length){wrap.style.display='none';return;}
   wrap.style.display='grid';
-  if(state.wsState!=='open')
-    card.innerHTML='<b>connecting to the daemon…</b><p>If this persists, check <code>systemctl status nodesignal</code> on this machine.</p>';
+  const where='<span class="where">Linux, on the node: <code>systemctl status nodesignal</code></span>';
+  if((state.wsState!=='open'&&!state.everOpen)||(state.wsState==='open'&&!state.daemon))
+    card.innerHTML=`<div class="sc-ic"><div class="spinner"></div></div><h3>Connecting to the daemon</h3>
+      <p>This page talks to the nodesignald that served it. It usually takes a second.</p>`;
+  else if(state.wsState!=='open')
+    card.innerHTML=`<div class="sc-ic bad">!</div><h3>Daemon connection lost</h3>
+      <p>Retrying on its own. Anything you send now is queued and goes out when it's back.</p>${where}`;
   else if(!state.node)
-    card.innerHTML='<b>waiting for Bitcoin RPC</b><p>The daemon is running but cannot reach your node yet, so it has no peer list. See Status (⚙) for the exact error.</p>';
+    card.innerHTML=`<div class="sc-ic warn">₿</div><h3>Waiting for Bitcoin RPC</h3>
+      <p>The daemon is running but can't read your node yet, so there's no peer list to draw.</p>
+      <p>Messaging still works: add a contact by address.</p>
+      <div class="acts"><button class="btn" onclick="toggleDrawer(true)">See the error</button><button class="btn primary" onclick="openAdd()">Add contact</button></div>`;
   else
-    card.innerHTML='<b>your node has no peers yet</b><p>Once bitcoind connects to peers they appear here automatically. Use <b>+</b> to add a NodeSignal contact by address.</p>';
+    card.innerHTML=`<div class="sc-ic ok">◈</div><h3>Your node has no peers yet</h3>
+      <p>Peers appear here on their own once bitcoind connects to them. You can add a NodeSignal contact by address meanwhile.</p>
+      <div class="acts"><button class="btn primary" onclick="openAdd()">Add contact</button></div>`;
 }
 function pulse(p){
   if(p._x==null)return;
@@ -872,7 +1065,7 @@ function showTip(p,g){
   if(p.network)rows.push(['network',p.network]);
   if(p.kind==='contact'){
     if(p.peerFp)rows.push(['identity',p.peerFp.slice(0,16)+'…']);
-    if(p.established)rows.push(['encryption','end-to-end (Noise)']);
+    rows.push(['link',p.online?'online now':p.established?'established, offline':'not yet replied']);
   }
 
   const dec=p.declared||[],sup=p.supports||[];
@@ -882,7 +1075,7 @@ function showTip(p,g){
     <div class="chips">${sup.map(s=>mk(s,'cap')).join('')}</div>`;
 
   tip.innerHTML=`<div class="accent" style="background:${c}"></div><div class="inner">
-    <div class="nick" style="color:${c}">${esc(p.nick||p.host)}${p.hasPin?' <span style="color:var(--signal)">🔒</span>':''}</div>
+    <div class="nick" style="color:${c}">${esc(p.nick||p.host)}</div>
     <div class="ip">${esc(p.addr||p.host)}</div>
     ${rows.map(([k,v])=>`<div class="row"><span class="k">${k}</span><span class="v">${esc(v)}</span></div>`).join('')}
     ${p.ua?`<div class="ua">${esc(p.ua)}</div>`:''}
@@ -894,6 +1087,7 @@ function showTip(p,g){
   let left=rect.left+rect.width/2-tr.width/2,top=rect.top-tr.height-12;
   left=Math.max(10,Math.min(left,innerWidth-tr.width-10));
   if(top<66)top=rect.bottom+12;
+  if(top+tr.height>innerHeight-10)top=Math.max(10,innerHeight-tr.height-10);
   tip.style.left=left+'px';tip.style.top=top+'px';
 }
 const hideTip=()=>tip.classList.remove('show');
@@ -906,71 +1100,128 @@ function fmtTime(ts){
   if(df<86400)return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');
   return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});
 }
-const lastMsg=p=>p.msgs[p.msgs.length-1];
+const clock=ts=>{const d=new Date(ts);return String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0');};
+function dayLabel(ts){
+  const d=new Date(ts),t=new Date(); t.setHours(0,0,0,0);
+  const d0=new Date(d); d0.setHours(0,0,0,0);
+  const diff=Math.round((t-d0)/86400000);
+  if(diff===0)return 'today'; if(diff===1)return 'yesterday';
+  return d.toLocaleDateString(undefined,{weekday:diff<7?'long':undefined,month:'short',day:'numeric'});
+}
+// Everything shown in a thread: the daemon's history plus anything still
+// waiting in the outbox for this host.
+const threadMsgs=p=>p.msgs.concat(queuedFor(p.host).map(q=>({id:q.qid,from:'me',ts:q.ts,text:q.text,status:'queued'})));
+const lastMsg=p=>{const a=threadMsgs(p);return a[a.length-1];};
+const nameOf=p=>p.nick||p.host;
+const LOCKED_TXT='🔒 legacy PIN-encrypted message. This console no longer handles PINs, so it cannot be shown.';
+
+function linkState(p){
+  if(p.kind!=='contact')return {cls:'dash',txt:'node peer · not a contact yet'};
+  // Presence comes from the daemon; while it is unreachable we don't know.
+  if(state.wsState!=='open')return {cls:'dash',txt:p.established?'established · status unknown':'status unknown'};
+  if(p.online)return {cls:'ok',txt:'online'};
+  if(p.established)return {cls:'',txt:'established · offline'};
+  return {cls:'dash',txt:'not yet replied'};
+}
 
 function renderConvList(){
   const wrap=document.getElementById('conv-scroll');
-  const withMsgs=state.peers.filter(p=>p.kind==='contact'||p.msgs.length);
-  document.getElementById('conv-sub').textContent =
-    `${withMsgs.length} conversation${withMsgs.length!==1?'s':''} · ${state.peers.length} peers on the map`;
+  const withMsgs=state.peers.filter(p=>p.kind==='contact'||p.msgs.length||queuedFor(p.host).length);
+  const sub=document.getElementById('conv-sub');
+  if(!state.everOpen&&!state.peers.length){
+    sub.textContent='loading…';
+    wrap.innerHTML=Array.from({length:4},()=>`<div class="skel"><i class="a"></i><span class="l"><i style="width:55%;height:11px"></i><i style="width:85%;height:10px"></i></span></div>`).join('');
+    return;
+  }
+  sub.textContent=`${withMsgs.length} conversation${withMsgs.length!==1?'s':''} · ${state.peers.length} peer${state.peers.length!==1?'s':''} on the map`;
   if(!withMsgs.length){
-    wrap.innerHTML=`<div class="conv-empty">no conversations yet.<br><br>click any peer on the map to message its operator, or use <b>+</b> to add one by address.</div>`;
+    wrap.innerHTML=`<div class="list-empty"><b>No conversations yet</b>
+      Click any peer on the map to message its operator, or add one by address.
+      <div><button class="btn primary" onclick="openAdd()">Add contact</button></div></div>`;
     return;
   }
   const sorted=[...withMsgs].sort((a,b)=>((lastMsg(b)?.ts)||0)-((lastMsg(a)?.ts)||0));
   wrap.innerHTML=sorted.map(p=>{
     const c=color(p),m=lastMsg(p);
     let prev,cls='';
-    if(!m){prev='no messages yet';}
-    else if(m.locked){prev='🔒 encrypted: set the PIN to read';cls='locked';}
-    else prev=(m.from==='me'?'you: ':'')+(m.text||'');
-    return `<div class="conv ${state.active===p.id?'active':''}" onclick="openChat('${p.id}')">
+    if(!m){prev=esc(p.kind==='contact'?linkState(p).txt:'no messages yet');}
+    else if(m.locked){prev=esc('🔒 legacy PIN message');cls='locked';}
+    else{
+      const tag=m.status==='queued'?'<span class="q">queued · </span>':m.status==='failed'?'<span class="f">not delivered · </span>':'';
+      prev=tag+esc((m.from==='me'?'you: ':'')+(m.text||''));
+    }
+    const isAddr=!p.nick;
+    return `<div class="conv ${state.active===p.id?'active':''} ${p.unread?'unread':''}" onclick="openChat('${p.id}')">
       ${state.active===p.id?`<span class="bar" style="background:${c}"></span>`:''}
       <div class="avatar" style="background:${c}22;border-color:${c};color:${c}">${glyph(p)}
         ${p.unread?`<span class="u">${p.unread>9?'9+':p.unread}</span>`:''}
         ${p.online?'<span class="lv"></span>':''}</div>
       <div class="conv-main"><div class="conv-top">
-        <span class="conv-name" style="color:${c}">${esc(p.nick||p.host)}</span>
+        <span class="conv-name ${isAddr?'addr':''}" style="color:${c}">${esc(nameOf(p))}</span>
         <span class="conv-time">${m?fmtTime(m.ts):''}</span></div>
-        <div class="conv-prev ${cls}">${esc(prev)}</div></div></div>`;
+        <div class="conv-prev ${cls}">${prev}</div></div></div>`;
   }).join('');
 }
 
 let lastThread=null;
 function renderThread(){
   const t=document.getElementById('thread');
+  const vm=document.getElementById('view-msgs');
   const p=state.peers.find(x=>x.id===state.active);
-  if(!p){t.innerHTML=`<div class="thread-empty"><div><div class="big">✉</div><div>select a conversation</div></div></div>`;lastThread=null;return;}
+  vm.classList.toggle('has-thread',!!p);
+  if(!p){
+    t.innerHTML=`<div class="thread-empty"><div><div class="big">✉</div><b>Select a conversation</b>
+      <p>or click any node on the peers map to message its operator.</p></div></div>`;
+    lastThread=null;return;
+  }
   const c=color(p);
+  const ls=linkState(p);
 
   const acts=p.kind==='contact'
-    ? `<button class="actbtn" onclick="doIdentify('${p.id}')">identify</button>
-       <button class="actbtn" onclick="doPin('${p.id}')">${p.hasPin?'change PIN':'set PIN'}</button>
-       <button class="actbtn danger" onclick="doRemove('${p.id}')">remove</button>
-       <div class="lock-pill ${p.hasPin?'enc':''}">${p.hasPin?'🔒 PIN-encrypted':'unencrypted'}</div>`
-    : `<button class="actbtn" onclick="doPin('${p.id}')">set PIN</button>
-       <div class="lock-pill">node peer</div>`;
+    ? `<button class="actbtn opt" onclick="doIdentify('${p.id}')" title="Re-read their node over :8333">identify</button>
+       <button class="actbtn danger" onclick="doRemove('${p.id}')">remove</button>`
+    : `<button class="actbtn primary" onclick="doAddPeer('${p.id}')" title="Save as a NodeSignal contact">add as contact</button>`;
 
   const sub=[p.impl==='Unknown'?'not identified':p.impl, p.version?p.version:null, p.addr||p.host,
     p.height!=null?('height '+Number(p.height).toLocaleString()):null].filter(Boolean).join(' · ');
 
+  const enc=p.kind!=='contact'?null
+    : p.peerFp?{cls:'ok',txt:'🔒 Noise · key '+p.peerFp.slice(0,8)+'…'}
+    : {cls:'wait',txt:'🔒 Noise · key pinned on first connection'};
+  const pills=`<span class="pill ${ls.cls}"><span class="d"></span>${esc(ls.txt)}</span>`+
+    (enc?`<span class="pill ${enc.cls}" title="${p.peerFp?esc('pinned identity '+p.peerFp):''}">${esc(enc.txt)}</span>`:'')+
+    (p.unmeasured||p.latency==null?'':`<span class="pill">${esc(p.latency+' ms')}</span>`);
+
   const head=`<div class="thread-head" style="--accent:${c}">
+    <button class="icon-btn back" onclick="closeChat()" aria-label="Back to conversations">←</button>
     <div class="avatar" style="background:${c}22;border-color:${c};color:${c}">${glyph(p)}</div>
-    <div class="th-meta"><div class="n" style="color:${c}">${esc(p.nick||p.host)}</div>
-      <div class="s">${esc(sub)}</div></div>${acts}</div>`;
+    <div class="th-meta"><div class="n ${p.nick?'':'addr'}" style="color:${c}">${esc(nameOf(p))}</div>
+      <div class="s">${esc(sub)}</div></div><div class="th-acts">${acts}</div></div>
+    <div class="th-status">${pills}</div>`;
 
-  let body=p.msgs.map(m=>{
-    if(m.locked)
-      return `<div class="bubble them locked">🔒 encrypted message: set the shared PIN to read it<span class="ts">${fmtTime(m.ts)}</span></div>`;
-    const cls=m.from+(m.status==='sending'?' sending':m.status==='failed'?' failed':'');
-    const tail=m.status==='sending'?' · sending':m.status==='failed'?' · not delivered':m.status==='delivered'?' · delivered':'';
-    return `<div class="bubble ${cls}">${esc(m.text)}<span class="ts">${fmtTime(m.ts)}${tail}</span></div>`;
-  }).join('');
+  const all=threadMsgs(p);
+  let body='',prevDay='',prev=null;
+  for(let i=0;i<all.length;i++){
+    const m=all[i];
+    const dl=dayLabel(m.ts);
+    if(dl!==prevDay){ body+=`<div class="day">${esc(dl)}</div>`; prevDay=dl; prev=null; }
+    const next=all[i+1];
+    const tail=!next||next.from!==m.from||(next.ts-m.ts)>5*60000||dayLabel(next.ts)!==dl;
+    const gap=prev&&(prev.from!==m.from||(m.ts-prev.ts)>5*60000);
+    prev=m;
+    const shape=(tail?' tail':'')+(gap?' gap':'');
+    if(m.locked){ body+=`<div class="bubble them locked${shape}">${esc(LOCKED_TXT)}<span class="ts">${clock(m.ts)}</span></div>`; continue; }
+    const st=m.status;
+    const cls=m.from+(st==='sending'?' sending':st==='failed'?' failed':st==='queued'?' queued':'');
+    const tailTxt=st==='sending'?' · sending…':st==='failed'?' · not delivered':st==='delivered'?' · delivered':st==='queued'?' · queued, waiting for the daemon':'';
+    const why=st==='failed'?`<span class="why">${esc(m.error||'no reason given')}<button class="retry" data-mid="${esc(m.id)}" onclick="resend(this.dataset.mid)">send again</button></span>`:'';
+    body+=`<div class="bubble ${cls}${shape}">${esc(m.text)}${why}<span class="ts">${clock(m.ts)}${tailTxt}</span></div>`;
+  }
 
-  if(!p.msgs.length){
+  if(!all.length){
     body = p.kind==='contact'
-      ? `<div class="sysline">No messages yet. Anything you send goes directly to this operator's daemon at ${esc(p.host)}:${p.port}.</div>`
-      : `<div class="sysline">This is a peer of your Bitcoin node, not yet a NodeSignal contact.<br>Send a message to try reaching them; it only arrives if they run nodesignald on port 8788.</div>`;
+      ? `<div class="intro"><b>Say hello</b>Messages go straight to this operator's daemon, end to end encrypted. No server in between.<br><span class="where">${esc(p.host)}:${esc(p.port)}</span></div>`
+      : `<div class="intro"><b>A peer of your Bitcoin node</b>It isn't a NodeSignal contact yet. A message only arrives if its operator runs nodesignald on port 8788; if not, you'll see why it failed.<br><span class="where">${esc(p.host)}</span></div>`;
   }
 
   const box=document.getElementById('msgs');
@@ -981,17 +1232,21 @@ function renderThread(){
   const focused=!!oldIn&&document.activeElement===oldIn;
   const atBottom=!box||(box.scrollHeight-box.scrollTop-box.clientHeight<60);
   const oldTop=box?box.scrollTop:0;
+  const online=state.wsState==='open';
 
   t.innerHTML=head+`<div class="msgs" id="msgs">${body}</div>
-    <div class="composer">
-      <input id="composer-in" placeholder="message ${esc(p.nick||p.host)}…" autocomplete="off"
+    <div class="composer"><div class="row">
+      <input id="composer-in" placeholder="message ${esc(nameOf(p))}…" autocomplete="off" aria-label="Message"
              onkeydown="if(event.key==='Enter')sendMsg()">
-      <button class="send" onclick="sendMsg()" title="Send">➤</button></div>`;
+      <button class="send" onclick="sendMsg()" title="Send" aria-label="Send">➤</button></div>
+      <div class="hint ${online?'':'q'}">${online?'enter to send · delivered daemon to daemon over :8788':'daemon offline · messages are queued and sent when it reconnects'}</div></div>`;
 
   const nb=document.getElementById('msgs');
   nb.scrollTop=(!same||atBottom)?nb.scrollHeight:oldTop;
   const inp=document.getElementById('composer-in');
-  if(inp){inp.value=draft;if(focused||!same){inp.focus();try{inp.setSelectionRange(caret,caret);}catch{}}}
+  // Don't pop the on-screen keyboard just because a thread was opened on a phone.
+  const coarse=matchMedia('(pointer:coarse)').matches;
+  if(inp){inp.value=draft;if(focused||(!same&&!coarse)){inp.focus();try{inp.setSelectionRange(caret,caret);}catch{}}}
   lastThread=p.id;
 }
 
@@ -1001,32 +1256,42 @@ function openChat(id){
   if(p.unread)send({type:'chat.read',host:p.host});
   switchTab('msgs'); renderAll();
 }
+function closeChat(){ state.active=null; renderAll(); }
 function sendMsg(){
   const p=state.peers.find(x=>x.id===state.active); if(!p)return;
   const inp=document.getElementById('composer-in'); if(!inp)return;
   const text=inp.value.trim(); if(!text)return;
-  if(state.wsState!=='open'){toast('daemon not connected');return;}
   inp.value='';
-  // The daemon creates the contact if this was only a node peer, dials their
-  // :8788 and reports delivered / failed. Nothing is encrypted in the browser.
-  send({type:'chat.send',host:p.host,port:p.port||8788,text});
+  queueOrSend(p,text);
 }
-function doPin(id){
-  const p=state.peers.find(x=>x.id===id); if(!p)return;
-  const pin=prompt('Shared PIN for '+(p.nick||p.host)+'.\nBoth operators must use the same value. Leave blank to remove.','');
-  if(pin===null)return;
-  if(p.kind==='contact')send({type:'contact.pin',host:p.host,pin:pin.trim()});
-  else send({type:'contact.add',host:p.host,port:8788,nick:p.nick||'',pin:pin.trim()});
-  toast(pin.trim()?'PIN set':'PIN cleared');
+// The daemon creates the contact if this was only a node peer, dials their
+// :8788 and reports delivered / failed. Nothing is encrypted in the browser.
+function queueOrSend(p,text){
+  const port=p.port||8788;
+  if(state.wsState==='open'&&send({type:'chat.send',host:p.host,port,text}))return;
+  state.outbox.push({qid:'q'+now()+Math.random().toString(36).slice(2,7),host:p.host,port,text,ts:now()});
+  saveOutbox(); renderAll();
+  toast('daemon offline: message queued');
+}
+function resend(mid){
+  const p=state.peers.find(x=>x.id===state.active); if(!p)return;
+  const m=p.msgs.find(x=>x.id===mid); if(!m||!m.text)return;
+  queueOrSend(p,m.text);
 }
 function doIdentify(id){
   const p=state.peers.find(x=>x.id===id); if(!p)return;
   send({type:'identify',host:p.host,port:8333});
   toast('reading '+p.host+':8333 …');
 }
+function doAddPeer(id){
+  const p=state.peers.find(x=>x.id===id); if(!p)return;
+  // contact.add makes the daemon run the :8333 identify on its own.
+  send({type:'contact.add',host:p.host,port:8788,nick:p.nick||''});
+  toast('added '+p.host+' as a contact');
+}
 function doRemove(id){
   const p=state.peers.find(x=>x.id===id); if(!p)return;
-  if(!confirm('Remove contact '+(p.nick||p.host)+'?\nIts message history on this node is deleted.'))return;
+  if(!confirm('Remove contact '+nameOf(p)+'?\nIts message history on this node is deleted.'))return;
   send({type:'contact.remove',host:p.host});
 }
 
@@ -1051,11 +1316,11 @@ function notify(peer,text,locked){
      <div class="body">
        <div class="av" style="background:${c}22;border-color:${c};color:${c}">${glyph(peer)}</div>
        <div class="txt">
-         <div class="who" style="color:${c}">${esc((peer.nick||peer.host))}</div>
-         <div class="prev${locked?' locked':''}">${locked?'🔒 encrypted message: set the shared PIN to read it':esc(text||'')}</div>
+         <div class="who" style="color:${c}">${esc(nameOf(peer))}</div>
+         <div class="prev${locked?' locked':''}">${locked?'🔒 legacy PIN-encrypted message':esc(text||'')}</div>
          <div class="when">now</div>
        </div>
-       <button class="x" title="dismiss">×</button>
+       <button class="x" title="dismiss" aria-label="Dismiss">×</button>
      </div>`;
   const close=()=>{ if(card._gone)return; card._gone=true;
     card.classList.add('out'); setTimeout(()=>card.remove(),220); };
@@ -1079,33 +1344,53 @@ function switchTab(tab){
   document.getElementById('view-msgs').classList.toggle('active',tab==='msgs');
   hideTip();
 }
+function setBanner(kind,icon,html,action){
+  const ban=document.getElementById('banner');
+  if(!kind){ban.className='banner';ban.innerHTML='';return;}
+  ban.className='banner '+kind+' show';
+  ban.innerHTML=`<span class="bi">${icon}</span><span class="bt">${html}</span>`+
+    (action?`<button class="ba" onclick="${action[1]}">${action[0]}</button>`:'');
+}
 function renderChrome(){
   const pulseEl=document.getElementById('self-pulse');
   const name=document.getElementById('self-name');
   const desc=document.getElementById('self-desc');
-  const ban=document.getElementById('banner');
   pulseEl.className='pulse';
+  const nick=state.daemon?state.daemon.nick:'NodeSignal';
 
-  if(state.wsState!=='open'){
-    name.textContent=state.daemon?state.daemon.nick:'NodeSignal';
-    desc.textContent=state.wsState==='connecting'?'connecting to daemon…':'daemon connection lost, retrying';
-    pulseEl.classList.add('bad');
-    ban.className='banner bad show';
-    ban.innerHTML='daemon connection lost, retrying automatically. If it does not return: <code>sudo systemctl status nodesignal</code>';
+  if(state.wsState!=='open'||!state.daemon){
+    name.textContent=nick;
+    if(!state.everOpen||!state.daemon){
+      desc.textContent='connecting to daemon…';
+      pulseEl.classList.add('wait');
+      setBanner(null);
+    }else{
+      const q=state.outbox.length;
+      desc.textContent='daemon connection lost, retrying';
+      pulseEl.classList.add('bad');
+      setBanner('bad','!','<b>Daemon connection lost.</b> Retrying automatically.'+
+        (q?` ${q} message${q>1?'s':''} queued.`:' Messages you send are queued until it returns.')+
+        ' If it does not come back, on the node run <code>sudo systemctl status nodesignal</code>.');
+    }
     return;
+  }
+  if(state.security){
+    const s=state.security;
+    setBanner('bad','⚠','<b>Security:</b> '+esc(s.host)+' presented a different identity key than the one pinned on first contact, so the connection was rejected. '+
+      'Either the operator reinstalled, or someone is impersonating them. Confirm with them through another channel before re-adding.',
+      ['dismiss','state.security=null;renderChrome()']);
   }
   if(state.node){
     pulseEl.classList.add('ok');
     name.textContent=state.daemon?state.daemon.nick:'Your Node';
     desc.textContent=`${state.node.impl} ${state.node.version} · height ${Number(state.node.height).toLocaleString()}${state.node.pruned?' · pruned':''} · ${state.node.connections} peers`;
-    ban.className='banner'; ban.innerHTML='';
+    if(!state.security)setBanner(null);
   }else{
     pulseEl.classList.add('bad');
-    name.textContent=state.daemon?state.daemon.nick:'NodeSignal';
+    name.textContent=nick;
     desc.textContent='Bitcoin RPC not connected';
-    ban.className='banner warn show';
-    ban.innerHTML='Bitcoin RPC not connected'+(state.rpcError?': <code>'+esc(state.rpcError)+'</code>':'')+
-      ' · the peer map stays empty until the daemon can read getpeerinfo';
+    if(!state.security)setBanner('warn','₿','<b>Bitcoin RPC not connected</b>'+(state.rpcError?': <code>'+esc(state.rpcError)+'</code>':'')+
+      '. The peer map stays empty until the daemon can read getpeerinfo; messaging still works.',['details','toggleDrawer(true)']);
   }
 }
 function updateUnread(){
@@ -1116,52 +1401,76 @@ function updateUnread(){
   } else e.style.display='none';
   updateTitle(total);
 }
+const fpGroups=fp=>String(fp).match(/.{1,4}/g).join(' ');
 function renderDrawer(){
   const d=document.getElementById('drawer-body');
-  const n=state.node;
-  const kv=(k,v,cls)=>`<div class="kv"><span class="k">${k}</span><span class="v ${cls||''}">${esc(v)}</span></div>`;
+  const n=state.node,dm=state.daemon,ws=state.wsState;
+  const kv=(k,v,cls)=>`<div class="kv"><span class="k">${esc(k)}</span><span class="v ${cls||''}">${esc(v)}</span></div>`;
+  const pill=(cls,txt)=>`<span class="pill ${cls}"><span class="d"></span>${esc(txt)}</span>`;
+  const contacts=state.peers.filter(p=>p.kind==='contact');
+  const wsTxt=ws==='open'?'connected':state.everOpen?'reconnecting':'connecting';
   d.innerHTML=
-    `<div class="sec">daemon</div>
-     ${kv('nick',state.daemon?state.daemon.nick:'n/a')}
-     ${kv('version',state.daemon?state.daemon.ua:'n/a')}
-     ${state.daemon&&state.daemon.fingerprint?kv('identity fp',state.daemon.fingerprint.slice(0,16)+'…','ok'):''}
-     ${state.daemon&&state.daemon.secure===false?kv('encryption','PIN fallback','bad'):(state.daemon&&state.daemon.secure?kv('encryption','Noise handshake','ok'):'')}
-     ${kv('web socket',state.wsState,state.wsState==='open'?'ok':'bad')}
-     ${kv('peer port',state.daemon?state.daemon.peerPort:'n/a')}
-     <div class="sec">bitcoin node</div>
-     ${kv('rpc',n?'connected':'not connected',n?'ok':'bad')}
-     ${n?kv('implementation',n.impl):''}
-     ${n?kv('version',n.version):''}
-     ${n?kv('height',Number(n.height).toLocaleString()):''}
-     ${n?kv('network',n.network):''}
-     ${n?kv('pruned',n.pruned?('yes, from '+Number(n.pruneHeight||0).toLocaleString()):'no'):''}
-     ${n?kv('connections',n.connections):''}
-     ${n&&n.declared&&n.declared.length?kv('signaling',n.declared.join(', ')):''}
-     ${!n&&state.rpcError?kv('error',state.rpcError,'bad'):''}
-     <div class="sec">map</div>
-     ${kv('node peers',state.peers.filter(p=>p.kind==='peer').length)}
-     ${kv('contacts',state.peers.filter(p=>p.kind==='contact').length)}
+    `<section class="card">
+       <div class="card-h"><h4>This daemon</h4>${pill(ws==='open'?'ok':state.everOpen?'':'wait',wsTxt)}</div>
+       ${kv('nick',dm?dm.nick:'n/a')}
+       ${kv('version',dm?dm.ua:'n/a')}
+       ${dm?kv('encryption',dm.secure?'Noise handshake':'PIN fallback (noise.js missing)',dm.secure?'ok':'bad'):''}
+       ${kv('peer port',dm?dm.peerPort:'n/a')}
+       ${state.outbox.length?kv('queued messages',state.outbox.length,'bad'):''}
+       ${dm&&dm.fingerprint?`<div class="fp"><div><div class="fl">identity fingerprint · peers pin this on first contact</div>
+         <code id="my-fp">${esc(fpGroups(dm.fingerprint))}</code></div>
+         <button class="actbtn copy" onclick="copyFp()">copy</button></div>`:''}
+     </section>
+     <section class="card">
+       <div class="card-h"><h4>Bitcoin node</h4>${pill(n?'ok':'wait',n?'RPC connected':'RPC not connected')}</div>
+       ${n?kv('implementation',n.impl)+kv('version',n.version)+kv('height',Number(n.height).toLocaleString())+kv('network',n.network)+
+          kv('pruned',n.pruned?('yes, from '+Number(n.pruneHeight||0).toLocaleString()):'no')+kv('connections',n.connections)+
+          (n.declared&&n.declared.length?kv('signaling',n.declared.join(', ')):''):
+          `<div class="note">The daemon can't read your node. Peers stay off the map until it can; messaging is unaffected.</div>
+           ${state.rpcError?`<div class="errbox">${esc(state.rpcError)}</div>`:''}
+           <div class="note">The daemon log lists every credential path it tried. Linux, on the node: <code>journalctl -u nodesignal -n 40</code></div>`}
+     </section>
+     <section class="card">
+       <div class="card-h"><h4>Map</h4></div>
+       <div class="stats">
+         <div class="stat"><b>${state.peers.filter(p=>p.kind==='peer').length}</b><span>node peers</span></div>
+         <div class="stat"><b>${contacts.length}</b><span>contacts</span></div>
+         <div class="stat"><b>${contacts.filter(p=>p.established).length}</b><span>established</span></div>
+         <div class="stat"><b>${contacts.filter(p=>p.online).length}</b><span>online</span></div>
+       </div>
+     </section>
      <div class="note">Peers come from <code>getpeerinfo</code> on this node. Contacts are operators running nodesignald; messages travel directly between daemons on <code>:8788</code>, encrypted by the daemon.</div>
-     <button class="btn" style="width:100%" onclick="send({type:'peers.refresh'});toast('refreshing…')">refresh peers</button>
-     <a class="btn" style="width:100%;text-align:center;text-decoration:none;display:block" href="/health" target="_blank">open /health</a>`;
+     <div class="drawer-foot">
+       <button class="btn" onclick="send({type:'peers.refresh'})?toast('refreshing…'):toast('daemon not connected')">Refresh peers</button>
+       <a class="btn" href="/health" target="_blank" rel="noopener">Open /health</a>
+     </div>`;
 }
-function toggleDrawer(){
+function copyFp(){
+  const fp=state.daemon&&state.daemon.fingerprint; if(!fp)return;
+  const done=()=>toast('fingerprint copied');
+  // navigator.clipboard needs a secure context, which http://<ip> is not.
+  if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(fp).then(done,()=>toast('copy failed'));return;}
+  try{const ta=document.createElement('textarea');ta.value=fp;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();done();}catch{toast('copy failed');}
+}
+function toggleDrawer(force){
   const d=document.getElementById('drawer');
-  const open=d.classList.toggle('open');
+  const open=d.classList.toggle('open',force===undefined?!d.classList.contains('open'):!!force);
+  document.getElementById('drawer-scrim').classList.toggle('show',open);
   document.getElementById('status-toggle').classList.toggle('on',open);
   if(open)renderDrawer();
 }
 function openAdd(){document.getElementById('scrim').classList.add('show');document.getElementById('f-ip').focus();}
 function closeAdd(){document.getElementById('scrim').classList.remove('show');
-  ['f-ip','f-nick','f-pin'].forEach(i=>document.getElementById(i).value='');}
+  ['f-ip','f-nick'].forEach(i=>document.getElementById(i).value='');}
 function submitAdd(){
   const raw=document.getElementById('f-ip').value.trim();
   if(!raw){toast('enter an address');return;}
   const host=hostOf(raw)||raw;
   const port=Number((raw.match(/:(\d+)$/)||[])[1])||8788;
-  send({type:'contact.add',host,port,
-    nick:document.getElementById('f-nick').value.trim(),
-    pin:document.getElementById('f-pin').value.trim()});
+  if(!send({type:'contact.add',host,port,nick:document.getElementById('f-nick').value.trim()})){
+    toast('daemon not connected: try again once it is back');return;
+  }
   closeAdd();
   toast('contact added, reading their node over :8333');
 }
@@ -1172,19 +1481,7 @@ function toast(m){
 function renderAll(){ renderChrome(); renderRadar(); renderConvList(); renderThread(); updateUnread(); if(document.getElementById('drawer').classList.contains('open'))renderDrawer(); }
 
 document.getElementById('scrim').addEventListener('click',e=>{if(e.target.id==='scrim')closeAdd();});
-window.addEventListener('keydown',e=>{if(e.key==='Escape'){closeAdd();
-  document.getElementById('drawer').classList.remove('open');
-  document.getElementById('status-toggle').classList.remove('on');}});
-
-/* floating add button */
-(function(){
-  const b=document.createElement('button');
-  b.className='vc';
-  b.style.cssText='position:absolute;right:24px;bottom:150px;width:54px;height:54px;border-radius:14px;background:var(--btc);color:#150d02;font-size:28px;border:0;box-shadow:0 8px 22px -8px rgba(247,147,26,.85);z-index:4';
-  b.title='Add a contact by address'; b.textContent='+';
-  b.onclick=openAdd;
-  document.querySelector('.radar-wrap').appendChild(b);
-})();
+window.addEventListener('keydown',e=>{if(e.key==='Escape'){closeAdd();toggleDrawer(false);}});
 
 renderChrome();
 renderAll();
