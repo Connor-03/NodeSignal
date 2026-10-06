@@ -1,0 +1,181 @@
+# CI: syntax, conventions and tests on every push and pull request, plus the
+# two installers built and exercised against tests/mock-node.js.
+# NodeSignal has no npm dependencies, so there is no install step; the only
+# package fetched is postject, by npx, while building the Windows executable.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Checks and tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [18, 22]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: node --check every .js file
+        run: |
+          status=0
+          while IFS= read -r f; do
+            node --check "$f" || { echo "::error file=$f::does not parse"; status=1; }
+          done < <(git ls-files '*.js')
+          exit $status
+
+      - name: node --check the inline scripts of every .html file
+        run: |
+          cat > "$RUNNER_TEMP/html-scripts.js" <<'JS'
+          const fs = require("fs"), path = require("path"), cp = require("child_process");
+          const files = cp.execFileSync("git", ["ls-files", "*.html"]).toString().split("\n").filter(Boolean);
+          let bad = 0, n = 0;
+          for (const f of files) {
+            const html = fs.readFileSync(f, "utf8");
+            const re = /<script(?![^>]*\bsrc=)([^>]*)>([\s\S]*?)<\/script>/gi;
+            let m;
+            while ((m = re.exec(html))) {
+              const type = (m[1].match(/type=["']?([^"'\s>]+)/i) || [])[1] || "";
+              if (type && !/^(text\/javascript|module)$/i.test(type)) continue;
+              const out = path.join(process.env.RUNNER_TEMP, `inline-${n++}${type === "module" ? ".mjs" : ".js"}`);
+              fs.writeFileSync(out, m[2]);
+              if (cp.spawnSync(process.execPath, ["--check", out], { stdio: "inherit" }).status !== 0) {
+                console.log(`::error file=${f}::an inline <script> does not parse`);
+                bad++;
+              }
+            }
+          }
+          console.log(`${n} inline script(s) checked in ${files.length} file(s)`);
+          process.exit(bad ? 1 : 0);
+          JS
+          node "$RUNNER_TEMP/html-scripts.js"
+
+      - name: No em dashes (U+2014) outside tests/vectors
+        run: |
+          EM="$(printf '\342\200\224')"
+          if git grep -n -I -F -e "$EM" -- . ':(exclude)tests/vectors'; then
+            echo "::error::em dash (U+2014) found; use a comma, colon or parentheses (CLAUDE.md section 7)"
+            exit 1
+          fi
+
+      - name: Shell scripts parse
+        run: |
+          bash -n install-node.sh
+          bash -n packaging/deb/build-deb.sh
+          for s in preinst postinst prerm postrm; do sh -n "packaging/deb/$s"; done
+
+      - name: .bat files keep CRLF line endings
+        run: |
+          status=0
+          for f in $(git ls-files '*.bat'); do
+            node -e '
+              const f = process.argv[1], t = require("fs").readFileSync(f, "latin1");
+              if (/(^|[^\r])\n/.test(t)) { console.log(`::error file=${f}::must use CRLF line endings`); process.exit(1); }' "$f" || status=1
+          done
+          exit $status
+
+      - name: Every listed program file exists
+        run: node setup-core.js --check-files .
+
+      - name: Tests (every tests/*.test.js)
+        run: node tests/run-all.js
+
+  deb:
+    name: Linux .deb (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build
+        run: bash packaging/deb/build-deb.sh "$(node -p 'require("./package.json").version')" "${{ matrix.arch }}"
+
+      - name: Inspect
+        run: |
+          dpkg-deb -I "dist/nodesignal-linux-${{ matrix.arch }}.deb"
+          dpkg-deb -c "dist/nodesignal-linux-${{ matrix.arch }}.deb"
+
+      - name: Refuses to install without a Bitcoin node
+        if: matrix.arch == 'amd64'
+        run: |
+          if sudo dpkg -i dist/nodesignal-linux-amd64.deb; then
+            echo "::error::the package installed on a machine with no Bitcoin node"; exit 1
+          fi
+          sudo dpkg --purge nodesignal >/dev/null 2>&1 || true
+
+      - name: Install, run under systemd against the mock node, purge
+        if: matrix.arch == 'amd64'
+        run: |
+          nohup node -e "require('./tests/mock-node.js').rpcServer()" > "$RUNNER_TEMP/mock.log" 2>&1 &
+          sleep 1
+          sudo env NODESIGNAL_SKIP_NODE_CHECK=1 dpkg -i dist/nodesignal-linux-amd64.deb
+          nodesignal version
+          # point the installed service at the mock node (CI only: credentials in the config file)
+          sudo /opt/nodesignal/node -e '
+            const c = require("/opt/nodesignal/setup-core.js"), f = "/etc/nodesignal/config.json";
+            c.writeConfig(f, Object.assign(c.readConfig(f), { "rpc-url": "http://127.0.0.1:18332", "rpc-user": "u", "rpc-pass": "p" }));'
+          sudo systemctl restart nodesignal
+          nodesignal status --wait 30 || { sudo journalctl -u nodesignal -n 80 --no-pager; exit 1; }
+          curl -fsS http://127.0.0.1:8789/health | node -e '
+            let d = ""; process.stdin.on("data", (c) => (d += c)).on("end", () => {
+              const h = JSON.parse(d);
+              if (!h.rpcConnected) { console.error("RPC not connected:", d); process.exit(1); }
+              console.log("health ok:", h.peerCount, "peers");
+            });'
+          systemctl show nodesignal -p User -p ProtectSystem -p NoNewPrivileges
+          sudo dpkg --purge nodesignal
+          test ! -e /etc/nodesignal
+          sudo test -f /var/lib/nodesignal/state.json   # state survives a purge
+
+  windows:
+    name: Windows .exe (build and selftest)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build NodeSignal-Setup-windows-x64.exe
+        run: node packaging/build-sea.js
+
+      - name: Selftest against the mock node
+        shell: pwsh
+        run: |
+          $mock = Start-Process -FilePath node -ArgumentList '-e', "require('./tests/mock-node.js').rpcServer()" -PassThru -NoNewWindow
+          Start-Sleep -Seconds 2
+          & .\dist\NodeSignal-Setup-windows-x64.exe version
+          & .\dist\NodeSignal-Setup-windows-x64.exe selftest --rpc-url http://127.0.0.1:18332 --rpc-user u --rpc-pass p
+          $code = $LASTEXITCODE
+          Stop-Process -Id $mock.Id -Force -ErrorAction SilentlyContinue
+          exit $code
+
+  sea-linux:
+    name: Single executable mechanics on Linux (selftest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build and selftest
+        run: |
+          node packaging/build-sea.js --out dist/nodesignal-sea-linux-x64
+          nohup node -e "require('./tests/mock-node.js').rpcServer()" > "$RUNNER_TEMP/mock.log" 2>&1 &
+          sleep 1
+          ./dist/nodesignal-sea-linux-x64 selftest --rpc-url http://127.0.0.1:18332 --rpc-user u --rpc-pass p
