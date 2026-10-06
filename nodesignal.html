@@ -61,11 +61,14 @@
 
   /* ---------- top bar ---------- */
   .topbar{display:flex;align-items:center;gap:var(--s4);padding:0 var(--s4) 0 var(--s5);height:var(--topbar);flex:none;
-    border-bottom:1px solid var(--line);background:var(--panel);min-width:0}
+    border-bottom:1px solid var(--line);background:linear-gradient(180deg,#121926,var(--panel));min-width:0;position:relative}
+  .topbar::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;pointer-events:none;
+    background:linear-gradient(90deg,transparent,rgba(247,147,26,.35) 18%,rgba(140,210,180,.18) 60%,transparent)}
   .brand{display:flex;align-items:center;gap:10px;user-select:none;flex:none}
-  .brand .mark{width:30px;height:30px;border-radius:8px;flex:none;background:var(--btc);
-    display:grid;place-items:center;font-family:var(--mono);font-weight:700;color:#150d02;font-size:15px;
-    box-shadow:0 0 0 1px rgba(255,255,255,.12) inset}
+  .brand .mark{width:32px;height:32px;border-radius:9px;flex:none;display:grid;place-items:center;
+    background:linear-gradient(150deg,#1d2635,#0e131c);border:1px solid rgba(247,147,26,.42);
+    box-shadow:0 0 16px -5px rgba(247,147,26,.7),0 1px 0 rgba(255,255,255,.05) inset}
+  .brand .mark svg{width:22px;height:22px;display:block}
   .brand .stack{display:flex;flex-direction:column;line-height:1.15}
   .brand b{font-family:var(--display);font-weight:600;font-size:16.5px;letter-spacing:-.2px}
   .brand span{color:var(--ink-faint);font-size:var(--fs-2xs);font-family:var(--mono);letter-spacing:.2px}
@@ -114,50 +117,82 @@
   .view{position:absolute;inset:0;display:none}
   .view.active{display:flex}
 
-  /* ---------- peers / constellation (radar visuals unchanged) ---------- */
+  /* ---------- peers / constellation ----------
+     The map's layout and navigation are frozen (decision 9); these rules only
+     paint it. */
   #view-peers{flex-direction:column}
   .radar-head{display:flex;align-items:baseline;gap:var(--s3);padding:var(--s4) var(--s6) var(--s1);flex:none;min-width:0}
   .radar-head h1{margin:0;font-family:var(--display);font-weight:600;font-size:var(--fs-lg);letter-spacing:-.2px;white-space:nowrap}
   .radar-head h1::before{content:"◈ ";color:var(--btc);font-family:var(--mono);font-size:15px}
   .radar-head .lede{color:var(--ink-faint);font-size:var(--fs-xs);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
   .radar-wrap{flex:1;position:relative;min-height:0;
-    background-image:radial-gradient(rgba(140,210,180,.055) 1px,transparent 1px);
-    background-size:26px 26px;background-position:center}
-  .crt{position:absolute;inset:0;pointer-events:none;z-index:2;
-    background:repeating-linear-gradient(rgba(0,0,0,.15) 0 1px,transparent 1px 3px);mix-blend-mode:multiply;opacity:.55}
+    background:
+      radial-gradient(ellipse 60% 55% at 50% 52%,rgba(247,147,26,.075),rgba(247,147,26,0) 70%),
+      radial-gradient(ellipse 120% 100% at 50% 50%,rgba(7,10,15,0) 40%,rgba(3,5,8,.55) 100%),
+      radial-gradient(rgba(140,210,180,.05) 1px,transparent 1px) center/26px 26px,
+      var(--bg)}
   svg.radar{width:100%;height:100%;display:block;position:relative;z-index:1;touch-action:none;user-select:none}
-  .ring{fill:none;stroke:var(--line-strong);stroke-width:1;stroke-dasharray:2 7;opacity:.75}
-  .ring-lbl{fill:var(--ink-faint);font-family:var(--mono)}
-  .tether{stroke-width:1.2;stroke-dasharray:3 5;fill:none;opacity:.45}
-  .tether.solid{stroke-dasharray:none;stroke-width:1.8;opacity:.8}
-  .peer-g{cursor:pointer}
+  .band{fill:rgba(140,210,180,.026)}
+  .ring{fill:none;stroke:rgba(140,210,180,.11);stroke-width:1}
+  .ring.outer{stroke:rgba(140,210,180,.2);stroke-dasharray:3 6}
+  .ring-pill{fill:rgba(10,14,21,.92);stroke:rgba(140,210,180,.16);stroke-width:1}
+  .ring-lbl{fill:var(--ink-dim);font-family:var(--mono);text-anchor:middle;letter-spacing:.3px}
+  .tether-g{transition:opacity .18s}
+  .tether{stroke-width:1.3;stroke-dasharray:2 6;stroke-linecap:round;fill:none}
+  .tether.solid{stroke-dasharray:none;stroke-width:2.2}
+  .tether-glow{stroke-width:7;fill:none;opacity:.22;filter:url(#soft-glow)}
+  .peer-g{cursor:pointer;transition:opacity .18s}
   .peer-hit{fill:transparent;stroke:none;pointer-events:all}
-  .peer-ring{stroke-width:2;transition:stroke-width .12s}
-  .peer-g:hover .peer-ring{stroke-width:3.5}
+  .peer-ring{stroke-width:1.8;transition:stroke-width .15s}
+  .peer-ring.est{filter:drop-shadow(0 0 7px currentColor)}
+  .peer-g:hover .peer-ring,.peer-g.hot .peer-ring{stroke-width:3.2}
+  .peer-halo{fill:none;stroke-width:1.2;opacity:.55;pointer-events:none}
+  .peer-halo.dotted{stroke-dasharray:1.5 4;opacity:.75;stroke-linecap:round}
   .peer-glyph{font-weight:600;pointer-events:none;text-anchor:middle}
-  .peer-lbl{font-family:var(--mono);fill:var(--ink);text-anchor:middle;pointer-events:none}
-  .peer-sub{font-family:var(--mono);text-anchor:middle;pointer-events:none;opacity:.85}
+  .peer-plate{fill:rgba(9,13,20,.82);stroke:rgba(140,210,180,.12);stroke-width:1;pointer-events:none}
+  .peer-g.hot .peer-plate{fill:rgba(20,27,38,.96);stroke:rgba(140,210,180,.32)}
+  .peer-lbl{font-family:var(--body);font-weight:600;fill:var(--ink);text-anchor:middle;pointer-events:none;letter-spacing:.1px}
+  .peer-sub{font-family:var(--mono);text-anchor:middle;pointer-events:none}
+  svg.radar.focus .peer-g:not(.hot){opacity:.28}
+  svg.radar.focus .tether-g:not(.hot){opacity:.12}
   .badge-c{fill:var(--unread);stroke:var(--bg);stroke-width:3}
-  .badge-t{fill:#fff;font-family:var(--mono);font-weight:600;text-anchor:middle;pointer-events:none}
+  .badge-t{fill:#fff;font-family:var(--mono);font-weight:700;text-anchor:middle;pointer-events:none}
   .live-dot{fill:var(--signal);stroke:var(--bg);stroke-width:2;animation:blink 1.4s steps(1) infinite}
-  .self-core{fill:var(--btc);stroke:var(--btc-bright);stroke-width:2}
-  .self-guide{fill:none;stroke:var(--btc);stroke-width:1;stroke-dasharray:2 6;opacity:.45}
-  .self-lbl{font-family:var(--mono);font-weight:600;fill:#150d02;text-anchor:middle;pointer-events:none}
+  .self-core{stroke:var(--btc-bright);stroke-width:1.5}
+  .self-guide{fill:none;stroke:var(--btc);stroke-width:1;stroke-dasharray:2 6;opacity:.35}
+  .self-wave{fill:none;stroke:var(--btc);stroke-width:1.5;transform-box:fill-box;transform-origin:center;animation:corewave 3.6s ease-out infinite}
+  .self-lbl{font-family:var(--display);font-weight:700;fill:#1a0f02;text-anchor:middle;pointer-events:none;letter-spacing:.6px}
+  .self-sub{font-family:var(--mono);font-weight:600;fill:#3a2204;text-anchor:middle;pointer-events:none}
+  @keyframes corewave{0%{transform:scale(1);opacity:.55}100%{transform:scale(1.75);opacity:0}}
   .pulse-dot{fill:var(--btc-bright)}
 
   .glass{background:rgba(14,19,28,.9);border:1px solid var(--line);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
-  .legend{position:absolute;left:var(--s5);bottom:var(--s5);z-index:3;background:rgba(14,19,28,.9);border:1px solid var(--line);
-    border-radius:var(--r);padding:var(--s3) 14px;font-family:var(--mono);font-size:var(--fs-2xs);color:var(--ink-dim);
-    display:flex;flex-direction:column;gap:6px;backdrop-filter:blur(6px);max-width:240px}
-  .legend .row{display:flex;align-items:center;gap:8px}
-  .legend .sw{width:9px;height:9px;border-radius:3px;flex:none}
-  .legend .sep{height:1px;background:var(--line);margin:3px 0}
+  .legend{position:absolute;left:var(--s5);bottom:var(--s5);z-index:3;background:rgba(12,17,25,.86);border:1px solid var(--line-strong);
+    border-radius:var(--r-lg);padding:14px 16px 12px;font-family:var(--mono);font-size:var(--fs-2xs);color:var(--ink-dim);
+    display:flex;flex-direction:column;gap:6px;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);width:250px;
+    box-shadow:0 16px 40px -18px rgba(0,0,0,.8)}
+  .legend .lg-h{display:flex;justify-content:space-between;align-items:baseline;font-family:var(--display);font-weight:600;
+    font-size:var(--fs-sm);color:var(--ink);letter-spacing:-.1px}
+  .legend .lg-h span{font-family:var(--mono);font-size:var(--fs-xs);color:var(--ink-faint);font-weight:500}
+  .legend .lg-bar{display:flex;height:6px;border-radius:6px;overflow:hidden;gap:2px;margin:2px 0 6px}
+  .legend .lg-bar span{display:block;min-width:3px}
+  .legend .row{display:grid;grid-template-columns:10px 1fr auto 34px;align-items:center;gap:8px}
+  .legend .sw{width:8px;height:8px;border-radius:50%}
+  .legend .nm{color:var(--ink-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .legend .ct{color:var(--ink);font-weight:600;text-align:right}
+  .legend .pc{color:var(--ink-faint);text-align:right}
+  .legend .sep{height:1px;background:var(--line);margin:4px 0 2px}
   .legend .k{display:flex;align-items:center;gap:8px;color:var(--ink-faint)}
-  .legend .k i{display:inline-block;width:22px;height:0;border-top:2px solid var(--signal)}
-  .legend .k i.dash{border-top:1px dashed var(--ink-faint)}
-  .hud{position:absolute;right:var(--s5);top:var(--s3);z-index:3;font-family:var(--mono);font-size:var(--fs-2xs);color:var(--ink-faint);
-    background:rgba(14,19,28,.88);border:1px solid var(--line);border-radius:var(--r-sm);padding:6px 11px;backdrop-filter:blur(6px)}
+  .legend .k svg{width:26px;height:14px;flex:none}
+  .hud{position:absolute;right:var(--s5);top:var(--s3);z-index:3;display:flex;gap:5px;flex-wrap:wrap;justify-content:flex-end;
+    font-family:var(--mono);font-size:var(--fs-2xs);color:var(--ink-faint);max-width:calc(100% - 40px)}
+  .hud .hs{display:inline-flex;align-items:center;gap:5px;background:rgba(12,17,25,.86);border:1px solid var(--line);border-radius:20px;
+    padding:4px 10px;backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);white-space:nowrap}
   .hud b{color:var(--ink);font-weight:600}
+  .hud .hs.on b{color:var(--signal)}
+  .hud .hs.un{border-color:rgba(255,69,58,.35)}
+  .hud .hs.un b{color:#ff8078}
+  .hud .hd{width:6px;height:6px;border-radius:50%;background:var(--signal);box-shadow:0 0 6px var(--signal)}
   .viewctl{position:absolute;right:var(--s6);bottom:var(--s6);z-index:4;display:flex;flex-direction:column;gap:6px}
   .vc{width:40px;height:40px;border-radius:var(--r);border:1px solid var(--line-strong);background:rgba(14,19,28,.92);
     color:var(--ink-dim);font-size:17px;cursor:pointer;display:grid;place-items:center;backdrop-filter:blur(6px);
@@ -448,7 +483,8 @@
     .selfnode .meta .s{display:none}
     .legend{display:none!important}   /* renderLegend sets an inline display */
     .radar-head{padding:var(--s3) var(--s4) 0}
-    .hud{right:var(--s3);top:var(--s2)}
+    .hud{right:var(--s3);top:var(--s2);left:var(--s3)}
+    .hud .hs:not(:first-child):not(.on):not(.un){display:none}
     .viewctl{right:var(--s4);bottom:calc(var(--s4) + env(safe-area-inset-bottom))}
     .fab{right:var(--s4);bottom:calc(164px + env(safe-area-inset-bottom))}
     .conv-list{width:100%;border-right:0}
@@ -487,7 +523,10 @@
 <div id="app">
   <header class="topbar">
     <div class="brand">
-      <div class="mark">N</div>
+      <div class="mark" aria-hidden="true"><svg viewBox="0 0 256 256"><g stroke="#f7931a" stroke-width="15" stroke-linecap="round" opacity=".85">
+        <line x1="62" y1="168" x2="110" y2="62"/><line x1="110" y1="62" x2="194" y2="126"/><line x1="62" y1="168" x2="194" y2="126"/><line x1="194" y1="126" x2="172" y2="206"/></g>
+        <g fill="#f7931a"><circle cx="62" cy="168" r="26"/><circle cx="110" cy="62" r="26"/><circle cx="172" cy="206" r="19"/></g>
+        <circle cx="194" cy="126" r="35" fill="#ffb454"/></svg></div>
       <div class="stack"><b>NodeSignal</b><span>node operator console</span></div>
     </div>
     <nav class="tabs" aria-label="views">
@@ -512,9 +551,8 @@
       </div>
       <div class="radar-wrap">
         <svg class="radar" id="radar" preserveAspectRatio="xMidYMid meet">
-          <g id="rings"></g><g id="tethers"></g><g id="self"></g><g id="peers"></g>
+          <defs id="radar-defs"></defs><g id="rings"></g><g id="tethers"></g><g id="self"></g><g id="peers"></g>
         </svg>
-        <div class="crt"></div>
         <div class="hud" id="hud"></div>
         <div class="legend" id="legend"></div>
         <div class="empty" id="empty"><div class="state-card" id="empty-card"></div></div>
@@ -1031,72 +1069,139 @@ function initNav(){
 function updateHud(){
   const L=LAYOUT; if(!L||!view)return;
   const contacts=state.peers.filter(p=>p.kind==='contact').length;
+  const online=state.peers.filter(p=>p.online).length;
   const unread=state.peers.reduce((s,p)=>s+p.unread,0);
   const shown=L.nodes.length,total=state.peers.length;
+  const seg=(html,cls='',title='')=>`<span class="hs ${cls}"${title?` title="${title}"`:''}>${html}</span>`;
   const count=shown<total
-    ? `<b>${shown}</b> of <b>${total}</b> peers on the map <span title="drawn: the ${shown} you have exchanged the most messages with. Every contact and conversation is still in Messages.">(most messages first)</span>`
-    : `<b>${total}</b> peers`;
-  document.getElementById('hud').innerHTML=
-    `${count} · <b>${contacts}</b> contacts · <b>${unread}</b> unread · zoom <b>${(L.VBW/view.w).toFixed(2)}×</b>`;
+    ? seg(`<b>${shown}</b> of <b>${total}</b> peers on the map`,'',`drawn: the ${shown} you have exchanged the most messages with. Every contact and conversation is still in Messages.`)
+    : seg(`<b>${total}</b> peers`);
+  document.getElementById('hud').innerHTML=count+
+    seg(`<b>${contacts}</b> contacts`)+
+    (online?seg(`<i class="hd"></i><b>${online}</b> online`,'on'):'')+
+    (unread?seg(`<b>${unread}</b> unread`,'un'):'')+
+    seg(`<b>${(L.VBW/view.w).toFixed(2)}×</b>`,'zm','zoom');
 }
 
-/* ===================== RADAR ===================== */
+/* ===================== RADAR =====================
+   Drawing only. Where everything sits comes from computeLayout() and the
+   navigation code above, which are frozen (locked decision 9): this part
+   paints the latency bands, tethers, nodes and labels inside the boxes the
+   layout reserved for them, and never moves anything. */
 const NS='http://www.w3.org/2000/svg';
 const el=(t,a)=>{const e=document.createElementNS(NS,t);for(const k in a)e.setAttribute(k,a[k]);return e;};
+const gid=c=>'g'+c.slice(1);                     // gradient id per colour
+// Gradients and the glow filter, built once per colour.
+function radarDefs(){
+  const defs=document.getElementById('radar-defs');
+  if(!defs._init){
+    defs._init=true;
+    defs.innerHTML=`
+      <radialGradient id="core-fill" cx="38%" cy="34%" r="75%">
+        <stop offset="0" stop-color="#ffd59a"/><stop offset=".55" stop-color="#f7931a"/><stop offset="1" stop-color="#b8620a"/></radialGradient>
+      <radialGradient id="core-halo"><stop offset=".45" stop-color="#f7931a" stop-opacity=".22"/><stop offset="1" stop-color="#f7931a" stop-opacity="0"/></radialGradient>
+      <filter id="soft-glow" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`;
+  }
+  for(const c of new Set(Object.values(IMPL_COLOR))){
+    if(defs.querySelector('#'+gid(c)))continue;
+    const g=el('radialGradient',{id:gid(c),cx:'35%',cy:'32%',r:'78%'});
+    [[0,.5],[.62,.17],[1,.07]].forEach(([o,a])=>g.appendChild(el('stop',{offset:o,'stop-color':c,'stop-opacity':a})));
+    defs.appendChild(g);
+  }
+}
+const textW=(str,size)=>str.length*size*0.62;    // the layout's own estimate for its labels
 
 function renderRadar(){
   const L=ensureLayout();
   initNav();
   if(!view||!viewUserSet)view=fitView(L);
   applyView();
+  radarDefs();
 
+  // latency bands: alternate rings get a faint fill, so the zones read at a glance
   const rg=document.getElementById('rings');rg.innerHTML='';
-  L.rings.forEach(lat=>{
-    const rr=L.latR(lat);
-    rg.appendChild(el('circle',{class:'ring',cx:CX,cy:CY,r:rr}));
-    const t=el('text',{class:'ring-lbl',x:CX+7,y:CY-rr+16,'font-size':L.fs-1.5});
-    t.textContent=lat>=1000?(lat/1000)+'s':lat+'ms';rg.appendChild(t);
+  const radii=L.rings.map(L.latR);
+  const annulus=(r0,r1)=>`M${CX-r1},${CY}a${r1},${r1} 0 1,0 ${2*r1},0a${r1},${r1} 0 1,0 ${-2*r1},0`+
+    (r0>0?`M${CX-r0},${CY}a${r0},${r0} 0 1,0 ${2*r0},0a${r0},${r0} 0 1,0 ${-2*r0},0`:'');
+  for(let i=1;i<radii.length;i+=2)rg.appendChild(el('path',{class:'band',d:annulus(radii[i-1],radii[i]),'fill-rule':'evenodd'}));
+  L.rings.forEach((lat,i)=>{
+    const rr=radii[i];
+    rg.appendChild(el('circle',{class:'ring'+(i===radii.length-1?' outer':''),cx:CX,cy:CY,r:rr}));
+    const txt=lat>=1000?(lat/1000)+' s':lat+' ms', fz=L.fs*1.15, w=textW(txt,fz)+16, h=fz+8;
+    rg.appendChild(el('rect',{class:'ring-pill',x:CX-w/2,y:CY-rr-h/2,width:w,height:h,rx:h/2}));
+    const t=el('text',{class:'ring-lbl',x:CX,y:CY-rr+fz*0.36,'font-size':fz});
+    t.textContent=txt;rg.appendChild(t);
   });
 
+  // your node: a smaller lit core inside the space the layout keeps clear
   const sg=document.getElementById('self');sg.innerHTML='';
+  const cr=L.coreR*0.7;
   sg.appendChild(el('circle',{class:'self-guide',cx:CX,cy:CY,r:L.coreR+13}));
-  sg.appendChild(el('circle',{class:'self-core',cx:CX,cy:CY,r:L.coreR}));
-  const a=el('text',{class:'self-lbl',x:CX,y:CY-3,'font-size':L.fs});a.textContent='YOUR';sg.appendChild(a);
-  const b=el('text',{class:'self-lbl',x:CX,y:CY+L.fs+2,'font-size':L.fs});b.textContent='NODE';sg.appendChild(b);
+  sg.appendChild(el('circle',{cx:CX,cy:CY,r:L.coreR*1.25,fill:'url(#core-halo)'}));
+  sg.appendChild(el('circle',{class:'self-wave',cx:CX,cy:CY,r:cr}));
+  sg.appendChild(el('circle',{class:'self-core',cx:CX,cy:CY,r:cr,fill:'url(#core-fill)'}));
+  const fz=cr*0.27, hasH=state.node&&state.node.height!=null;
+  const a=el('text',{class:'self-lbl',x:CX,y:CY+(hasH?-fz*0.15:fz*0.36),'font-size':fz});a.textContent='YOUR NODE';sg.appendChild(a);
+  if(hasH){const b=el('text',{class:'self-sub',x:CX,y:CY+fz*1.05,'font-size':fz*0.78});b.textContent=Number(state.node.height).toLocaleString();sg.appendChild(b);}
 
   const tg=document.getElementById('tethers'),pg=document.getElementById('peers');
   tg.innerHTML='';pg.innerHTML='';
+  const svg=document.getElementById('radar');
+  svg.classList.remove('focus');
 
-  L.nodes.forEach(nd=>{
-    const p=nd.p,c=color(p),x=nd.x,y=nd.y;
-    // Solid line ONLY once a mutual NodeSignal exchange is confirmed. Merely
-    // adding a contact, or messaging a node that never replies, stays dashed.
+  L.nodes.forEach((nd,i)=>{
+    const p=nd.p,c=color(p),x=nd.x,y=nd.y,R=L.nodeR;
+    // Tether: fades in from your node to the peer. Solid ONLY once a mutual
+    // NodeSignal exchange is confirmed; adding a contact, or messaging a node
+    // that never replies, stays dashed.
     const established=!!p.established;
-    tg.appendChild(el('line',{class:'tether'+(established?' solid':''),x1:CX,y1:CY,x2:x,y2:y,stroke:c}));
+    const tid='tg'+i, lg=el('linearGradient',{id:tid,gradientUnits:'userSpaceOnUse',x1:CX,y1:CY,x2:x,y2:y});
+    lg.appendChild(el('stop',{offset:0,'stop-color':c,'stop-opacity':established?.25:.04}));
+    lg.appendChild(el('stop',{offset:1,'stop-color':c,'stop-opacity':established?.95:.55}));
+    tg.appendChild(lg);
+    const tline=el('g',{class:'tether-g','data-i':i});
+    if(established)tline.appendChild(el('line',{class:'tether-glow',x1:CX,y1:CY,x2:x,y2:y,stroke:`url(#${tid})`}));
+    tline.appendChild(el('line',{class:'tether'+(established?' solid':''),x1:CX,y1:CY,x2:x,y2:y,stroke:`url(#${tid})`}));
+    tg.appendChild(tline);
 
-    const g=el('g',{class:'peer-g'});
-    g.appendChild(el('circle',{class:'peer-hit',cx:x,cy:y,r:L.nodeR+12}));
-    g.appendChild(el('circle',{class:'peer-ring',cx:x,cy:y,r:L.nodeR,fill:c+'1f',stroke:c}));
-    const gl=el('text',{class:'peer-glyph',x:x,y:y+L.nodeR*0.17,'font-size':L.nodeR*0.62,fill:c});
+    const g=el('g',{class:'peer-g'+(p.kind==='contact'?' contact':'')+(p.ns?' ns':''),'data-i':i});
+    g.appendChild(el('circle',{class:'peer-hit',cx:x,cy:y,r:R+12}));
+    // halo: solid for your contacts, dotted for peers advertising NodeSignal
+    if(p.kind==='contact'||p.ns)g.appendChild(el('circle',{class:'peer-halo'+(p.kind==='contact'?'':' dotted'),cx:x,cy:y,r:R+5.5,stroke:c}));
+    g.appendChild(el('circle',{class:'peer-ring'+(established?' est':''),cx:x,cy:y,r:R,fill:`url(#${gid(c)})`,stroke:c,style:`color:${c}`}));
+    const gl=el('text',{class:'peer-glyph',x:x,y:y+R*0.2,'font-size':R*0.66,fill:c});
     gl.textContent=glyph(p);g.appendChild(gl);
-    const lb=el('text',{class:'peer-lbl',x:x,y:y+L.nodeR+L.fs+6,'font-size':L.fs});
+
+    // label plate: sits inside the box the layout reserved below the node
+    const fs=L.fs, lfs=fs*1.1, sfs=fs-1.5;
+    const w=Math.max(textW(nd.label,fs),L.showSub?textW(nd.sub,sfs):0)+12;
+    const top=y+R+5, h=L.showSub?fs*2+11:fs+8;
+    g.appendChild(el('rect',{class:'peer-plate',x:x-w/2,y:top,width:w,height:h,rx:6}));
+    const lb=el('text',{class:'peer-lbl',x:x,y:y+R+fs+6,'font-size':lfs});
     lb.textContent=nd.label;g.appendChild(lb);
     if(L.showSub){
-      const sb=el('text',{class:'peer-sub',x:x,y:y+L.nodeR+L.fs*2+8,'font-size':L.fs-1.5,fill:c});
+      const sb=el('text',{class:'peer-sub',x:x,y:y+R+fs*2+8,'font-size':sfs,fill:c});
       sb.textContent=nd.sub;g.appendChild(sb);
     }
     if(p.unread){
-      const bx=x-L.nodeR*0.72,by=y-L.nodeR*0.72;
-      g.appendChild(el('circle',{class:'badge-c',cx:bx,cy:by,r:L.nodeR*0.30}));
-      const bt=el('text',{class:'badge-t',x:bx,y:by+L.nodeR*0.11,'font-size':L.nodeR*0.30});
+      const bx=x-R*0.72,by=y-R*0.72;
+      g.appendChild(el('circle',{class:'badge-c',cx:bx,cy:by,r:R*0.32}));
+      const bt=el('text',{class:'badge-t',x:bx,y:by+R*0.115,'font-size':R*0.32});
       bt.textContent=p.unread>9?'9+':p.unread;g.appendChild(bt);
     }
     // Blinking pip ONLY for peers we could message right now: established AND
     // currently online (their daemon seen recently).
-    if(p.online)g.appendChild(el('circle',{class:'live-dot',cx:x+L.nodeR*0.72,cy:y-L.nodeR*0.72,r:L.nodeR*0.15}));
+    if(p.online)g.appendChild(el('circle',{class:'live-dot',cx:x+R*0.72,cy:y-R*0.72,r:R*0.16}));
 
-    g.addEventListener('mouseenter',ev=>showTip(p,ev.currentTarget));
-    g.addEventListener('mouseleave',hideTip);
+    // hover: bring this peer and its tether forward, quiet the rest
+    g.addEventListener('mouseenter',ev=>{
+      svg.classList.add('focus'); g.classList.add('hot'); tline.classList.add('hot');
+      showTip(p,ev.currentTarget);
+    });
+    g.addEventListener('mouseleave',()=>{
+      svg.classList.remove('focus'); g.classList.remove('hot'); tline.classList.remove('hot'); hideTip();
+    });
     g.addEventListener('click',()=>{ if(didDrag)return; hideTip(); openChat(p.id); });
     pg.appendChild(g);
   });
@@ -1105,16 +1210,26 @@ function renderRadar(){
 }
 function renderLegend(){
   const e=document.getElementById('legend');
-  const impls=[...new Set(state.peers.map(p=>p.impl))];
   if(!state.peers.length){e.style.display='none';return;}
   e.style.display='flex';
-  e.innerHTML=impls.map(i=>{
-    const n=state.peers.filter(p=>p.impl===i).length;
-    return `<div class="row"><span class="sw" style="background:${IMPL_COLOR[i]||IMPL_COLOR.Unknown}"></span>${esc(i)} <span style="color:var(--ink-faint)">· ${n}</span></div>`;
-  }).join('')+
-  `<div class="sep"></div>
-   <div class="k"><i></i> messaging on NodeSignal</div>
-   <div class="k"><i class="dash"></i> node peer / not yet replied</div>`;
+  const counts=new Map();
+  for(const p of state.peers)counts.set(p.impl,(counts.get(p.impl)||0)+1);
+  const impls=[...counts.entries()].sort((a,b)=>b[1]-a[1]);
+  const total=state.peers.length;
+  const col=i=>IMPL_COLOR[i]||IMPL_COLOR.Unknown;
+  // the split of your peers by implementation, as one bar
+  const bar=impls.map(([i,n])=>`<span style="flex:${n};background:${col(i)}" title="${esc(i)}: ${n}"></span>`).join('');
+  const key=(svg,txt)=>`<div class="k"><svg viewBox="0 0 26 14" aria-hidden="true">${svg}</svg>${txt}</div>`;
+  e.innerHTML=`<div class="lg-h">Your peers <span>${total}</span></div>
+    <div class="lg-bar">${bar}</div>`+
+    impls.map(([i,n])=>`<div class="row"><span class="sw" style="background:${col(i)};box-shadow:0 0 8px ${col(i)}66"></span>
+      <span class="nm">${esc(i)}</span><span class="ct">${n}</span><span class="pc">${Math.round(n*100/total)}%</span></div>`).join('')+
+  `<div class="sep"></div>`+
+    key('<line x1="1" y1="7" x2="25" y2="7" stroke="#39e08a" stroke-width="2"/>','messaging on NodeSignal')+
+    key('<line x1="1" y1="7" x2="25" y2="7" stroke="#a3b5ad" stroke-width="1.3" stroke-dasharray="2 4"/>','node peer / not yet replied')+
+    key('<circle cx="13" cy="7" r="4" fill="none" stroke="#a3b5ad" stroke-width="1.4"/><circle cx="13" cy="7" r="6.4" fill="none" stroke="#a3b5ad" stroke-width="1"/>','your contact')+
+    key('<circle cx="13" cy="7" r="4" fill="none" stroke="#a3b5ad" stroke-width="1.4"/><circle cx="13" cy="7" r="6.4" fill="none" stroke="#a3b5ad" stroke-width="1" stroke-dasharray="1 2.2"/>','advertises NodeSignal')+
+    key('<circle cx="13" cy="7" r="3.2" fill="#39e08a"/>','online now');
 }
 function renderEmpty(){
   const wrap=document.getElementById('empty'),card=document.getElementById('empty-card');
@@ -1179,11 +1294,19 @@ function showTip(p,g){
     <div class="hint">${p.kind==='contact'?'click to open chat':'click to message this operator'}${p.unread?' · '+p.unread+' unread':''}</div>
   </div>`;
   tip.classList.add('show');
-  const tr=tip.getBoundingClientRect();
-  let left=rect.left+rect.width/2-tr.width/2,top=rect.top-tr.height-12;
-  left=Math.max(10,Math.min(left,innerWidth-tr.width-10));
-  if(top<66)top=rect.bottom+12;
-  if(top+tr.height>innerHeight-10)top=Math.max(10,innerHeight-tr.height-10);
+  // Beside the peer when there is room (right, then left), so the card never
+  // covers the node you are pointing at; otherwise above, then below.
+  const tr=tip.getBoundingClientRect(),gap=14,minTop=66;
+  const clampY=y=>Math.max(minTop,Math.min(y,innerHeight-tr.height-10));
+  const clampX=x=>Math.max(10,Math.min(x,innerWidth-tr.width-10));
+  let left,top;
+  if(rect.right+gap+tr.width<=innerWidth-10){left=rect.right+gap;top=clampY(rect.top+rect.height/2-tr.height/2);}
+  else if(rect.left-gap-tr.width>=10){left=rect.left-gap-tr.width;top=clampY(rect.top+rect.height/2-tr.height/2);}
+  else{
+    left=clampX(rect.left+rect.width/2-tr.width/2);top=rect.top-tr.height-12;
+    if(top<minTop)top=rect.bottom+12;
+    if(top+tr.height>innerHeight-10)top=Math.max(10,innerHeight-tr.height-10);
+  }
   tip.style.left=left+'px';tip.style.top=top+'px';
 }
 const hideTip=()=>tip.classList.remove('show');

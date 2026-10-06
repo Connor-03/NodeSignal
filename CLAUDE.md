@@ -33,6 +33,12 @@ require breaking one, stop and ask.
    40 nodes (`RADAR_MAX`), the ones with the most messages exchanged, then
    contacts, then peers advertising NodeSignal, then the lowest latency; the
    open chat always stays drawn, and the HUD says "N of M peers on the map".
+   The drawing (`renderRadar`, `radarDefs`, the radar CSS) was redesigned at
+   the maintainer's request (Oct 2026): latency bands, label plates, fading
+   tethers, contact and NodeSignal halos, a lit core with the chain height,
+   hover focus. It paints inside the boxes `computeLayout` reserves and moves
+   nothing; label text may grow only while it still fits those boxes (the
+   page's labels use at most about 94% of the plate width at 40 peers).
 10. The web console is this machine's only (decided Oct 2026): it binds
    127.0.0.1 and nothing else (`--bind` applies to the peer port only),
    accepts Host `localhost:<web-port>` / `127.0.0.1:<web-port>` only
