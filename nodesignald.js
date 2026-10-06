@@ -131,8 +131,27 @@ function cleanStr(v, max) {
 fs.mkdirSync(CFG.dataDir, { recursive: true, mode: 0o700 });
 const STATE_FILE = path.join(CFG.dataDir, 'state.json');
 let state = { contacts: {} };
-try { state = JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { /* fresh install */ }
-if (!state.contacts) state.contacts = {};
+/* Only a MISSING state.json means a fresh install. Anything else (bad JSON
+   after a disk fault, a permission problem) stops the daemon instead of
+   starting fresh: a fresh start would write a new identity over the old
+   file and lose the identity key, every pin and all history. */
+{
+  let raw = null;
+  try { raw = fs.readFileSync(STATE_FILE, 'utf8'); }
+  catch (e) { if (e.code !== 'ENOENT') refuseState(`cannot read it (${e.code || e.message})`); }
+  if (raw !== null) {
+    try { state = JSON.parse(raw); } catch (e) { refuseState(`it is not valid JSON (${e.message})`); }
+    if (!state || typeof state !== 'object' || Array.isArray(state)) refuseState('it does not hold a NodeSignal state object');
+  }
+}
+function refuseState(why) {
+  console.error(`\n  NodeSignal will not start: ${STATE_FILE}: ${why}.`);
+  console.error('  It holds your identity key and history, so it is left exactly as it is.');
+  if (fs.existsSync(STATE_FILE + '.tmp')) console.error(`  ${STATE_FILE}.tmp is a newer save that may be incomplete; check it before using it.`);
+  console.error('  Restore it from a backup, or move it aside to start with a new identity.\n');
+  process.exit(1);
+}
+if (!state.contacts || typeof state.contacts !== 'object') state.contacts = {};
 try { fs.chmodSync(STATE_FILE, 0o600); } catch { }
 // v1.3 retired the shared-PIN scheme: drop stored PINs.
 for (const c of Object.values(state.contacts)) { delete c.pin; if (!Array.isArray(c.msgs)) c.msgs = []; }
@@ -207,19 +226,24 @@ async function vaultSet(passphrase) {
   saveNow();
   log(`history passphrase set; ${n} stored messages sealed`);
 }
-async function vaultUnlock(passphrase) {
-  if (!vaultOn()) throw new Error('no passphrase is set');
+// Every passphrase check (unlock AND change) shares one backoff, so the
+// change form cannot be used to guess faster than the unlock form.
+async function checkPassphrase(passphrase) {
   if (Date.now() < vault.nextTry) throw new Error('too many attempts, wait ' + Math.ceil((vault.nextTry - Date.now()) / 1000) + 's');
-  try { vault.key = await store.unlock(state.vault, passphrase); vault.fails = 0; vault.cache.clear(); log('history unlocked'); }
+  try { const key = await store.unlock(state.vault, passphrase); vault.fails = 0; return key; }
   catch (e) {
     vault.fails++; vault.nextTry = Date.now() + Math.min(60000, 1000 * 2 ** (vault.fails - 1));
     throw e;
   }
 }
+async function vaultUnlock(passphrase) {
+  if (!vaultOn()) throw new Error('no passphrase is set');
+  vault.key = await checkPassphrase(passphrase); vault.cache.clear(); log('history unlocked');
+}
 function vaultLock() { vault.key = null; vault.cache.clear(); log('history locked'); }
 async function vaultChange(oldPass, newPass) {
   if (!vaultOn()) throw new Error('no passphrase is set');
-  const key = await store.unlock(state.vault, oldPass);
+  const key = await checkPassphrase(oldPass);
   state.vault = await store.changePassphrase(state.vault, key, newPass);
   vault.key = key; saveNow(); log('history passphrase changed');
 }
@@ -490,6 +514,10 @@ function identifyP2P(host, port) {
           catch { return finish(new Error('malformed version message from ' + host + ':' + port)); }
           const services = decodeServices(v.services);
           for (const s of services) if (SERVICE_BIPS[s]) supports.add(SERVICE_BIPS[s]);
+          // Whatever answers on :8333 chooses this string: strip control
+          // characters and cap it like Bitcoin Core does (256), before it
+          // reaches state.json, the log or the console.
+          v.userAgent = cleanStr(v.userAgent, 256);
           info = { ua: v.userAgent, impl: implFromUA(v.userAgent), version: verFromUA(v.userAgent),
             protocol: v.version, height: v.startHeight, services, declared: declaredFromUA(v.userAgent),
             network: net_.name, latency: sock._latency ?? null, source: 'p2p:' + port, at: Date.now() };
@@ -694,7 +722,29 @@ function contact(host, create) {
     state.contacts[host] = { host, port: CFG.peerPort, nick: '', msgs: [], unread: 0, lastSeen: 0, peerInfo: null };
   return state.contacts[host];
 }
-function pushMsg(c, m) { c.msgs.push(m); if (c.msgs.length > 500) c.msgs.splice(0, c.msgs.length - 500); save(); }
+/* Strangers: anyone can make a key and complete a handshake, so a contact
+   created by an inbound peer (not one the operator added or wrote to) is
+   marked inbound and kept on a budget. Without it, one IPv6 /64 could
+   create a new contact per address, within the rate limit, until the disk
+   that bitcoind shares is full. Adding or messaging the contact lifts it. */
+const MAX_STRANGERS = 256;                   // inbound-only contacts kept at once
+const STRANGER_MSGS = 50;                    // messages kept per inbound-only contact
+const LINK_MAX_FRAMES = 1000, LINK_MAX_MSGS = 200;   // per connection
+let strangerFullLogged = 0;
+function newStranger(addr) {
+  if (Object.values(state.contacts).filter((x) => x.inbound).length >= MAX_STRANGERS) {
+    if (Date.now() - strangerFullLogged > 60000) {
+      strangerFullLogged = Date.now();
+      log(`!! refused a new contact from ${addr}: ${MAX_STRANGERS} contacts you never added or wrote to are already stored. Remove some in the console.`);
+    }
+    return null;
+  }
+  const c = contact(addr, true); c.inbound = true; return c;
+}
+function pushMsg(c, m) {
+  const cap = c.inbound ? STRANGER_MSGS : 500;
+  c.msgs.push(m); if (c.msgs.length > cap) c.msgs.splice(0, c.msgs.length - cap); save();
+}
 const MSG_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const findMsg = (c, id) => c.msgs.find((m) => m.id === id);
 
@@ -803,7 +853,11 @@ function openLink(sock, { initiator, addr, peerFp, proto, session }) {
     // Anything sent on this link but never acked goes back to the retry queue.
     if (c) for (const id of link.unacked) { const m = findMsg(c, id); if (m && m.status === 'sending') deferMsg(c, m, 'connection closed before the peer confirmed delivery'); }
   });
+  link.frames = 0; link.msgs = 0;
   link.onFrame = (frame) => {
+    // One connection may not flood us: a real peer's queue fits easily, and
+    // anything cut off is retried by the sender and deduplicated by id.
+    if (++link.frames > LINK_MAX_FRAMES) { sock.destroy(); return; }
     let m;
     try { m = JSON.parse(session.decrypt(frame)); } catch { sock.destroy(); return; }
     if (m && typeof m === 'object') onPeerMessage(link, m);
@@ -821,7 +875,8 @@ function onPeerMessage(link, m) {
     let c = link.contact;
     if (!c) {
       // First authenticated hello from a stranger: only now is state created.
-      c = contact(link.addr, true);
+      c = newStranger(link.addr);
+      if (!c) { link.sock.destroy(); return; }
       if (!tofuCheck(c, link.peerFp)) { link.sock.destroy(); return; }
       tofuRecord(c, link.peerFp);
       bindLink(link, c);
@@ -835,9 +890,11 @@ function onPeerMessage(link, m) {
     return;
   }
   if (m.t === 'msg') {
+    if (++link.msgs > LINK_MAX_MSGS) { link.sock.destroy(); return; }
     let c = link.contact;
     if (!c) {                                 // v2 peers may skip hello
-      c = contact(link.addr, true);
+      c = newStranger(link.addr);
+      if (!c) { link.sock.destroy(); return; }
       if (!tofuCheck(c, link.peerFp)) { link.sock.destroy(); return; }
       tofuRecord(c, link.peerFp); bindLink(link, c);
     }
@@ -1088,7 +1145,10 @@ function cookies(req) {
   const out = {};
   for (const part of (req.headers.cookie || '').split(';')) {
     const i = part.indexOf('=');
-    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    if (i <= 0) continue;
+    // decodeURIComponent throws on a malformed escape; on the WebSocket
+    // upgrade path that exception was uncaught and stopped the daemon.
+    try { out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); } catch { }
   }
   return out;
 }
@@ -1291,6 +1351,7 @@ async function handleUi(m, reply) {
     case 'contact.add': {
       const host = uiHost(m.host);
       const c = contact(host, true);
+      delete c.inbound;                       // the operator added it
       c.port = uiPort(m.port, c.port || CFG.peerPort);
       if (m.nick != null) c.nick = cleanStr(String(m.nick), 60);
       save(); broadcastUi({ type: 'contact', contact: uiContact(c) });
@@ -1333,6 +1394,7 @@ async function handleUi(m, reply) {
       const host = uiHost(m.host);
       const isNew = !state.contacts[host];
       const c = contact(host, true);
+      delete c.inbound;                       // the operator wrote to it
       c.port = uiPort(m.port, c.port || CFG.peerPort);
       const text = typeof m.text === 'string' ? m.text.replace(/\r\n?/g, '\n').trim().slice(0, 4000) : '';
       if (!text) return;

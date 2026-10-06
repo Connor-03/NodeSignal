@@ -264,7 +264,12 @@ status table. Keep it current whenever security changes.
 - Every peer-supplied field is validated and capped; claimed node info never
   overwrites what we measured over :8333.
 - No persisted state before a completed handshake (closes the disk-exhaustion
-  DoS that could take bitcoind down with it).
+  DoS that could take bitcoind down with it). Since the v1.3 self-review,
+  authenticated strangers are capped too: 256 inbound-only contacts, 50
+  messages each, 200 messages per connection.
+- A `state.json` that exists but cannot be read or parsed stops the daemon;
+  it is never replaced by a fresh identity. Only a missing file means a new
+  install.
 - Rate limiting per source block (/32 IPv4, /64 IPv6), which defeats IPv6
   address spraying. Connection cap.
 - Auto-binds to the Tailscale interface when present; otherwise the web UI
