@@ -49,3 +49,6 @@ test-output/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# screenshots from tools/screenshots/shoot.js (default output dir)
+/screenshots/
