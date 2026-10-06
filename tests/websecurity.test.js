@@ -8,7 +8,7 @@ const { spawn } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-web-'));
-const WEB = 47789, PEER = 47788;
+const WEB = 27789, PEER = 27788;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0, passed = 0;
 const t = async (name, fn) => {
@@ -60,7 +60,17 @@ function ws(token) {
     });
   });
 }
-async function up() { for (let i = 0; i < 60; i++) { try { if ((await req()).status === 200) return; } catch { } await sleep(100); } throw new Error('daemon did not start'); }
+// Up means our daemon answers /health. A slow CI runner gets 20 s; a daemon
+// that exits instead (a port it cannot bind, a crash) fails at once, with its
+// own output, rather than as an unexplained timeout.
+async function up() {
+  for (let i = 0; i < 200; i++) {
+    if (d.exitCode != null || d.signalCode) break;
+    try { if ((await req()).status === 200) return; } catch { }
+    await sleep(100);
+  }
+  throw new Error(`daemon did not start (exit ${d.exitCode ?? d.signalCode ?? 'none, no answer in 20 s'})\n${d.log}`);
+}
 
 let d;
 (async () => {

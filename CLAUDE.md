@@ -28,7 +28,17 @@ require breaking one, stop and ask.
 8. P2P identification on port 8333 fires automatically when a contact is
    added. The "identify" button is a manual re-run.
 9. The constellation radar's behaviour (layout, rings, pan/zoom, click to
-   chat) is frozen. Visual work around it must not change its code.
+   chat) is frozen. Visual work around it must not change its code. One
+   change was decided by the maintainer (Oct 2026): the map draws at most
+   40 nodes (`RADAR_MAX`), the ones with the most messages exchanged, then
+   contacts, then peers advertising NodeSignal, then the lowest latency; the
+   open chat always stays drawn, and the HUD says "N of M peers on the map".
+   The drawing (`renderRadar`, `radarDefs`, the radar CSS) was redesigned at
+   the maintainer's request (Oct 2026): latency bands, label plates, fading
+   tethers, contact and NodeSignal halos, a lit core with the chain height,
+   hover focus. It paints inside the boxes `computeLayout` reserves and moves
+   nothing; label text may grow only while it still fits those boxes (the
+   page's labels use at most about 94% of the plate width at 40 peers).
 10. The web console is this machine's only (decided Oct 2026): it binds
    127.0.0.1 and nothing else (`--bind` applies to the peer port only),
    accepts Host `localhost:<web-port>` / `127.0.0.1:<web-port>` only
@@ -151,13 +161,14 @@ From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 | `nodeps.js` | Static file server + RFC 6455 WebSocket server, stdlib only. |
 | `nodesignal.html` | **Operator console.** Real data only. Goes on a node. |
 | `nodesignal-demo.html` | **Retired.** Removed from the tree in `2d479c6`; the maintainer considers it obsolete. Do not restore it. The demo-only rules below apply only if it ever returns. |
-| `packaging/` | One-download installers. `files.json` is THE list of program files (update it when adding a module). `build-sea.js` + `windows/sea-main.js` build `NodeSignal-Setup-windows-x64.exe` (Node SEA); `deb/` builds `nodesignal-linux-{amd64,arm64}.deb` with the official Node binary. Both require a Bitcoin node. |
+| `packaging/` | One-download installers. `files.json` is THE list of program files (update it when adding a module). `build-sea.js` + `windows/sea-main.js` build `NodeSignal-Setup-windows-x64.exe` (Node SEA; `windows/win-resources.js` and `windows/make-icon.js` give it its version resource and icon at build time); `deb/` builds `nodesignal-linux-{amd64,arm64}.deb` with the official Node binary. Both require a Bitcoin node. |
 | `setup-core.js` + `cli.js` | Shared node detection / RPC check / config / uacomment and rpcauth editing, and the `nodesignal` command (status, advertise, port-mapping, rpc-access, setup). |
 | `.github/workflows/` | `ci.yml` (all tests, deb install under systemd, Windows exe selftest) and `release.yml` (tag `v*` -> release assets with stable names + SHA256SUMS.txt). |
 | `install.js` + `install-windows.bat`, `install-node.sh` | From-source installers; also require a node. |
 | `start-node.bat` | Manual Windows launcher for a from-source copy. |
+| `CHANGELOG.md`, `RELEASING.md` | Release notes per version (the release workflow publishes the `## <version>` section) and the maintainer's release checklist. `release.yml` run by hand is a dry run by default. |
 | `tools/screenshots/` | Publishable screenshots of the console from a fake daemon (`fixture-ws.js`). Optional Playwright. |
-| `tests/` | `run-all.js` runs every `*.test.js` with plain node; `console.e2e.js` (optional Playwright); `mock-node.js` (mock RPC that applies rpcauth/rpcwhitelist from a bitcoin.conf like bitcoind, and a :8333 identify listener). |
+| `tests/` | `run-all.js` runs every `*.test.js` with plain node; `console.e2e.js` (optional Playwright); `mock-node.js` (mock RPC that applies rpcauth/rpcwhitelist from a bitcoin.conf like bitcoind, and a :8333 identify listener); `harness.js` (shared helpers: spawned daemons, a raw WebSocket client, raw Noise peers). |
 
 ### Two interfaces, deliberately separate
 
@@ -204,7 +215,8 @@ These were each decided explicitly. Do not regress them.
 - Colour = implementation. Final palette: Core orange, Knots deep green
   `#22a95a`, btcd cyan, libbitcoin violet, Bcoin pink.
 - Collision-relaxation layout. Verified at 40 peers with zero label
-  overlaps and nothing out of frame.
+  overlaps and nothing out of frame. Beyond 40, only the top 40 by messages
+  exchanged are drawn (decision 9); everyone stays in the counts and legend.
 - Drag to pan, wheel and pinch to zoom anchored on the cursor, double-click
   to zoom, refit button. Once the user moves the view, stop auto-refitting.
 - **Click any node to open its chat.** Pointer capture is taken only after a
@@ -264,7 +276,12 @@ status table. Keep it current whenever security changes.
 - Every peer-supplied field is validated and capped; claimed node info never
   overwrites what we measured over :8333.
 - No persisted state before a completed handshake (closes the disk-exhaustion
-  DoS that could take bitcoind down with it).
+  DoS that could take bitcoind down with it). Since the v1.3 self-review,
+  authenticated strangers are capped too: 256 inbound-only contacts, 50
+  messages each, 200 messages per connection.
+- A `state.json` that exists but cannot be read or parsed stops the daemon;
+  it is never replaced by a fresh identity. Only a missing file means a new
+  install.
 - Rate limiting per source block (/32 IPv4, /64 IPv6), which defeats IPv6
   address spraying. Connection cap.
 - Auto-binds to the Tailscale interface when present; otherwise the web UI
@@ -279,7 +296,9 @@ status table. Keep it current whenever security changes.
 - Web front door (v1.3): loopback-only bind, Host and Origin checks,
   per-launch action token on every state-changing op, `no-store` and
   frame-blocking headers on the console page. A console socket error can
-  no longer crash the daemon.
+  no longer crash the daemon. The web server hands out the console page,
+  `/health` and the login routes only: no static files from the program
+  folder, where a from-source install keeps `nodesignal-config.json`.
 
 **Still open, in honest terms**
 - Without a passphrase, messages are stored in the clear in `state.json`;
@@ -310,23 +329,38 @@ status table. Keep it current whenever security changes.
    enabled, and when the daemon is disconnected the message is held and
    labeled honestly as "queued", then sent on reconnect. Currently
    `sendMsg()` toasts "daemon not connected" and discards it.
-3. **Add a real test suite.** v1.3 adds `noise.test.js` (vectors),
+3. **[DONE, Oct 2026]** **Add a real test suite.** v1.3 adds `noise.test.js` (vectors),
    `store.test.js`, `daemon.test.js` (real daemons: delivery, reply over the
    peer's link, retry, dedupe, v1.2 interop, key change, vault, hostile
    input) and `portmap.test.js`. Earlier: `tests/console.test.js` (static
    checks, plain node), `tests/console.e2e.js` (two daemons + mock node,
    optional Playwright, skips without it) and `tests/mock-node.js` (mock
    RPC and :8333). Still to add, in the same `tests/` folder runnable with plain `node` (no test framework, keep zero
-   deps) covering at least:
-   - Noise handshake: mutual auth, matching keys, tamper rejection
-   - two-daemon delivery and reply
-   - TOFU: a reinstalled peer with a new key is rejected
-   - DoS: a flood of handshake-less connections persists zero contacts
-   - `established` only after a real reply; history survives peer loss
-   - Tor: delivery to a `.onion` through a mock SOCKS5 proxy
-   - WebSocket server against framing sizes 5 KB and 200 KB, UTF-8, ping
-   - static server rejects path traversal and dotfiles
-   - layout: 40 peers, zero overlaps, nothing out of frame
+   deps) covering at least (all now done; `tests/harness.js` holds the
+   helpers the newer suites share, and each suite has its own port range):
+   - [DONE, `noise.test.js`] Noise handshake: mutual auth, matching keys, tamper rejection
+   - [DONE, `daemon.test.js`] two-daemon delivery and reply
+   - [DONE, `daemon.test.js`] TOFU: a reinstalled peer with a new key is rejected
+   - [DONE, `dos.test.js`] DoS: a flood of handshake-less connections persists zero contacts
+     (state.json untouched, `/health` answering), plus `--max-conns` and the
+     per-source rate limit
+   - [DONE, `established.test.js`] `established` only after a real reply; history survives peer loss
+     (an inbound hello alone, or a hello exchange, establishes nobody; history
+     survives leaving getpeerinfo and a restart)
+   - [DONE, `tor.test.js`] Tor: delivery to a `.onion` through a mock SOCKS5 proxy
+     (domain-name CONNECT, reply over the same circuit, no DNS lookup of the
+     onion; found and fixed a split-reply bug)
+   - [DONE, `websocket.test.js`] WebSocket server against framing sizes 5 KB and 200 KB, UTF-8, ping
+     (found and fixed: unmasked frames accepted, fragmented messages unbounded,
+     no close frame sent)
+   - [DONE, `static.test.js`] static server rejects path traversal and dotfiles
+     (POSIX and Windows path rules; found and fixed: the daemon served any file
+     in its program folder, including `nodesignal-config.json`)
+   - [DONE, `layout.test.js`] layout: 40 peers, zero overlaps, nothing out of frame
+     (runs the page's own layout code in a vm, seeded; holds for realistic
+     latency spreads. Known limit, not fixed because the radar is frozen: 40
+     peers crowded into one narrow band, such as all within 5 ms or all
+     unmeasured, can still overlap)
 
 ### Then
 
@@ -364,18 +398,25 @@ status table. Keep it current whenever security changes.
 
 ### Open questions for the maintainer (from the v1.3 installer work)
 
-- **Decided:** `.deb` Maintainer is `Connor-03 <ID+Connor-03@users.noreply.github.com>`
-  and Homepage is https://github.com/Connor-03/NodeSignal. **TODO (maintainer):**
-  replace `ID` with your numeric GitHub user id in `packaging/deb/build-deb.sh`
-  (the default of `MAINTAINER`); the build prints a note until you do.
+- **Decided:** `.deb` Maintainer is `Connor-03 <143026739+Connor-03@users.noreply.github.com>`
+  (GitHub's noreply form; filled in at the maintainer's request) and Homepage
+  is https://github.com/Connor-03/NodeSignal.
 - **Decided (Oct 2026): never run as root.** Dedicated `nodesignal` user,
   rpcauth + rpcwhitelist instead of the cookie; see locked decision 11.
 - **Decided (Oct 2026): Windows supervisor.** `nodesignal.exe run` (what the
   sign-in launcher starts) is a parent that spawns the daemon as a child
   (`__daemon`) and respawns it on exit, backoff 1s doubling to 60s (reset after
   10 minutes up), giving up after 5 crashes within 10 minutes and logging the
-  reason. The selftest covers restart and give-up. Still open: the .exe has no
-  icon/version resource and is not code-signed.
+  reason. The selftest covers restart and give-up.
+- **Done (Oct 2026): .exe icon and version resource.** `build-sea.js` stamps
+  the copied node.exe before postject injects the blob (that order is
+  required): ProductName NodeSignal, the package.json version, CompanyName and
+  LegalCopyright from LICENSE, and the icon drawn by
+  `packaging/windows/make-icon.js` (stdlib only; `nodesignal.ico` is its
+  committed output, `tests/winexe.test.js` checks they match). The editor is
+  resedit, fetched by npm at build time and pinned exactly, like postject; it
+  is never shipped. CI checks `VersionInfo` and the icon on windows-latest.
+  Still open: the .exe is not code-signed.
 - Not yet run on real Windows or real arm64 hardware; CI covers the
   Windows selftest.
 
@@ -405,24 +446,25 @@ dates, partners); no tokens, private hostnames, IPs or peer addresses; the
 daemon's own web app is private and must not be linked; BIP-110 is a failed
 proposal, mention only as history.
 
-Maintainer's approved copy, to be kept word for word where used:
+Maintainer's approved copy, to be kept word for word where used. Corrected in
+Oct 2026 at the maintainer's request: the original said "carried by the
+Bitcoin P2P network" (messages never travel over Bitcoin P2P), "verified node
+operators" (the node is verified, not the person) and "what they are signaling
+for" (user-agent declarations, not signalling). `docs/website/HANDOFF.md`
+records the change.
 
 > Inspired by my research into the Core vs Knots debate, I wanted an
-> effective communication system, carried by the Bitcoin P2P network, that
-> lets verified node operators talk to each other, display what they are
-> signaling for, and hold a proper discussion on relay and consensus. It uses
-> node peers for contact discovery, maps the connections, and opens its own
-> authenticated channel between daemons so two operators can chat with no
-> third party in between.
+> effective communication system, found through the Bitcoin P2P network, that
+> lets operators of verified nodes talk to each other, display what their
+> nodes declare support for, and hold a proper discussion on relay and
+> consensus. It uses node peers for contact discovery, maps the connections,
+> and opens its own authenticated channel between daemons so two operators
+> can chat with no third party in between.
 
-Short version: "Encrypted messaging between node operators, carried by the
+Short version: "Encrypted messaging between node operators, found through the
 P2P network they already run. No third party in the middle."
 
-**Flag this, do not silently fix it:** "carried by the (Bitcoin) P2P network"
-contradicts the README and section 1 of this file. Messages never travel over
-Bitcoin P2P; the node only provides discovery and identity. Propose wording
-such as "found through the P2P network they already run" and let the
-maintainer approve it. Related story link: https://bpi.connoraherne.com.
+Related story link: https://bpi.connoraherne.com.
 
 ---
 
@@ -439,6 +481,11 @@ maintainer approve it. Related story link: https://bpi.connoraherne.com.
 - `.bat` files must keep CRLF line endings.
 - Run `node tests/console.test.js` (and `tests/console.e2e.js` where
   Playwright exists) after touching `nodesignal.html`.
+- Fixed ports in tests stay below 32768, outside every OS ephemeral range
+  (Linux 32768-60999, Windows and macOS 49152-65535), and each suite has its
+  own block. A port inside that range can be handed to any process that asks
+  for a free one, and the daemon then fails with EADDRINUSE; that broke CI
+  once. `tests/ports.test.js` enforces it.
 - Check syntax before committing:
   `node --check` on every `.js`, `bash -n install-node.sh`, and extract the
   `<script>` block from each HTML file and `node --check` it.

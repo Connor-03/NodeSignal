@@ -181,7 +181,7 @@ function hasSystemd() { return fs.existsSync('/run/systemd/system'); }
 async function cmdOpen(ctx) {
   const url = ctx.core.webUrl(ctx.cfg);
   say(url);
-  if (ctx.deps.hooks && ctx.deps.hooks.openUrl) { ctx.deps.hooks.openUrl(url); return 0; }
+  if (ctx.deps.hooks && ctx.deps.hooks.openUrl) { await ctx.deps.hooks.openUrl(url, ctx.argv); return 0; }
   const graphical = process.env.DISPLAY || process.env.WAYLAND_DISPLAY;
   try {
     if (IS_WIN) spawn('explorer.exe', [url], { detached: true, stdio: 'ignore' }).unref();
@@ -485,7 +485,8 @@ usage: nodesignal <command> [--config <file>]
   rpc-access show|add|remove
                        NodeSignal's own RPC login (rpcauth + rpcwhitelist) in
                        bitcoin.conf; restart the node after add or remove
-  open                 print the web interface address and open it
+  open [--browser]     open NodeSignal (on Windows: its own window; --browser
+                       for a normal browser tab) and print its address
   logs                 show where the log is and how to follow it
   uninstall            remove NodeSignal (Windows; on Linux use apt)
   version              print the version%EXTRA%`;

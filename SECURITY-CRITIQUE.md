@@ -14,6 +14,12 @@
 > is validated. Two new opt-in features (user-agent advertising and router port
 > mapping) trade privacy for reach, and are listed below as new risks.
 
+> **Update (v1.3 self-review, Oct 2026):** a line-by-line adversarial read of
+> `nodesignald.js` by the same tool that wrote most of it. It is not an outside
+> review and must not be presented as one. Findings and fixes are in section 8;
+> each fix has a test in `tests/hardening.test.js` that fails on the code before
+> it.
+
 ## Status summary
 
 | Risk | State |
@@ -24,11 +30,15 @@
 | Reinstalled peer = remove and re-add | **[FIXED in v1.3]**: the new key is held for review; accepting must echo the exact presented fingerprint |
 | Web console reachable from the network; DNS rebinding; cross-site actions | **[FIXED in v1.3]**: the console listens on 127.0.0.1 only, checks Host (localhost/127.0.0.1 on its port) and Origin, and every state-changing action needs a random per-launch token served only inside the page (`tests/websecurity.test.js`) |
 | Daemon holds full RPC power (cookie or rpcuser/rpcpassword); ran as the node's user or root | **[FIXED in v1.3]**: its own `rpcauth` user, limited by `rpcwhitelist` to the three methods it calls (`tests/setup-core.test.js` checks the list against every `rpcCall`); the cookie is never read; on Linux it runs as a dedicated `nodesignal` system user with no access to /home; the installers refuse root and Windows administrator. Needs one bitcoind restart after install |
+| Web server handed out any file in the program folder, including a from-source install's `nodesignal-config.json` (RPC password, web token) and `state.json` if `--data` pointed there | **[FIXED in v1.3]**: the console page, `/health` and the login routes are all it serves; there is no static file fallback (`tests/static.test.js`). Readable only from this machine, but it bypassed the config file's 0600 permissions for any local user |
+| Console WebSocket accepted unmasked frames and unbounded fragmented messages | **[FIXED in v1.3]**: unmasked client frames close the socket (RFC 6455 5.1); the 8 MiB cap covers a whole message, not one frame (`tests/websocket.test.js`) |
 | A browser tab dropping mid-write could crash the daemon | **[FIXED in v1.3]**: an EPIPE on a console socket was re-emitted as an unhandled `'error'` event |
+| Corrupt `state.json` silently replaced by a fresh identity | **[FIXED in v1.3, self-review]**: only a missing file means a fresh install; anything else stops the daemon and leaves the file untouched (section 8) |
+| Authenticated strangers grow state without limit | **[FIXED in v1.3, self-review]**: at most 256 contacts you never added or wrote to, 50 messages kept each, 200 messages and 1000 frames per connection (section 8) |
 | Hostile field values from authenticated peers | **[FIXED in v1.3]**: every field type-checked, length-capped, control characters stripped; claims never overwrite measured node data |
 | No forward secrecy | **[FIXED]**: ephemeral keys per session |
 | No peer authentication / MITM | **[FIXED]**: mutual static-key auth + TOFU pinning |
-| Unauthenticated disk-exhaustion DoS | **[FIXED]**: no persisted state before a completed handshake |
+| Unauthenticated disk-exhaustion DoS | **[FIXED]**: no persisted state before a completed handshake (`tests/dos.test.js`: a flood of handshake-less connections leaves state.json untouched) |
 | IPv6 spray defeats per-IP limits | **[FIXED]**: rate limit per /64 source block |
 | No connection cap | **[FIXED]**: `--max-conns`, default 128 |
 | Clearnet-exposed by default | **[MITIGATED]**: binds to Tailscale/localhost by default |
@@ -126,6 +136,12 @@ potentially chainstate corruption.
 
 Related gaps in the same file: no `maxConnections` anywhere, and each socket may
 buffer up to 1 MB before being dropped, so N connections hold N MB.
+
+**[FIXED, in two steps]**: v1.2 stopped persisting anything before a completed
+handshake and added the connection cap and per-/64 rate limit. That still left
+the authenticated case: a key costs nothing, so every address that completes a
+handshake could create a contact. The v1.3 self-review capped that too (section
+8).
 
 ### 2.4 The daemon holds far more RPC power than it uses
 
@@ -330,3 +346,39 @@ set; 5 is documentation; 7 has outbound SOCKS5 and hidden-service setup.)
 
 That question is more memorable than any feature, and it is one you can defend
 from either side.
+
+---
+
+## 8. v1.3 self-review of `nodesignald.js`
+
+What was read: everything a remote peer can reach on :8788 (frames, handshake,
+hello, msg, ack), what answers on :8333 when we identify, the web front door and
+every WebSocket op, the retry queue and the vault. Each fix below has a test that fails on the code before the fix: items 1 to 5
+in `tests/hardening.test.js`, items 7 to 9 in the suites named. Items 7 to 9
+came from writing the missing test suites the same night.
+
+| # | Finding | Severity | Fix |
+|---|---|---|---|
+| 1 | Any error reading `state.json` (bad JSON after a disk fault, a permission problem) was treated as a fresh install, and the new identity was saved over the old file: identity key, pins and history gone | High (data loss) | Only a missing file is a fresh install. Otherwise the daemon refuses to start, says why, and leaves the file as it is |
+| 2 | Authenticated strangers could create unlimited contacts, one per source address (an IPv6 /64 is plenty), and one connection could carry unlimited messages | Medium (disk exhaustion on the node's machine) | Contacts created by an inbound peer are marked `inbound`: at most 256 of them, 50 messages kept each. Per connection: 200 messages, 1000 frames. Adding or writing to a contact lifts its budget |
+| 3 | A malformed `Cookie` header made `decodeURIComponent` throw on the WebSocket upgrade path, which nothing caught: the daemon exited | Medium (local crash, with a web token set) | Bad cookie values are ignored |
+| 4 | `vault.change` checked the old passphrase outside the unlock backoff, so it could test guesses at full speed | Medium (needs the action token, so local only) | Unlock and change share one backoff |
+| 5 | The user agent in a :8333 `version` reply was stored, logged and shown unbounded (up to the 4 MB frame cap) and with control characters, so it could inject fake log lines | Low | Cleaned and capped at 256, as Bitcoin Core does |
+| 6 | `probe.js` and `probeTester.bat` were still in the tree, with a real public IP in their examples. CLAUDE.md lists the probe tool as removed on purpose | Low (personal data in a public repo) | Deleted. The address remains in git history |
+| 7 | The web server's static fallback served any file in the web root, which is the program folder: a from-source install's `nodesignal-config.json` (RPC password, web token), the launcher, and `state.json` when `--data` pointed there. Found by `tests/static.test.js` | High (local secret disclosure past 0600 permissions) | No static fallback: the daemon serves the console page, `/health` and the login routes only |
+| 8 | SOCKS5 replies were assumed to arrive in one read; a split reply corrupted the Noise stream and the message to the .onion contact never arrived. Found by `tests/tor.test.js` | Low (reliability) | Both replies are buffered until complete |
+| 9 | The console WebSocket accepted unmasked client frames, capped single frames but not fragmented messages (unbounded memory), and dropped its own close frame. Found by `tests/websocket.test.js` | Low (needs the loopback console) | Unmasked frames close the socket, the 8 MiB cap covers the whole message, the close frame is sent once |
+
+Read and left as they are, on purpose:
+
+- **`/login` has no attempt limit.** The console listens on loopback only, so
+  only local processes can try. A long random `web-token` is the defence.
+- **A peer chooses the port we call it back on** (`peerPort` in hello). The host
+  stays the peer's own address, so this only points us at another port on the
+  peer's own machine.
+- **An inbound hello still triggers an outbound :8333 identify** (section 4).
+  The stranger cap now bounds how many distinct addresses can trigger it.
+- **`contact.remove` while that peer's link is open** lets messages on that link
+  land on the removed record until it closes. They are not saved. Cosmetic.
+
+This review cannot replace an outside one: it shares the author's blind spots.

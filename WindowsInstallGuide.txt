@@ -78,9 +78,10 @@ and the installer:
      config.json, log in nodesignal.log)
   7. sets NodeSignal to start hidden when you sign in (a small launcher
      in your Startup folder, no admin needed), adds a "NodeSignal"
-     Desktop shortcut and an entry in Settings > Apps for uninstalling
+     shortcut to the Desktop and the Start menu, and an entry in
+     Settings > Apps for uninstalling
   8. starts NodeSignal now, waits until it answers, and opens it in
-     your browser
+     its own window
 
 RESTART YOUR NODE after the first install: close Bitcoin Core or Knots
 and start it again. It reads bitcoin.conf only when it starts, so until
@@ -132,13 +133,24 @@ Change either later. Windows PowerShell or Command Prompt:
 -----------------------------------------------------------------------
 4. Use it
 -----------------------------------------------------------------------
-Double-click the NodeSignal shortcut on your Desktop, or open:
+Double-click the NodeSignal shortcut on your Desktop or in the Start
+menu. NodeSignal opens in its own window: Microsoft Edge, which comes
+with Windows, in app mode, so there are no tabs or address bar and it
+gets its own taskbar entry with the NodeSignal icon. (Chrome works too;
+with neither, it opens a normal browser tab.) If NodeSignal was not
+running, the shortcut starts it first.
+
+The window is only a view. NodeSignal itself keeps running in the
+background, so closing the window never stops it receiving messages;
+"nodesignal.exe stop" does. You can also open it in any browser on this
+PC:
 
     http://localhost:8789
 
 Commands, from Command Prompt (the program is not on PATH, so use its
 full path):
 
+    "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" open       the NodeSignal window (--browser: a browser tab)
     "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" status     is it running, is the node connected?
     "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" logs       last lines of the log, and where it is
     "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" restart
@@ -165,7 +177,7 @@ Prompt:
     "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" uninstall
 
 It stops NodeSignal, removes the program, the sign-in launcher, the
-Desktop shortcut and the Apps entry, and offers to remove
+Desktop and Start menu shortcuts and the Apps entry, and offers to remove
 uacomment=nodesignal and NodeSignal's RPC login from bitcoin.conf. Your
 settings and history are kept. --purge also removes the settings, the
 log and the RPC login (without asking), but still never your identity

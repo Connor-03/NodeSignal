@@ -111,6 +111,7 @@ function readForm(req, limit = 16 * 1024) {
 
 /* ------------------------------------------------------------ WebSocket */
 const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
+const MAX_MSG = 8 * 1024 * 1024;         // one message, however it is framed
 const acceptKey = (key) => crypto.createHash('sha1').update(key + GUID).digest('base64');
 
 class WSConn extends EventEmitter {
@@ -121,17 +122,22 @@ class WSConn extends EventEmitter {
     this._buf = Buffer.alloc(0);
     this._frags = [];
     this._fragOp = 0;
+    this._fragLen = 0;
+    this._closed = false;               // 'close' is emitted once, whoever closes first
     socket.on('data', (d) => this._onData(d));
-    socket.on('close', () => { this.readyState = 3; this.emit('close'); });
+    socket.on('close', () => { this.readyState = 3; this._emitClose(); });
     // Only re-emit when someone listens: an unhandled 'error' event would
     // throw and take the whole process down over one dropped browser tab.
     socket.on('error', (e) => { this.readyState = 3; if (this.listenerCount('error')) this.emit('error', e); });
   }
+  _emitClose() { if (this._closed) return; this._closed = true; this.emit('close'); }
   _onData(d) {
+    if (this.readyState !== 1) return;     // nothing is read after a close
     this._buf = Buffer.concat([this._buf, d]);
     // Cap unparsed buffer so a peer cannot make us hold unbounded memory.
-    if (this._buf.length > 8 * 1024 * 1024) return this.close();
+    if (this._buf.length > MAX_MSG) return this.close();
     for (;;) {
+      if (this.readyState !== 1) return;
       const f = this._readFrame();
       if (!f) break;
       this._handleFrame(f);
@@ -149,9 +155,11 @@ class WSConn extends EventEmitter {
     else if (len === 127) {
       if (b.length < off + 8) return null;
       const big = b.readBigUInt64BE(off);
-      if (big > 8n * 1024n * 1024n) { this.close(); return null; }
+      if (big > BigInt(MAX_MSG)) { this.close(); return null; }
       len = Number(big); off += 8;
     }
+    // RFC 6455 5.1: a server MUST close the connection on an unmasked client frame.
+    if (!masked) { this.close(); return null; }
     let mask = null;
     if (masked) { if (b.length < off + 4) return null; mask = b.slice(off, off + 4); off += 4; }
     if (b.length < off + len) return null;
@@ -167,10 +175,13 @@ class WSConn extends EventEmitter {
   _handleFrame(f) {
     switch (f.opcode) {
       case 0x0:                                  // continuation
+        // The size cap covers the whole message, not just one frame.
+        this._fragLen += f.payload.length;
+        if (this._fragLen > MAX_MSG) return this.close();
         this._frags.push(f.payload);
         if (f.fin) {
           const full = Buffer.concat(this._frags);
-          this._frags = [];
+          this._frags = []; this._fragLen = 0;
           if (this._fragOp === 0x1) this.emit('message', full.toString('utf8'));
           else this.emit('message', full);
         }
@@ -180,7 +191,7 @@ class WSConn extends EventEmitter {
         if (f.fin) {
           if (f.opcode === 0x1) this.emit('message', f.payload.toString('utf8'));
           else this.emit('message', f.payload);
-        } else { this._fragOp = f.opcode; this._frags = [f.payload]; }
+        } else { this._fragOp = f.opcode; this._frags = [f.payload]; this._fragLen = f.payload.length; }
         break;
       case 0x8: this.close(); break;              // close
       case 0x9: this._send(0xA, f.payload); break; // ping -> pong
@@ -205,10 +216,10 @@ class WSConn extends EventEmitter {
   ping() { this._send(0x9, Buffer.alloc(0)); }
   close() {
     if (this.readyState === 3) return;
+    try { this._send(0x8, Buffer.alloc(0)); } catch { }   // while still OPEN: _send drops frames after
     this.readyState = 3;
-    try { this._send(0x8, Buffer.alloc(0)); } catch { }
     try { this.socket.end(); } catch { }
-    this.emit('close');
+    this._emitClose();
   }
   terminate() { try { this.socket.destroy(); } catch { } }
 }
