@@ -603,9 +603,15 @@ function socks5Connect(target, targetPort, onReady, onError) {
       ? `no SOCKS proxy at ${px.host}:${px.port}: is Tor running? (set --tor-proxy if it listens elsewhere)`
       : (e.code || e.message))));
   sock.on('connect', () => sock.write(Buffer.from([0x05, 0x01, 0x00])));  // greet: no-auth
-  const onData = (chunk) => {
+  // TCP is a byte stream: a reply may arrive in pieces, so buffer until it is whole.
+  let buf = Buffer.alloc(0);
+  const onData = (d) => {
+    buf = Buffer.concat([buf, d]);
+    if (buf.length > 512) return fail('bad SOCKS5 reply');
     if (stage === 0) {
-      if (chunk.length < 2 || chunk[0] !== 0x05) return fail('bad SOCKS5 greeting reply');
+      if (buf.length < 2) return;
+      const chunk = buf; buf = buf.subarray(2);
+      if (chunk[0] !== 0x05) return fail('bad SOCKS5 greeting reply');
       if (chunk[1] !== 0x00) return fail('SOCKS proxy demands authentication');
       const host = Buffer.from(String(target), 'utf8');
       if (host.length > 255) return fail('hostname too long for SOCKS5');
@@ -617,16 +623,27 @@ function socks5Connect(target, targetPort, onReady, onError) {
       return;
     }
     if (stage === 1) {
-      if (chunk.length < 2 || chunk[0] !== 0x05) return fail('bad SOCKS5 reply');
+      if (buf.length < 2) return;
+      const chunk = buf;
+      if (chunk[0] !== 0x05) return fail('bad SOCKS5 reply');
       if (chunk[1] !== 0x00) {
         const why = { 1: 'general failure', 2: 'not allowed', 3: 'network unreachable',
           4: 'host unreachable', 5: 'connection refused', 6: 'TTL expired',
           7: 'command not supported', 8: 'address type not supported' }[chunk[1]] || ('code ' + chunk[1]);
         return fail(`Tor could not reach ${target}:${targetPort} (${why})`);
       }
+      // VER REP RSV ATYP BND.ADDR BND.PORT: the whole reply, before any relayed byte
+      if (chunk.length < 5) return;
+      const alen = { 1: 4, 3: 1 + chunk[4], 4: 16 }[chunk[3]];
+      if (!alen) return fail('bad SOCKS5 reply');
+      if (chunk.length < 4 + alen + 2) return;
+      const rest = chunk.subarray(4 + alen + 2);
       stage = 2;
+      sock.pause();
       sock.removeListener('data', onData);
+      if (rest.length) sock.unshift(rest);    // already the peer's first bytes
       onReady(sock);
+      sock.resume();
       return;
     }
   };
