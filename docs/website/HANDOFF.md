@@ -268,7 +268,10 @@ Source and install guides: https://github.com/Connor-03/NodeSignal
    The installer tells you this and does not do it for you.
 
 It installs to `%LOCALAPPDATA%\NodeSignal`, starts hidden when you sign in,
-and opens the console in your browser.
+and opens the console in its own window (Microsoft Edge's app mode: no tabs
+or address bar, its own taskbar icon) from a Desktop and Start menu shortcut.
+Closing the window does not stop NodeSignal receiving messages.
+(`packaging/windows/sea-main.js`: `openApp`, `writeAppShortcut`)
 
 **Linux** (on the node):
 
@@ -333,7 +336,7 @@ State these honestly, or keep them off the site.
 
 ## Screenshots
 
-Files in `docs/website/screenshots/` (WebP, 8 files, about 222 KB in all).
+Files in `docs/website/screenshots/` (WebP, 8 files, about 229 KB in all).
 They are rendered from the real console (`nodesignal.html`) against a fake
 daemon (`tools/screenshots/fixture-ws.js`), so every address is a
 documentation range (198.51.100.0/24, 203.0.113.0/24, 2001:db8::/32), every
