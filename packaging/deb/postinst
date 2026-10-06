@@ -1,0 +1,70 @@
+#!/bin/sh
+# nodesignal postinst: pick the service user, write the config if absent,
+# start the service, check the Bitcoin RPC and print what to do next.
+# NODESIGNAL_TEST_ROOT runs it against a fake filesystem with no systemctl.
+set -e
+
+R="${NODESIGNAL_TEST_ROOT:-}"
+NS="$R/opt/nodesignal"
+
+case "$1" in
+  configure) ;;
+  *) exit 0 ;;
+esac
+
+echo ""
+echo "NodeSignal: setting up"
+
+# A from-source install (install-node.sh) left its own unit in /etc, which
+# would override this package's unit. Carry its settings over, move it aside.
+OLD_UNIT=/etc/systemd/system/nodesignal.service
+set --
+if [ -f "$R$OLD_UNIT" ]; then
+  echo "Found a from-source unit at $OLD_UNIT: carrying its settings over and moving it aside."
+  set -- --migrate-unit "$OLD_UNIT"
+fi
+
+if [ -n "$R" ]; then
+  "$NS/node" "$NS/cli.js" setup --root "$R" "$@"
+else
+  "$NS/node" "$NS/cli.js" setup "$@"
+fi
+
+if [ -f "$R$OLD_UNIT" ]; then
+  mv "$R$OLD_UNIT" "$R$OLD_UNIT.from-source-backup"
+  chmod 600 "$R$OLD_UNIT.from-source-backup"   # an old ExecStart may hold a web token
+fi
+# the from-source command wrapper would shadow /usr/bin/nodesignal
+if grep -qs 'NodeSignal from-source wrapper' "$R/usr/local/bin/nodesignal"; then
+  rm -f "$R/usr/local/bin/nodesignal"
+fi
+
+running=0
+if [ -z "$R" ] && [ -d /run/systemd/system ]; then
+  systemctl daemon-reload || true
+  systemctl enable nodesignal.service >/dev/null 2>&1 || true
+  if systemctl restart nodesignal.service; then
+    running=1
+  else
+    echo "NodeSignal did not start. See: journalctl -u nodesignal -n 50"
+  fi
+else
+  echo "systemd is not running here, so NodeSignal was not started."
+  echo "Start it by hand: sudo -u <node user> /opt/nodesignal/node /opt/nodesignal/nodesignald.js --config /etc/nodesignal/config.json --web-root /opt/nodesignal"
+fi
+
+echo ""
+if [ "$running" = "1" ]; then
+  "$NS/node" "$NS/cli.js" status --wait 20 || true
+  echo ""
+fi
+cat <<'MSG'
+Optional, both off by default (run on this machine):
+  sudo nodesignal advertise on      add uacomment=nodesignal to bitcoin.conf so peers
+                                    see you run NodeSignal (public; restart bitcoind after)
+  sudo nodesignal port-mapping on   ask your router to forward the peer port (UPnP /
+                                    NAT-PMP); exposes your node's IP on clearnet
+
+Other commands: nodesignal status | nodesignal open | nodesignal logs
+MSG
+exit 0

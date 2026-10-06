@@ -1,0 +1,75 @@
+#!/bin/sh
+# nodesignal preinst: refuse a fresh install on a machine with no Bitcoin node.
+# Upgrades are never blocked. NODESIGNAL_SKIP_NODE_CHECK=1 skips the check
+# (CI only). NODESIGNAL_TEST_ROOT points the scan at a fake filesystem (tests).
+set -e
+
+R="${NODESIGNAL_TEST_ROOT:-}"
+
+case "$1" in
+  install) ;;
+  *) exit 0 ;;
+esac
+# "install" with a version in $2 is a reinstall after "apt remove": allow it.
+[ -n "${2:-}" ] && exit 0
+
+if [ "${NODESIGNAL_SKIP_NODE_CHECK:-}" = "1" ]; then
+  echo "nodesignal: NODESIGNAL_SKIP_NODE_CHECK=1, not checking for a Bitcoin node (CI only)."
+  exit 0
+fi
+
+found=""
+
+# a running node
+for c in "$R"/proc/[0-9]*/comm; do
+  [ -r "$c" ] || continue
+  name=""
+  read -r name < "$c" 2>/dev/null || true
+  case "$name" in
+    bitcoind|bitcoin-qt|bitcoin-node|bitcoin-gui) found="running $name"; break ;;
+  esac
+done
+
+# a data directory or config
+if [ -z "$found" ]; then
+  for d in "$R"/home/*/.bitcoin "$R"/root/.bitcoin "$R"/home/*/snap/bitcoin-core/common/.bitcoin \
+           "$R"/var/lib/bitcoind "$R"/var/lib/bitcoin "$R"/etc/bitcoin; do
+    if [ -d "$d" ]; then found="directory ${d#"$R"}"; break; fi
+  done
+fi
+
+# the program
+if [ -z "$found" ]; then
+  for b in "$R"/usr/bin/bitcoind "$R"/usr/local/bin/bitcoind "$R"/usr/bin/bitcoin-qt "$R"/usr/local/bin/bitcoin-qt \
+           "$R"/snap/bin/bitcoin-core.daemon "$R"/opt/*/bin/bitcoind; do
+    if [ -f "$b" ]; then found="program ${b#"$R"}"; break; fi
+  done
+fi
+if [ -z "$found" ] && [ -z "$R" ] && command -v bitcoind >/dev/null 2>&1; then
+  found="program $(command -v bitcoind)"
+fi
+
+if [ -n "$found" ]; then
+  echo "nodesignal: Bitcoin node found ($found)."
+  exit 0
+fi
+
+cat >&2 <<'MSG'
+
+  NodeSignal needs a Bitcoin node on this machine, and none was found.
+
+  It looked for a running bitcoind or bitcoin-qt, a bitcoind program
+  (/usr/bin, /usr/local/bin, /opt/*/bin, snap), and a data directory
+  (~/.bitcoin, /var/lib/bitcoind, /var/lib/bitcoin, /etc/bitcoin).
+
+  Install Bitcoin Core (https://bitcoincore.org/en/download/) or
+  Bitcoin Knots (https://bitcoinknots.org/) first, start it once, then
+  install NodeSignal again. Pruned nodes are fine.
+
+  If your node keeps its data somewhere unusual, start it before
+  installing: a running bitcoind is always detected.
+
+  Nothing was installed.
+
+MSG
+exit 1

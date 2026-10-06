@@ -1,0 +1,21 @@
+#!/bin/sh
+# nodesignal postrm: purge removes /etc/nodesignal and the systemd drop-in.
+# It NEVER removes the state directory (~/.nodesignal of the service user, or
+# /var/lib/nodesignal): that holds the identity key and message history.
+set -e
+
+case "$1" in
+  purge)
+    rm -rf /etc/nodesignal
+    rm -rf /etc/systemd/system/nodesignal.service.d
+    echo "NodeSignal settings removed. Your identity key and history were kept in"
+    echo "the service user's ~/.nodesignal (or /var/lib/nodesignal); delete it yourself if you want."
+    ;;
+esac
+
+if [ -d /run/systemd/system ]; then
+  case "$1" in
+    remove|purge) systemctl daemon-reload >/dev/null 2>&1 || true ;;
+  esac
+fi
+exit 0
