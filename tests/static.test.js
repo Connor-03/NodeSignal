@@ -8,7 +8,7 @@
 //    hold state.json (the private identity key), so nothing but the console
 //    page itself is ever served from it. Host is 127.0.0.1:<port>, as
 //    locked decision 10 requires.
-// Ports 44751 and 44752.
+// Ports 24751 and 24752.
 'use strict';
 const fs = require('fs'), path = require('path'), net = require('net'), vm = require('vm');
 const { Writable } = require('stream');
@@ -20,7 +20,7 @@ const S = H.suite('ns-static-');
 const { t } = S;
 
 const SECRET = 'SECRET-MUST-NOT-LEAK-7f3a';
-const WEB = 44752;
+const WEB = 24752;
 
 // A response good enough for serveStatic (sendFile pipes a file stream into it).
 function serve(root, url) {
@@ -123,7 +123,7 @@ const DOTFILES = ['/.env', '/.git/config', '/.git/HEAD', '/sub/.hidden', '/%2een
   fs.writeFileSync(path.join(APP, '.env'), SECRET); fs.writeFileSync(path.join(APP, '.git', 'config'), SECRET);
   fs.writeFileSync(path.join(S.TMP, 'outside-secret.txt'), SECRET);
   // worst case: the daemon's own data directory is the program folder
-  const D = await up(S.daemon('static', { peer: 44751, web: WEB, data: 'app',
+  const D = await up(S.daemon('static', { peer: 24751, web: WEB, data: 'app',
     extra: ['--config', path.join(APP, 'nodesignal-config.json'), '--web-root', APP] }));
   const priv = JSON.parse(fs.readFileSync(path.join(APP, 'state.json'), 'utf8')).identity;
   const leaks = (text) => text.includes(SECRET) || JSON.stringify(priv).slice(20, 60).split('"').some((x) => x.length > 20 && text.includes(x));

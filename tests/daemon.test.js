@@ -111,7 +111,7 @@ function legacyClient(host, port, id, onJson, localAddress) {
 (async () => {
   const rpc = await rpcServer({ port: 18342, npeers: 3, nodesignalPeers: 1 });
   let A = await up(daemon('alpha', { host: '127.0.0.1', peer: 28788, web: 28789, rpc: true }));
-  let B = await up(daemon('bravo', { host: '127.0.0.2', peer: 38788, web: 38789 }));
+  let B = await up(daemon('bravo', { host: '127.0.0.2', peer: 29788, web: 29789 }));
   let ua = await ui(A), ub = await ui(B);
 
   await t('getpeerinfo peers advertising (nodesignal) are flagged', async () => {
@@ -122,8 +122,8 @@ function legacyClient(host, port, id, onJson, localAddress) {
   });
 
   await t('v3: A delivers to B over standard Noise and both pin each other', async () => {
-    ua.send({ type: 'contact.add', host: '127.0.0.2', port: 38788, nick: 'bravo' });
-    const id = await sent(ua, '127.0.0.2', 38788, 'hello over Noise XX\nsecond line');
+    ua.send({ type: 'contact.add', host: '127.0.0.2', port: 29788, nick: 'bravo' });
+    const id = await sent(ua, '127.0.0.2', 29788, 'hello over Noise XX\nsecond line');
     await status(ua, id, 'delivered');
     const r = await ub.wait((m) => m.type === 'chat.recv' && m.msg.from === 'them');
     assert.strictEqual(r.msg.text, 'hello over Noise XX\nsecond line');
@@ -145,9 +145,9 @@ function legacyClient(host, port, id, onJson, localAddress) {
 
   await t('retry queue: a message to a stopped peer is delivered when it comes back', async () => {
     await stop(B);
-    const pid = await sent(ua, '127.0.0.2', 38788, 'are you back?');
+    const pid = await sent(ua, '127.0.0.2', 29788, 'are you back?');
     const p = await status(ua, pid, 'pending');
-    B = await up(daemon('bravo', { host: '127.0.0.2', peer: 38788, web: 38789 }));
+    B = await up(daemon('bravo', { host: '127.0.0.2', peer: 29788, web: 29789 }));
     ub = await ui(B);
     await ua.wait((m) => m.type === 'chat.status' && m.status === 'delivered' && m.id === p.id, 10000);
     const st = await ub.state();
@@ -159,7 +159,7 @@ function legacyClient(host, port, id, onJson, localAddress) {
     // replay through a legacy client with a fixed id, twice
     const id = noise.loadIdentity(noise.newIdentity());
     const acks = [];
-    const cl = await legacyClient('127.0.0.2', 38788, id, (m) => m.t === 'ack' && acks.push(m.id), '127.0.0.11');
+    const cl = await legacyClient('127.0.0.2', 29788, id, (m) => m.t === 'ack' && acks.push(m.id), '127.0.0.11');
     cl.send({ t: 'hello', proto: 2, nick: 'replayer', peerPort: 1 });
     cl.send({ t: 'msg', id: 'dup-1', ts: Date.now(), text: 'once' });
     cl.send({ t: 'msg', id: 'dup-1', ts: Date.now(), text: 'once' });
@@ -189,12 +189,12 @@ function legacyClient(host, port, id, onJson, localAddress) {
         if (!hs) { try { hs = noise.legacy.respond(id, p); s.write(frame(hs.msg2)); } catch { s.destroy(); } return; }
         if (!session) { const r = hs._finish(p); session = noise.legacy.makeSession(r.tx, r.rx); return; }
         const m = JSON.parse(session.decrypt(p)); got.push(m);
-        if (m.t === 'hello') s.write(frame(session.encrypt(JSON.stringify({ t: 'hello', proto: 2, nick: 'old-server', peerPort: 48788 }))));
+        if (m.t === 'hello') s.write(frame(session.encrypt(JSON.stringify({ t: 'hello', proto: 2, nick: 'old-server', peerPort: 29888 }))));
         if (m.t === 'msg') s.write(frame(session.encrypt(JSON.stringify({ t: 'ack', id: m.id }))));
       });
     });
-    await new Promise((r) => srv.listen(48788, '127.0.0.3', r));
-    const oid = await sent(ua, '127.0.0.3', 48788, 'hello old friend');
+    await new Promise((r) => srv.listen(29888, '127.0.0.3', r));
+    const oid = await sent(ua, '127.0.0.3', 29888, 'hello old friend');
     await status(ua, oid, 'delivered', 10000);
     assert(got.some((m) => m.t === 'msg' && m.text === 'hello old friend'));
     assert.strictEqual(contactOf(await ua.state(), '127.0.0.3').proto, 2);
@@ -203,9 +203,9 @@ function legacyClient(host, port, id, onJson, localAddress) {
 
   await t('TOFU: a reinstalled peer (new key) is rejected, then accepted deliberately', async () => {
     await stop(B);
-    B = await up(daemon('bravo', { host: '127.0.0.2', peer: 38788, web: 38789, data: 'bravo-reinstalled' }));
+    B = await up(daemon('bravo', { host: '127.0.0.2', peer: 29788, web: 29789, data: 'bravo-reinstalled' }));
     ub = await ui(B);
-    const rid = await sent(ua, '127.0.0.2', 38788, 'after the reinstall');
+    const rid = await sent(ua, '127.0.0.2', 29788, 'after the reinstall');
     const sec = await ua.wait((m) => m.type === 'security' && m.kind === 'fp-mismatch');
     const c = await until(async () => { const x = contactOf(await ua.state(), '127.0.0.2'); return x.pendingFp && x; });
     assert.strictEqual(c.pendingFp.got, sec.got); assert.notStrictEqual(c.peerFp, sec.got);
@@ -277,7 +277,7 @@ function legacyClient(host, port, id, onJson, localAddress) {
 
   await t('hostile hello fields are cleaned', async () => {
     const id = noise.loadIdentity(noise.newIdentity());
-    const cl = await legacyClient('127.0.0.2', 38788, id, () => { }, '127.0.0.13');
+    const cl = await legacyClient('127.0.0.2', 29788, id, () => { }, '127.0.0.13');
     cl.send({ t: 'hello', proto: 2, nick: '<img src=x>\u0000\u001b[31m' + 'x'.repeat(500), peerPort: 'nope',
       node: { ua: 'u'.repeat(5000), impl: 42, declared: ['BIP-1', { x: 1 }], height: 'tall', __proto__: { polluted: true } } });
     cl.send({ t: 'msg', id: '../../etc', ts: 'yesterday', text: 'x'.repeat(10000) });
@@ -285,7 +285,7 @@ function legacyClient(host, port, id, onJson, localAddress) {
     const c = (await ub.state()).contacts.find((x) => x.nick && x.nick.startsWith('<img'));
     assert(c, 'contact created');
     assert(c.nick.length <= 60 && !/[\u0000-\u001f]/.test(c.nick));
-    assert.strictEqual(c.port, 38788);               // invalid peerPort ignored (default kept)
+    assert.strictEqual(c.port, 29788);               // invalid peerPort ignored (default kept)
     assert(c.peerInfo.ua.length <= 256 && c.peerInfo.impl === 'Unknown' && c.peerInfo.height === null);
     assert.deepStrictEqual(c.peerInfo.declared, ['BIP-1']);
     const m = c.msgs.at(-1);

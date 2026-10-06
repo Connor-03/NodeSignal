@@ -8,7 +8,7 @@ const { spawn } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-web-'));
-const WEB = 47789, PEER = 47788;
+const WEB = 27789, PEER = 27788;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0, passed = 0;
 const t = async (name, fn) => {

@@ -4,7 +4,7 @@
 // exchange (their daemon acked our message, or sent us one). An inbound hello
 // alone does NOT count. Established persists after they go offline, and
 // messages are never tied to the live getpeerinfo list.
-// Ports: mock RPC 44720, daemons 44721 to 44724, a raw peer on 127.0.0.3:44725.
+// Ports: mock RPC 24720, daemons 24721 to 24724, a raw peer on 127.0.0.3:24725.
 'use strict';
 const fs = require('fs'), path = require('path');
 const assert = require('assert');
@@ -15,11 +15,11 @@ const S = H.suite('ns-est-');
 const { t } = S;
 
 (async () => {
-  const rpc = await rpcServer({ port: 44720, npeers: 4 });
+  const rpc = await rpcServer({ port: 24720, npeers: 4 });
   // B's node is one of A's node peers (getpeerinfo), until it drops off below
   rpc.peers.push({ addr: '127.0.0.2:8333', subver: '/Satoshi:29.1.0/Knots:20250903/', pingtime: 0.03, inbound: false, synced_headers: 950000 });
-  const aOpts = { host: '127.0.0.1', peer: 44721, web: 44722, rpc: 44720 };
-  const bOpts = { host: '127.0.0.2', peer: 44723, web: 44724 };
+  const aOpts = { host: '127.0.0.1', peer: 24721, web: 24722, rpc: 24720 };
+  const bOpts = { host: '127.0.0.2', peer: 24723, web: 24724 };
   let A = await up(S.daemon('alpha', aOpts));
   let B = await up(S.daemon('bravo', bOpts));
   let ua = await ui(A), ub = await ui(B);
@@ -27,11 +27,11 @@ const { t } = S;
 
   await t('an inbound hello alone does not make a contact established', async () => {
     const hellos = [];
-    const c = await v3Client('127.0.0.1', 44721, (m) => m.t === 'hello' && hellos.push(m), '127.0.0.31');
-    c.send({ t: 'hello', proto: 3, nick: 'hello-only', peerPort: 44799 });
+    const c = await v3Client('127.0.0.1', 24721, (m) => m.t === 'hello' && hellos.push(m), '127.0.0.31');
+    c.send({ t: 'hello', proto: 3, nick: 'hello-only', peerPort: 24799 });
     const ev = await ua.wait((m) => m.type === 'contact' && m.contact.host === '127.0.0.31');
     await until(() => hellos.length === 1, 3000);            // the daemon said hello back: a live session
-    c.send({ t: 'hello', proto: 3, nick: 'hello-only', peerPort: 44799 });
+    c.send({ t: 'hello', proto: 3, nick: 'hello-only', peerPort: 24799 });
     c.send({ t: 'ping' });
     await sleep(300); c.close();
     assert.strictEqual(ev.contact.established, false);
@@ -44,7 +44,7 @@ const { t } = S;
   });
 
   await t('a hello exchange both ways, with no message, establishes neither side', async () => {
-    ua.send({ type: 'contact.add', host: '127.0.0.2', port: 44723, nick: 'bravo' });
+    ua.send({ type: 'contact.add', host: '127.0.0.2', port: 24723, nick: 'bravo' });
     await ua.wait((m) => m.type === 'contact' && m.contact.host === '127.0.0.2');
     ua.send({ type: 'chat.retry', host: '127.0.0.2' });        // dials B: handshake and hellos, nothing else
     const ev = await ub.wait((m) => m.type === 'contact' && m.contact.host === '127.0.0.1');
@@ -60,11 +60,11 @@ const { t } = S;
 
   await t('a message the peer takes but never acknowledges does not establish it', async () => {
     const got = [];
-    raw = await v3Server('127.0.0.3', 44725, (m, reply) => {
+    raw = await v3Server('127.0.0.3', 24725, (m, reply) => {
       got.push(m);
-      if (m.t === 'hello') reply({ t: 'hello', proto: 3, nick: 'never-acks', peerPort: 44725 });
+      if (m.t === 'hello') reply({ t: 'hello', proto: 3, nick: 'never-acks', peerPort: 24725 });
     });
-    const id = await sent(ua, '127.0.0.3', 44725, 'are you there?');
+    const id = await sent(ua, '127.0.0.3', 24725, 'are you there?');
     await until(() => got.some((m) => m.t === 'msg' && m.id === id), 5000);
     for (const s of raw.conns) s.destroy();                  // hang up without an ack
     const p = await status(ua, id, 'pending');
@@ -79,20 +79,20 @@ const { t } = S;
   });
 
   await t('our message acknowledged by their daemon establishes it, on both sides', async () => {
-    const id = await sent(ua, '127.0.0.2', 44723, 'first real message');
+    const id = await sent(ua, '127.0.0.2', 24723, 'first real message');
     await status(ua, id, 'delivered');
     await ub.wait((m) => m.type === 'chat.recv' && m.msg.from === 'them' && m.msg.text === 'first real message');
     const a = contactOf(await ua.state(), '127.0.0.2'), b = contactOf(await ub.state(), '127.0.0.1');
     assert.strictEqual(a.established, true, 'acked: established');
     assert.strictEqual(a.online, true);
     assert.strictEqual(b.established, true, 'received: established');
-    await status(ub, await sent(ub, '127.0.0.1', 44721, 'and a reply'), 'delivered');
+    await status(ub, await sent(ub, '127.0.0.1', 24721, 'and a reply'), 'delivered');
   });
 
   await t('a message from them establishes the contact', async () => {
     const acks = [];
-    const c = await v3Client('127.0.0.1', 44721, (m) => m.t === 'ack' && acks.push(m.id), '127.0.0.32');
-    c.send({ t: 'hello', proto: 3, nick: 'talker', peerPort: 44798 });
+    const c = await v3Client('127.0.0.1', 24721, (m) => m.t === 'ack' && acks.push(m.id), '127.0.0.32');
+    c.send({ t: 'hello', proto: 3, nick: 'talker', peerPort: 24798 });
     await ua.wait((m) => m.type === 'contact' && m.contact.host === '127.0.0.32' && !m.contact.established);
     c.send({ t: 'msg', id: 'est-1', ts: Date.now(), text: 'hi from a stranger' });
     await until(() => acks.includes('est-1'), 3000);
@@ -123,7 +123,7 @@ const { t } = S;
 
   await t('established persists after they go offline; online does not', async () => {
     ub.close(); await H.stop(B);
-    const id = await sent(ua, '127.0.0.2', 44723, 'are you still there?');
+    const id = await sent(ua, '127.0.0.2', 24723, 'are you still there?');
     await status(ua, id, 'pending');
     const k = await until(async () => { const x = contactOf(await ua.state(), '127.0.0.2'); return !x.online && x; });
     assert.strictEqual(k.established, true, 'established is kept');

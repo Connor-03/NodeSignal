@@ -11,7 +11,7 @@ const noise = require('../noise.js');
 
 const ROOT = path.join(__dirname, '..');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-hard-'));
-const WEB = 51789, PEER = 51788, FAKE8333 = 51733;
+const WEB = 21789, PEER = 21788, FAKE8333 = 21733;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let failed = 0, passed = 0, skipped = 0;
 const t = async (name, fn) => {

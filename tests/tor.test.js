@@ -5,7 +5,7 @@
 // look it up. The proxy here is a mock written with net: it records each
 // request and relays a fake onion to a second real daemon on loopback, the way
 // Tor relays to a hidden service. The onion names are fake.
-// Ports 44731 to 44736.
+// Ports 24731 to 24736.
 'use strict';
 const net = require('net'), fs = require('fs'), path = require('path');
 const assert = require('assert');
@@ -17,7 +17,7 @@ const { t } = S;
 
 const onion = (c) => { const b = 'nodesignalfakeonion'; return b + c.repeat(56 - b.length) + '.onion'; };
 const ONION = onion('a'), ONION_SPLIT = onion('b'), ONION_DOWN = onion('c');
-const PROXY = 44735;
+const PROXY = 24735;
 
 // A SOCKS5 proxy (RFC 1928, no auth) that parses every byte it is sent.
 // routes: "host:port" -> { host, port, split } where to really connect;
@@ -78,18 +78,18 @@ for (const api of [dns, dns.promises]) for (const k of ['lookup', 'resolve', 're
   api[k] = function (h, ...a) { rec(h); return orig.call(this, h, ...a); };
 }
 `);
-  const p2p = await p2pServer({ port: 44736, host: '127.0.0.3', ua: '/Satoshi:29.2.0/Knots:20251110/' });
+  const p2p = await p2pServer({ port: 24736, host: '127.0.0.3', ua: '/Satoshi:29.2.0/Knots:20251110/' });
   // B is the hidden service. A's peer port listens on 127.0.0.4 only, so B
   // (which sees A arrive from the proxy's 127.0.0.5) cannot dial A back: its
   // reply can only travel over the circuit A opened.
-  const B = await up(S.daemon('bravo', { host: '127.0.0.2', peer: 44731, web: 44732 }));
+  const B = await up(S.daemon('bravo', { host: '127.0.0.2', peer: 24731, web: 24732 }));
   const routes = {
-    [ONION + ':8788']: { host: '127.0.0.2', port: 44731 },
-    [ONION + ':8333']: { host: '127.0.0.3', port: 44736 },
-    [ONION_SPLIT + ':8788']: { host: '127.0.0.2', port: 44731, split: true },
+    [ONION + ':8788']: { host: '127.0.0.2', port: 24731 },
+    [ONION + ':8333']: { host: '127.0.0.3', port: 24736 },
+    [ONION_SPLIT + ':8788']: { host: '127.0.0.2', port: 24731, split: true },
   };
   let proxy = await socksProxy(PROXY, routes);
-  const A = await up(S.daemon('alpha', { host: '127.0.0.4', peer: 44733, web: 44734,
+  const A = await up(S.daemon('alpha', { host: '127.0.0.4', peer: 24733, web: 24734,
     extra: ['--tor-proxy', '127.0.0.1:' + PROXY], nodeArgs: ['--require', hook] }));
   const ua = await ui(A), ub = await ui(B);
 
@@ -121,7 +121,7 @@ for (const api of [dns, dns.promises]) for (const k of ['lookup', 'resolve', 're
 
   await t('their reply rides back over the circuit we opened', async () => {
     const before = proxy.requests.length;
-    const id = await sent(ub, '127.0.0.5', 44733, 'reply over the onion circuit');
+    const id = await sent(ub, '127.0.0.5', 24733, 'reply over the onion circuit');
     const r = await ua.wait((m) => m.type === 'chat.recv' && m.host === ONION && m.msg.from === 'them', 5000);
     assert.strictEqual(r.msg.text, 'reply over the onion circuit');
     await status(ub, id, 'delivered');
@@ -148,7 +148,7 @@ for (const api of [dns, dns.promises]) for (const k of ['lookup', 'resolve', 're
     await sleep(3000);                                      // let the earlier link hang up
     const id = await sent(ua, ONION, 8788, 'is tor running?');
     const p = await status(ua, id, 'pending', 10000);
-    assert.match(p.error, /no SOCKS proxy at 127\.0\.0\.1:44735: is Tor running\?/);
+    assert.match(p.error, /no SOCKS proxy at 127\.0\.0\.1:24735: is Tor running\?/);
     ua.send({ type: 'chat.cancel', host: ONION, id });
   });
 

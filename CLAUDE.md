@@ -481,6 +481,11 @@ Related story link: https://bpi.connoraherne.com.
 - `.bat` files must keep CRLF line endings.
 - Run `node tests/console.test.js` (and `tests/console.e2e.js` where
   Playwright exists) after touching `nodesignal.html`.
+- Fixed ports in tests stay below 32768, outside every OS ephemeral range
+  (Linux 32768-60999, Windows and macOS 49152-65535), and each suite has its
+  own block. A port inside that range can be handed to any process that asks
+  for a free one, and the daemon then fails with EADDRINUSE; that broke CI
+  once. `tests/ports.test.js` enforces it.
 - Check syntax before committing:
   `node --check` on every `.js`, `bash -n install-node.sh`, and extract the
   `<script>` block from each HTML file and `node --check` it.

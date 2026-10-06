@@ -4,7 +4,7 @@
 // nothing (CLAUDE.md section 5: no persisted state before a completed
 // handshake), the daemon must keep answering /health, and the connection cap
 // (--max-conns) and per-source rate limit (--rl-burst, --rl-refill-ms) must hold.
-// Ports 44711 to 44716.
+// Ports 24711 to 24716.
 'use strict';
 const net = require('net'), fs = require('fs'), path = require('path'), crypto = require('crypto');
 const assert = require('assert');
@@ -46,7 +46,7 @@ const ABUSE = {
 
 (async () => {
   /* ---- 1. the flood ---- */
-  const F = await up(S.daemon('flood', { peer: 44711, web: 44712 }));
+  const F = await up(S.daemon('flood', { peer: 24711, web: 24712 }));
   await sleep(300);
   const stateFile = path.join(F.dataDir, 'state.json');
   const before = { text: fs.readFileSync(stateFile, 'utf8'), mtime: fs.statSync(stateFile).mtimeMs };
@@ -60,7 +60,7 @@ const ABUSE = {
     // 50 sources x every kind of abuse, several rounds: well over the 128-connection cap
     for (let round = 0; round < 3; round++) {
       const batch = [];
-      for (let i = 30; i < 80; i++) for (const k of kinds) batch.push(probe(44711, src(i), k));
+      for (let i = 30; i < 80; i++) for (const k of kinds) batch.push(probe(24711, src(i), k));
       socks.push(...await Promise.all(batch));
       await sleep(100);
     }
@@ -80,7 +80,7 @@ const ABUSE = {
 
   await t('a completed handshake with no hello still leaves no state', async () => {
     for (let i = 0; i < 20; i++) {
-      const c = await v3Client('127.0.0.1', 44711, () => { }, src(81));
+      const c = await v3Client('127.0.0.1', 24711, () => { }, src(81));
       if (i % 2) c.send({ t: 'ping' });                     // talks, but never says hello
       else c.socket.write(frame(random(40)));                // or sends an undecryptable frame
       await sleep(30); c.close();
@@ -91,8 +91,8 @@ const ABUSE = {
   });
 
   await t('after the flood a real peer still gets through (and only then is state written)', async () => {
-    const c = await v3Client('127.0.0.1', 44711, () => { }, src(82));
-    c.send({ t: 'hello', proto: 3, nick: 'after-the-flood', peerPort: 51700 });
+    const c = await v3Client('127.0.0.1', 24711, () => { }, src(82));
+    c.send({ t: 'hello', proto: 3, nick: 'after-the-flood', peerPort: 21700 });
     await until(async () => (await health(F)).contacts === 1, 4000);
     c.close();
     await sleep(300);
@@ -103,20 +103,20 @@ const ABUSE = {
   await H.stop(F);
 
   /* ---- 2. the connection cap ---- */
-  const C = await up(S.daemon('cap', { peer: 44713, web: 44714, extra: ['--max-conns', '6'] }));
+  const C = await up(S.daemon('cap', { peer: 24713, web: 24714, extra: ['--max-conns', '6'] }));
   await t('--max-conns: the cap holds, and a freed slot is usable again', async () => {
     const held = [];
-    for (let i = 0; i < 6; i++) held.push(await probe(44713, src(40 + i)));
+    for (let i = 0; i < 6; i++) held.push(await probe(24713, src(40 + i)));
     await sleep(400);
     assert(held.every((s) => !s.dropped), 'the first 6 connections are kept');
-    const over = await probe(44713, src(50));
+    const over = await probe(24713, src(50));
     await until(() => over.dropped, 1500, 20);
     assert.strictEqual(over.got, 0, 'a capped connection is sent nothing');
-    await assert.rejects(v3Client('127.0.0.1', 44713, () => { }, src(51)), /closed during the handshake|ECONNRESET/);
+    await assert.rejects(v3Client('127.0.0.1', 24713, () => { }, src(51)), /closed during the handshake|ECONNRESET/);
     assert(await health(C), 'web console unaffected by a full peer port');
     held[0].destroy(); held[1].destroy();
     await sleep(200);
-    const c = await v3Client('127.0.0.1', 44713, () => { }, src(52));  // a full handshake now succeeds
+    const c = await v3Client('127.0.0.1', 24713, () => { }, src(52));  // a full handshake now succeeds
     assert(c.peerFp);
     c.close();
     for (const s of held) s.destroy();
@@ -124,27 +124,27 @@ const ABUSE = {
   await H.stop(C);
 
   /* ---- 3. the per-source rate limit ---- */
-  const R = await up(S.daemon('rate', { peer: 44715, web: 44716, extra: ['--rl-burst', '3', '--rl-refill-ms', '1500'] }));
+  const R = await up(S.daemon('rate', { peer: 24715, web: 24716, extra: ['--rl-burst', '3', '--rl-refill-ms', '1500'] }));
   await t('--rl-burst / --rl-refill-ms: one source gets its burst, then waits; others are unaffected', async () => {
     const a = [];
-    for (let i = 0; i < 3; i++) a.push(await probe(44715, src(60)));
-    const fourth = await probe(44715, src(60));
+    for (let i = 0; i < 3; i++) a.push(await probe(24715, src(60)));
+    const fourth = await probe(24715, src(60));
     await until(() => fourth.dropped, 1000, 20);
     await sleep(150);
     assert(a.every((s) => !s.dropped), 'the burst is allowed');
     // a different /32 has its own bucket
-    const other = []; for (let i = 0; i < 3; i++) other.push(await probe(44715, src(61)));
+    const other = []; for (let i = 0; i < 3; i++) other.push(await probe(24715, src(61)));
     await sleep(200);
     assert(other.every((s) => !s.dropped), 'another source is not limited');
     // closing connections does not give tokens back: the limit is on new connections
     for (const s of a) s.destroy();
     await sleep(100);
-    const again = await probe(44715, src(60));
+    const again = await probe(24715, src(60));
     await until(() => again.dropped, 1000, 20);
     // after one refill period, exactly one more
     await sleep(1600);
-    const refilled = await probe(44715, src(60));
-    const extra = await probe(44715, src(60));
+    const refilled = await probe(24715, src(60));
+    const extra = await probe(24715, src(60));
     await until(() => extra.dropped, 1000, 20);
     await sleep(150);
     assert(!refilled.dropped, 'one token after a refill period');
