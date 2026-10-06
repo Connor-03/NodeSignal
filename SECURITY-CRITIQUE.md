@@ -23,6 +23,7 @@
 | Legacy PIN code path still shipped | **[FIXED in v1.3]**: PBKDF2/AES-GCM line protocol, `contact.pin` and stored PINs removed |
 | Reinstalled peer = remove and re-add | **[FIXED in v1.3]**: the new key is held for review; accepting must echo the exact presented fingerprint |
 | Web console reachable from the network; DNS rebinding; cross-site actions | **[FIXED in v1.3]**: the console listens on 127.0.0.1 only, checks Host (localhost/127.0.0.1 on its port) and Origin, and every state-changing action needs a random per-launch token served only inside the page (`tests/websecurity.test.js`) |
+| Daemon holds full RPC power (cookie or rpcuser/rpcpassword); ran as the node's user or root | **[FIXED in v1.3]**: its own `rpcauth` user, limited by `rpcwhitelist` to the three methods it calls (`tests/setup-core.test.js` checks the list against every `rpcCall`); the cookie is never read; on Linux it runs as a dedicated `nodesignal` system user with no access to /home; the installers refuse root and Windows administrator. Needs one bitcoind restart after install |
 | A browser tab dropping mid-write could crash the daemon | **[FIXED in v1.3]**: an EPIPE on a console socket was re-emitted as an unhandled `'error'` event |
 | Hostile field values from authenticated peers | **[FIXED in v1.3]**: every field type-checked, length-capped, control characters stripped; claims never overwrite measured node data |
 | No forward secrecy | **[FIXED]**: ephemeral keys per session |
@@ -142,6 +143,31 @@ rpcwhitelist=nodesignal:getpeerinfo,getnetworkinfo,getblockchaininfo
 
 Better still: run the daemon as an unprivileged user, on a machine that is not
 the node, talking to the node over the LAN.
+
+**[FIXED in v1.3]**: the installers now do this themselves. Setup adds a block
+to bitcoin.conf:
+
+```
+# NodeSignal RPC access: begin. ...
+rpcauth=nodesignal:<salt>$<hmac-sha256>
+rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo
+rpcwhitelistdefault=0
+# NodeSignal RPC access: end
+```
+
+The password is random (256 bits), lives only in NodeSignal's own 0600 config,
+and never appears in bitcoin.conf or on a command line. The cookie file, which
+grants everything, is never read. `rpcwhitelistdefault=0` is there because the
+first `rpcwhitelist` line otherwise gives every other RPC user an empty
+whitelist; it is written only when bitcoin.conf had no whitelist settings of its
+own, so an operator's existing choice stands. On Linux the daemon runs as a
+dedicated `nodesignal` system user (`ProtectHome=yes`), so it cannot read the
+node's data directory at all. Purging the package removes the block; it never
+removes the identity or history.
+
+What is left: a compromised daemon can still read the peer list, network info
+and chain tip, and the daemon's user can read its own RPC password. Running it
+on a separate machine remains the stronger setup.
 
 ### 2.5 Supply chain
 

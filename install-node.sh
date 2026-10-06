@@ -21,11 +21,14 @@
 #
 # What it does: copies the program to /opt/nodesignal, writes
 # /etc/nodesignal/config.json (settings live there, never on a command line),
-# a systemd unit running as the user who owns the node's data (so it can read
-# the RPC cookie), and a `nodesignal` command in /usr/local/bin.
+# a systemd unit running as the dedicated `nodesignal` system user (never
+# root), NodeSignal's own RPC login (an rpcauth line plus an rpcwhitelist of
+# the three methods it calls) in bitcoin.conf, and a `nodesignal` command in
+# /usr/local/bin. The node's cookie file is never used. Restart bitcoind
+# afterwards so it reads the new rpcauth line; this script does not.
 #
-# Your contacts and messages live in ~/.nodesignal/state.json of that user
-# and are never touched by this script.
+# Your contacts and messages live in /var/lib/nodesignal/state.json. An older
+# install's ~/.nodesignal is copied there once and never touched.
 # ===========================================================================
 set -euo pipefail
 
@@ -68,6 +71,15 @@ if [ "$NODE_MAJOR" -lt 18 ]; then
   exit 1
 fi
 echo "Node.js $(node --version) found at $NODE_BIN."
+NODE_COPY=0
+case "$(readlink -f "$NODE_BIN")" in
+  /home/*|/root/*)
+    # nvm and friends: the nodesignal user cannot reach home folders
+    # (the unit sets ProtectHome=yes), so the service gets its own copy
+    NODE_COPY=1
+    echo "That is inside a home folder, which the nodesignal service user cannot reach;"
+    echo "a copy of it goes to $DEST/node." ;;
+esac
 
 if ! MISSING="$(node setup-core.js --check-files "$SRC")"; then
   echo "ERROR: missing from $SRC: $MISSING"
@@ -136,6 +148,10 @@ sudo mkdir -p "$DEST"
 for f in $FILES; do sudo install -m 0644 "$SRC/$f" "$DEST/$f"; done
 sudo rm -f "$DEST/nodesignal-demo.html"                       # retired demo build
 sudo rm -rf "$DEST/node_modules" "$DEST/package-lock.json"    # no dependencies any more
+if [ "$NODE_COPY" = "1" ]; then
+  sudo install -m 0755 "$(readlink -f "$NODE_BIN")" "$DEST/node"
+  NODE_BIN="$DEST/node"
+fi
 
 # --- systemd unit (same hardening as the .deb, with the system node) -------------------
 MIGRATE=()
@@ -181,4 +197,5 @@ fi
 echo ""
 echo "Commands: nodesignal status | nodesignal open | nodesignal logs"
 echo "          sudo nodesignal advertise on|off | sudo nodesignal port-mapping on|off"
+echo "          sudo nodesignal rpc-access show|add|remove"
 echo "Live log: journalctl -u nodesignal -f"

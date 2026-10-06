@@ -144,10 +144,20 @@ What is the PIN?
     shared secret to agree in advance. v1.3 removed the PIN code.
 
 Where is my data?
-    ~/.nodesignal/state.json  (Linux)
+    /var/lib/nodesignal/state.json  (Linux, .deb or install-node.sh)
+    ~/.nodesignal/state.json  (Linux, if you run install.js yourself)
     C:\\Users\\<you>\\.nodesignal\\state.json  (Windows)
     It holds your contacts, message history and encryption identity.
     Upgrades never touch it.
+
+Does NodeSignal need root, or my node's cookie?
+    Neither. On Linux it runs as its own "nodesignal" system user. It
+    logs in to your node with its own RPC user, limited by rpcwhitelist
+    to getblockchaininfo, getnetworkinfo and getpeerinfo; setup writes
+    the rpcauth line (a hash) to bitcoin.conf and keeps the password in
+    NodeSignal's own locked config. Restart your node once after
+    installing so it reads that line. On Windows it runs as you, without
+    admin rights.
 
 How do I change settings after installing?
     Edit nodesignal-config.json and restart, or run the installer again.

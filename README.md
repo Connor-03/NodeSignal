@@ -69,8 +69,13 @@ compare its SHA-256 with `SHA256SUMS.txt` first.
 sudo apt install ./nodesignal-linux-amd64.deb
 ```
 
-It runs as a systemd service under the user that owns your node's data, so it
-can read the RPC cookie, and prints the web address when done.
+It runs as a systemd service under its own `nodesignal` system user (never
+root), gives itself an RPC login of its own (an `rpcauth` line plus an
+`rpcwhitelist` of the three read-only methods it calls, written to
+bitcoin.conf; the cookie file is never used), and prints the web address when
+done. Restart bitcoind once afterwards so it reads the new login; the installer
+says so and does not do it for you. On Windows the same login is set up, and
+NodeSignal runs as your account without admin rights.
 
 Optional, both off by default (Linux: `sudo nodesignal ...` on the node;
 Windows: `%LOCALAPPDATA%\NodeSignal\nodesignal.exe ...` in Command Prompt):
@@ -126,7 +131,7 @@ because two of them are genuinely sensitive:
 
 | File | Why |
 |---|---|
-| `nodesignal-config.json` | your RPC **password** and web login token, in plain text (installed copies live in `/etc/nodesignal/` or `%LOCALAPPDATA%\NodeSignal\`, outside the repo) |
+| `nodesignal-config.json` | NodeSignal's RPC **password** and web login token, in plain text (installed copies live in `/etc/nodesignal/` or `%LOCALAPPDATA%\NodeSignal\`, outside the repo) |
 | `state.json` / `~/.nodesignal/` | your **private identity key** and full message history |
 | `run-nodesignal.*` | generated per machine by the installer |
 | `node_modules/` | not used: NodeSignal has no dependencies |

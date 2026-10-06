@@ -9,8 +9,10 @@ Installer says no Bitcoin node was found
     The installers require Bitcoin Core or Knots on the same machine.
     They look for its data directory, bitcoin.conf and a running
     bitcoind. Install and start your node first. If your data directory
-    is somewhere unusual, use the from-source install and pass
-    --rpc-conf or --rpc-cookie.
+    is somewhere unusual, install anyway and then point NodeSignal at
+    its bitcoin.conf. Linux, on the node:
+        sudo env NODESIGNAL_SKIP_NODE_CHECK=1 apt install ./nodesignal-linux-amd64.deb
+        sudo nodesignal rpc-access add --bitcoin-conf /path/to/bitcoin.conf
 
 Windows says "Windows protected your PC"
     The installer is not code-signed, so SmartScreen warns about it.
@@ -43,27 +45,38 @@ BITCOIN RPC
 -----------------------------------------------------------------------
 
 Banner says "Bitcoin RPC not connected" / the peer map is empty
-    The daemon cannot read your node. Check the log:
+    The daemon cannot log in to your node. Check the log:
         Linux:    journalctl -u nodesignal -n 40 --no-pager
-        Windows:  the text in the daemon window
-    It prints every path it tried and why each failed. The two common
-    causes:
+        Windows:  %LOCALAPPDATA%\NodeSignal\nodesignal.log
+    NodeSignal logs in as its own RPC user, nodesignal, with the
+    rpcauth line setup added to bitcoin.conf. It never uses the cookie
+    file. The common causes:
 
-    "permission denied": the daemon runs as a user that cannot read
-        bitcoind's .cookie file. Either run it as that user, or add to
-        bitcoin.conf:
-            rpcuser=someone
-            rpcpassword=a-long-random-value
-        then restart bitcoind and NodeSignal.
+    "rejected the nodesignal login (401)": bitcoind has not been
+        restarted since setup added the line, so it does not know the
+        login yet. Restart it (Linux: sudo systemctl restart bitcoind;
+        Windows: close Bitcoin Core or Knots and start it again). Still
+        failing? Check the line matches the saved password:
+            Linux:    sudo nodesignal rpc-access show
+            Windows:  "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" rpc-access show
+        and rewrite it with "rpc-access add" if it does not.
 
-    "not found": your data directory is somewhere else. Point at it:
-            --rpc-cookie /path/to/.cookie
-        or  --rpc-conf   /path/to/bitcoin.conf
+    "refused ... (403)": the rpcwhitelist line for nodesignal lacks a
+        method. It must read
+            rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo
 
-bitcoin.conf uses rpcauth=
-    That is a hash; the password cannot be recovered from it. Supply the
-    password you originally generated with --rpc-user / --rpc-pass, or
-    add plain rpcuser=/rpcpassword= lines and restart bitcoind.
+    "has no RPC login yet": setup did not find your bitcoin.conf.
+        Point it there (Linux, on the node):
+            sudo nodesignal rpc-access add --bitcoin-conf /path/to/bitcoin.conf
+        then restart bitcoind.
+
+Other programs lost RPC access after installing NodeSignal
+    A bitcoin.conf that gains its first rpcwhitelist line gives every
+    other RPC user an empty whitelist unless rpcwhitelistdefault=0 is
+    set. NodeSignal writes that line whenever bitcoin.conf had no
+    whitelist settings of its own. If you use rpcwhitelist yourself,
+    your rpcwhitelistdefault choice is left alone: add whitelists for
+    your other users, or set rpcwhitelistdefault=0 yourself.
 
 Pruned node
     Fully supported. NodeSignal only calls getpeerinfo, getnetworkinfo
@@ -177,7 +190,8 @@ GENERAL
 
 Where is my data?
     Contacts, message history and your encryption identity live in:
-        Linux:    ~/.nodesignal/state.json
+        Linux:    /var/lib/nodesignal/state.json (the .deb or install-node.sh;
+                  ~/.nodesignal/state.json if you run install.js yourself)
         Windows:  C:\Users\<you>\.nodesignal\state.json
     Upgrading never touches it. Deleting it means losing your identity,
     so peers who pinned your old key will report a mismatch.

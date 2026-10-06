@@ -13,7 +13,8 @@
 //   node setup-core.js --detect              print what Bitcoin node was found, as JSON
 //
 // Nothing here ever restarts bitcoind or calls an RPC method other than the
-// read-only getblockchaininfo / getnetworkinfo.
+// read-only getblockchaininfo / getnetworkinfo. NodeSignal never reads the
+// node's cookie file: it logs in as its own RPC user (rpcauth, below).
 // ============================================================================
 'use strict';
 const fs = require('fs');
@@ -27,6 +28,14 @@ const IS_WIN = process.platform === 'win32';
 const UA_COMMENT = 'nodesignal';
 const UA_MARKER = '# Added by NodeSignal: advertise NodeSignal in the user agent (undo: nodesignal advertise off)';
 const BACKUP_SUFFIX = '.nodesignal-backup';
+// NodeSignal's own RPC login. The password lives only in NodeSignal's 0600
+// config; bitcoin.conf gets the salted hash (rpcauth) and a whitelist of
+// exactly the methods the daemon calls. Keep RPC_METHODS in step with every
+// rpcCall in nodesignald.js (tests/setup-core.test.js checks it).
+const RPC_USER = 'nodesignal';
+const RPC_METHODS = ['getblockchaininfo', 'getnetworkinfo', 'getpeerinfo'];
+const RPC_BEGIN = '# NodeSignal RPC access: begin. Managed by NodeSignal (removed on purge or by "nodesignal rpc-access remove").';
+const RPC_END = '# NodeSignal RPC access: end';
 const CONF_MAX_BYTES = 1024 * 1024;
 
 /* ------------------------------------------------------------ file list
@@ -175,6 +184,164 @@ function setUaComment(confPath, on, opts = {}) {
   return { changed: true, path: confPath, on, backup: madeBackup ? backup : null, inSection };
 }
 
+/* ------------------------------------------------------------ RPC access
+   rpcauth=<user>:<salt>$<hmac> with hmac = HMAC-SHA256(key = salt as text,
+   message = password), as Bitcoin Core's share/rpcauth/rpcauth.py writes it.
+
+   rpcwhitelist subtlety: with rpcwhitelistdefault unset, the FIRST
+   rpcwhitelist line makes bitcoind give every other RPC user (the cookie
+   user bitcoin-cli relies on, Electrs, mempool...) an empty whitelist,
+   locking them out. So when bitcoin.conf has no whitelist settings of its
+   own we also write rpcwhitelistdefault=0, which keeps every other user
+   exactly as before. If the operator already uses whitelists, their
+   rpcwhitelistdefault choice is left alone. */
+const crypto = require('crypto');
+function generateRpcPassword() { return crypto.randomBytes(32).toString('base64url'); }
+function makeRpcAuth(user, password, salt = crypto.randomBytes(16).toString('hex')) {
+  if (!/^[A-Za-z0-9_.-]+$/.test(user)) throw new Error('bad RPC user name');
+  const hmac = crypto.createHmac('sha256', salt).update(String(password)).digest('hex');
+  return `rpcauth=${user}:${salt}$${hmac}`;
+}
+function rpcAuthMatches(line, user, password) {
+  const m = /^\s*rpcauth\s*=\s*([^:\s]+):([0-9a-fA-F]+)\$([0-9a-fA-F]{64})\s*$/.exec(line || '');
+  if (!m || m[1] !== user) return false;
+  const want = crypto.createHmac('sha256', m[2]).update(String(password)).digest('hex');
+  return crypto.timingSafeEqual(Buffer.from(want), Buffer.from(m[3].toLowerCase()));
+}
+// Where our block sits (indexes into analyzeConf lines), or null.
+function findRpcBlock(lines) {
+  const b = lines.findIndex((l) => l.body.trim() === RPC_BEGIN);
+  if (b < 0) return null;
+  const e = lines.findIndex((l, i) => i > b && l.body.trim() === RPC_END);
+  return e < 0 ? { begin: b, end: null } : { begin: b, end: e };
+}
+function rpcAccessState(confPath) {
+  let buf;
+  try { buf = fs.readFileSync(confPath); }
+  catch (e) { return e.code === 'ENOENT' ? { exists: false, on: false } : { exists: true, on: false, unreadable: e.code || e.message }; }
+  const a = analyzeConf(buf);
+  if (!a.ok) return { exists: true, on: false, unreadable: a.error };
+  const blk = findRpcBlock(a.lines);
+  if (!blk) return { exists: true, on: false };
+  if (blk.end === null) return { exists: true, on: false, unreadable: 'the NodeSignal block has no end marker' };
+  const inner = a.lines.slice(blk.begin + 1, blk.end).map((l) => l.body);
+  return { exists: true, on: true, rpcauth: inner.find((x) => /^\s*rpcauth\s*=/.test(x)) || null, lines: inner };
+}
+/* setRpcAccess(confPath, password): add (or refresh) the managed block at the
+   top level of bitcoin.conf, so it applies to every chain. password null
+   removes the block. Idempotent: an existing block whose rpcauth already
+   matches the password is left untouched, so upgrades do not force a
+   bitcoind restart. Everything outside the block is preserved byte for byte;
+   the first change keeps a one-time backup. A file we cannot parse with
+   confidence is refused (throws), as is a whitelist we would weaken.
+   Returns { changed, created, path, on, backup, lines }. */
+function setRpcAccess(confPath, password, opts = {}) {
+  let buf = null;
+  try { buf = fs.readFileSync(confPath); }
+  catch (e) { if (e.code !== 'ENOENT') throw new Error(`cannot read ${confPath} (${e.code || e.message})`); }
+  const on = password != null;
+  const a = buf === null ? { ok: true, text: '', lines: [], eol: IS_WIN ? '\r\n' : '\n' } : analyzeConf(buf);
+  if (!a.ok) throw new Error(`refusing to edit ${confPath}: ${a.error}. Add the NodeSignal lines by hand (nodesignal rpc-access show).`);
+  const blk = findRpcBlock(a.lines);
+  if (blk && blk.end === null) throw new Error(`refusing to edit ${confPath}: it has a "${RPC_BEGIN.slice(0, 30)}..." line with no end marker. Fix it by hand.`);
+  const outside = a.lines.filter((l, i) => !blk || i < blk.begin || i > blk.end);
+
+  if (on) {
+    const cur = blk ? a.lines.slice(blk.begin + 1, blk.end).map((l) => l.body) : [];
+    const auth = cur.find((x) => /^\s*rpcauth\s*=/.test(x));
+    if (blk && rpcAuthMatches(auth, RPC_USER, password)) return { changed: false, path: confPath, on: true, lines: cur };
+  } else if (!blk) return { changed: false, path: confPath, on: false };
+
+  let block = '';
+  let inner = [];
+  if (on) {
+    const theirWhitelist = outside.some((l) => l.kind === 'kv' && /^\s*-?rpcwhitelist(default)?\s*=/i.test(l.body));
+    inner = [makeRpcAuth(RPC_USER, password), `rpcwhitelist=${RPC_USER}:${RPC_METHODS.join(',')}`];
+    if (!theirWhitelist) inner.push('rpcwhitelistdefault=0');
+    block = [RPC_BEGIN, ...inner, RPC_END].join(a.eol) + a.eol;
+  }
+  let raws = a.lines.map((l) => l.raw);
+  if (blk) {
+    const before = raws.slice(0, blk.begin);
+    let after = raws.slice(blk.end + 1);
+    // When removing, also drop the blank line we put between the block and a
+    // following [section]. When refreshing, everything after stays as it is.
+    const next = a.lines[blk.end + 1], next2 = a.lines[blk.end + 2];
+    if (!on && next && next.kind === 'blank' && next2 && next2.kind === 'section') after = after.slice(1);
+    raws = [...before, ...(on ? [block] : []), ...after];
+  } else {
+    const firstSection = a.lines.findIndex((l) => l.kind === 'section');
+    if (firstSection < 0) {
+      let tail = raws.join('');
+      if (tail.length && !tail.endsWith('\n')) tail += a.eol;
+      raws = [tail + block];
+    } else raws.splice(firstSection, 0, block + a.eol);
+  }
+  const out = raws.join('');
+  if (buf === null) {
+    fs.mkdirSync(path.dirname(confPath), { recursive: true });
+    fs.writeFileSync(confPath, out, { mode: 0o600, flag: 'wx' });
+    chownIfRoot(confPath, opts.owner);
+    return { changed: true, created: true, path: confPath, on, lines: inner };
+  }
+  const backup = confPath + BACKUP_SUFFIX;
+  let madeBackup = false;
+  if (!fs.existsSync(backup)) {
+    fs.writeFileSync(backup, buf, { mode: 0o600 });
+    try { const st = fs.statSync(confPath); chownIfRoot(backup, { uid: st.uid, gid: st.gid }); } catch { }
+    madeBackup = true;
+  }
+  fs.writeFileSync(confPath, out);                       // in place: keeps inode, owner, mode
+  return { changed: true, created: false, path: confPath, on, backup: madeBackup ? backup : null, lines: inner };
+}
+/* NodeSignal's own login lives in its config (rpc-user / rpc-pass). An
+   existing password is kept, so reinstalling does not force a bitcoind
+   restart. Any cookie or bitcoin.conf pointer from an older install goes.
+   Returns true when the config changed. */
+function ensureRpcLogin(cfg) {
+  let changed = false;
+  if (cfg['rpc-user'] !== RPC_USER || !cfg['rpc-pass']) {
+    cfg['rpc-user'] = RPC_USER;
+    cfg['rpc-pass'] = generateRpcPassword();
+    changed = true;
+  }
+  for (const k of ['rpc-cookie', 'rpc-conf']) if (k in cfg) { delete cfg[k]; changed = true; }
+  return changed;
+}
+/* Which bitcoin.conf holds our block is recorded beside NodeSignal's config
+   (/etc/nodesignal/bitcoin-conf on Linux), so uninstall and purge can remove
+   the block without detecting the node again. */
+function rpcRecordPath(cfgPath) { return path.join(path.dirname(cfgPath), 'bitcoin-conf'); }
+function readRpcRecord(cfgPath) {
+  try { return fs.readFileSync(rpcRecordPath(cfgPath), 'utf8').trim() || null; } catch { return null; }
+}
+function writeRpcRecord(cfgPath, confPath) {
+  fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
+  fs.writeFileSync(rpcRecordPath(cfgPath), confPath + '\n', { mode: 0o644 });
+}
+/* installRpcAccess: the whole job, shared by Linux setup, "nodesignal
+   rpc-access add" and the Windows installer. Ensures NodeSignal's login in
+   cfg (the caller writes cfg when cfgChanged), writes the matching block into
+   confPath and records which file holds it. P maps a real path to a test
+   root. Returns { cfgChanged, result } (result from setRpcAccess). */
+function installRpcAccess({ cfg, cfgPath, confPath, owner = null, P = (x) => x }) {
+  const cfgChanged = ensureRpcLogin(cfg);
+  const result = setRpcAccess(P(confPath), cfg['rpc-pass'], { owner });
+  writeRpcRecord(P(cfgPath), confPath);
+  return { cfgChanged, result };
+}
+const RPC_RESTART_TEXT = {
+  linux: ['Restart your Bitcoin node so it reads the new rpcauth line. NodeSignal does not do it for you.',
+    'For example: sudo systemctl restart bitcoind',
+    'Until then NodeSignal shows "not connected" and keeps retrying every 30 seconds.'],
+  win32: ['Close Bitcoin Core or Knots and start it again so it reads the new rpcauth line.',
+    'NodeSignal does not do it for you. Until then it shows "not connected" and keeps retrying.'],
+};
+// The bitcoin.conf NodeSignal should manage: the one the node reads.
+function nodeConfPath(det) {
+  return det ? (det.confPath || (det.datadir ? path.join(det.datadir, 'bitcoin.conf') : null)) : null;
+}
+
 /* ------------------------------------------------------------ files */
 function chownIfRoot(file, owner) {
   if (IS_WIN || !owner || typeof process.getuid !== 'function' || process.getuid() !== 0) return;
@@ -246,9 +413,8 @@ function chainOf(conf) {
   return 'main';
 }
 
-// The daemon's own search list (nodesignald.js defaultDataDirs, COOKIE_PATHS,
-// CONF_PATHS). Keep in step with it: installers only write rpc-cookie /
-// rpc-conf when the node lives somewhere this list would not find.
+// The data directories the daemon itself knows (nodesignald.js
+// defaultDataDirs); detection starts from them too.
 function daemonDataDirs(home, platform = process.platform, env = process.env) {
   const dirs = [];
   if (platform === 'win32') {
@@ -259,16 +425,6 @@ function daemonDataDirs(home, platform = process.platform, env = process.env) {
   }
   dirs.push(path.join(home, '.bitcoin'), path.join(home, 'snap', 'bitcoin-core', 'common', '.bitcoin'));
   return [...new Set(dirs)];
-}
-function daemonFindsCookie(cookiePath, home, platform = process.platform) {
-  const list = [...daemonDataDirs(home, platform).map((d) => path.join(d, '.cookie')),
-    '/var/lib/bitcoind/.cookie', '/var/lib/bitcoin/.cookie', '/home/bitcoin/.bitcoin/.cookie'];
-  return list.some((p) => samePath(p, cookiePath, platform));
-}
-function daemonFindsConf(confPath, home, platform = process.platform) {
-  const list = [...daemonDataDirs(home, platform).map((d) => path.join(d, 'bitcoin.conf')),
-    '/etc/bitcoin/bitcoin.conf', '/var/lib/bitcoind/bitcoin.conf'];
-  return list.some((p) => samePath(p, confPath, platform));
 }
 function samePath(a, b, platform = process.platform) {
   if (!a || !b) return false;
@@ -480,25 +636,18 @@ async function detectBitcoinNode(opts = {}) {
 
 /* ------------------------------------------------------------ RPC */
 /* findRpcAuth: the same order the daemon uses (rpcAuth in nodesignald.js):
-   explicit credentials, cookie file, rpcuser/rpcpassword, cookies. Returns
-   { auth, source, notes } with auth null when nothing usable was found. */
+   NodeSignal's own login from its config, then rpcuser/rpcpassword in an
+   explicitly given rpc-conf. The node's cookie file is never read.
+   Returns { auth, source, notes } with auth null when nothing usable. */
 function findRpcAuth(det, cfg = {}, opts = {}) {
   const R = (p) => (opts.root ? path.join(opts.root, p) : p);
   const notes = [];
-  const readCookie = (p) => {
-    try { const c = fs.readFileSync(R(p), 'utf8').trim(); return c.includes(':') ? c : null; }
-    catch (e) { notes.push(`${p}: ${e.code === 'EACCES' ? 'permission denied' : e.code === 'ENOENT' ? 'not found' : (e.code || e.message)}`); return null; }
-  };
-  if (cfg['rpc-user']) return { auth: cfg['rpc-user'] + ':' + (cfg['rpc-pass'] || ''), source: 'rpc-user in the NodeSignal config', notes };
-  if (cfg['rpc-cookie']) { const c = readCookie(cfg['rpc-cookie']); if (c) return { auth: c, source: 'cookie ' + cfg['rpc-cookie'], notes }; }
-  const confs = [cfg['rpc-conf'], det && det.confPath].filter(Boolean);
-  for (const cp of confs) {
-    const conf = readConf(R(cp));
-    if (!conf) continue;
-    if (conf.rpcuser && conf.rpcpassword) return { auth: conf.rpcuser + ':' + conf.rpcpassword, source: 'rpcuser/rpcpassword in ' + cp, notes };
-    if (conf.rpcauth && !conf.rpcpassword) notes.push(`${cp} uses rpcauth= (a hash), so the password cannot be read from it`);
+  if (cfg['rpc-user']) return { auth: cfg['rpc-user'] + ':' + (cfg['rpc-pass'] || ''), source: `RPC user "${cfg['rpc-user']}" from the NodeSignal config`, notes };
+  if (cfg['rpc-conf']) {
+    const conf = readConf(R(cfg['rpc-conf']));
+    if (conf && conf.rpcuser && conf.rpcpassword) return { auth: conf.rpcuser + ':' + conf.rpcpassword, source: 'rpcuser/rpcpassword in ' + cfg['rpc-conf'], notes };
   }
-  if (det && det.cookiePath) { const c = readCookie(det.cookiePath); if (c) return { auth: c, source: 'cookie ' + det.cookiePath, notes }; }
+  notes.push('NodeSignal has no RPC login yet: run setup (it adds a "nodesignal" rpcauth user to bitcoin.conf).');
   return { auth: null, source: null, notes };
 }
 
@@ -518,7 +667,8 @@ function rpcCall({ url, auth, method = 'getblockchaininfo', params = [], timeout
       res.setEncoding('utf8');
       res.on('data', (c) => { if (d.length < 4 * 1024 * 1024) d += c; });
       res.on('end', () => {
-        if (res.statusCode === 401 || res.statusCode === 403) return finish({ ok: false, code: 'auth', error: 'the node rejected the credentials (wrong user or password, or a stale cookie)' });
+        if (res.statusCode === 401) return finish({ ok: false, code: 'auth', error: 'the node rejected the login (HTTP 401)' });
+        if (res.statusCode === 403) return finish({ ok: false, code: 'forbidden', error: 'the node refused the method for this user (HTTP 403, rpcwhitelist)' });
         try {
           const j = JSON.parse(d);
           if (j.error) {
@@ -559,9 +709,8 @@ async function checkNode(det, cfg = {}, opts = {}) {
 function rpcHint(det, code, platform = process.platform) {
   const gui = platform === 'win32';
   if (code === 'no-auth') {
-    return det && det.running
-      ? 'The node is running but its cookie file was not found. If bitcoin.conf uses rpcauth=, add rpcuser= and rpcpassword= lines (see the install guide).'
-      : 'The node is not running, so it has not written its cookie file yet. Start it and try again.';
+    return platform === 'win32' ? 'Run the installer again: it adds NodeSignal\'s own RPC login to bitcoin.conf.'
+      : 'Run: sudo nodesignal setup   (it adds NodeSignal\'s own RPC login to bitcoin.conf)';
   }
   if (code === 'refused' || code === 'net') {
     if (det && det.running) {
@@ -574,7 +723,10 @@ function rpcHint(det, code, platform = process.platform) {
       : 'bitcoind is installed but not running. Start it, for example: sudo systemctl start bitcoind';
   }
   if (code === 'warmup') return 'The node is still loading. NodeSignal will connect by itself once it is ready.';
-  if (code === 'auth') return 'The credentials were rejected. A cookie changes every time the node restarts; NodeSignal re-reads it on every attempt.';
+  if (code === 'auth') return gui
+    ? 'The node does not know NodeSignal\'s RPC login yet. Close Bitcoin Core or Knots and start it again so it reads the new lines in bitcoin.conf.'
+    : 'The node does not know NodeSignal\'s RPC login yet. Restart bitcoind so it reads the new lines in bitcoin.conf (for example: sudo systemctl restart bitcoind).';
+  if (code === 'forbidden') return 'The node refused a method. Check the rpcwhitelist line for the nodesignal user in bitcoin.conf.';
   if (code === 'timeout') return 'The node is busy (often during initial sync). NodeSignal keeps retrying.';
   return '';
 }
@@ -716,11 +868,14 @@ const OPT_IN_TEXT = {
 module.exports = {
   VERSION_FALLBACK: '1.3.0',
   IS_WIN, UA_COMMENT, UA_MARKER, BACKUP_SUFFIX, OPT_IN_TEXT,
+  RPC_USER, RPC_METHODS, RPC_BEGIN, RPC_END,
+  generateRpcPassword, makeRpcAuth, rpcAuthMatches, rpcAccessState, setRpcAccess, nodeConfPath,
+  ensureRpcLogin, rpcRecordPath, readRpcRecord, writeRpcRecord, installRpcAccess, RPC_RESTART_TEXT,
   readFileList, missingFiles,
   parseConf, readConf, analyzeConf, setUaComment, uaCommentState,
   lockDownFile, writeConfig, readConfig, chownIfRoot,
   readPasswd, userByUid,
-  detectBitcoinNode, daemonDataDirs, daemonFindsCookie, daemonFindsConf, samePath, chainOf,
+  detectBitcoinNode, daemonDataDirs, samePath, chainOf,
   findRpcAuth, rpcCall, rpcCheck, checkNode, rpcHint,
   portFree, tailscaleAddr, httpGetJson, waitForHealth, webUrl,
   defaultConfigPath, createPrompter,

@@ -57,25 +57,46 @@ What the package does:
      nothing is installed.
   2. installs the program and its own Node.js to /opt/nodesignal, and
      the `nodesignal` command to /usr/bin
-  3. runs the service as the user who owns your node's data directory
-     or cookie, so it can read the RPC cookie. That is written to
-     /etc/systemd/system/nodesignal.service.d/10-user.conf
-  4. writes /etc/nodesignal/config.json, only if it does not exist yet:
-     your display name (the hostname) and the state directory
-  5. enables and starts the nodesignal service (hardened: read-only
-     system, private /tmp, no new privileges, only its state
-     directory writable)
-  6. checks the Bitcoin RPC and prints the result, the web address,
+  3. creates a dedicated system user, nodesignal, and runs the service
+     as that user. Never as root, and never as your node's user.
+  4. gives NodeSignal its own RPC login. It adds an rpcauth= line for a
+     user called nodesignal to your bitcoin.conf (a salted hash; the
+     password itself never goes there), plus an rpcwhitelist= line that
+     allows exactly the three read-only methods NodeSignal calls:
+         rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo
+     and rpcwhitelistdefault=0 if your bitcoin.conf has no whitelist
+     lines of its own, so every other RPC user (bitcoin-cli, Electrs,
+     mempool) keeps working exactly as before. The lines sit between two
+     "# NodeSignal RPC access" marker comments; the first change keeps
+     the original as bitcoin.conf.nodesignal-backup. NodeSignal never
+     reads your node's cookie file.
+  5. writes /etc/nodesignal/config.json (readable by the nodesignal user
+     only): your display name (the hostname), the RPC address, and the
+     RPC password. An existing file keeps its settings and password.
+  6. enables and starts the nodesignal service (hardened: read-only
+     system, no access to /home, private /tmp, no new privileges, only
+     its state directory writable)
+  7. checks the Bitcoin RPC and prints the result, the web address,
      and the two optional commands below
+
+RESTART YOUR NODE after the first install. bitcoind reads bitcoin.conf
+only when it starts, so it does not know the nodesignal login until
+then. The package says so and does not restart it for you. Linux, on
+the node, for example:
+
+    sudo systemctl restart bitcoind
+
+Until then NodeSignal shows "Bitcoin RPC not connected" and retries
+every 30 seconds. Upgrades reuse the same login and need no restart.
 
 If your node is installed but not answering RPC at that moment (not
 started, still loading), the package still installs and says so.
 NodeSignal reconnects by itself every 30 seconds.
 
 Your contacts, message history and encryption identity live in
-~/.nodesignal/state.json of the service user (or /var/lib/nodesignal
-if no node owner was found) and are never touched by an upgrade or by
-removing the package.
+/var/lib/nodesignal/state.json and are never touched by an upgrade or
+by removing the package. An older install's ~/.nodesignal is copied
+there once; the original is left where it was.
 
 
 -----------------------------------------------------------------------
@@ -143,7 +164,8 @@ daemon's option names without the dashes, for example:
     { "nick": "MyNodeName", "web-token": "a-long-random-value" }
 
 Edit it with sudo, then restart the service. Keep the file readable by
-the service user only (the package sets that up).
+the nodesignal user only (the package sets that up): it holds
+NodeSignal's RPC password.
 
 To require a login token for the web interface, generate one. Linux, on
 the node:
@@ -162,10 +184,14 @@ Your settings and data are preserved.
 
 Remove. Linux, on the node:
 
-    sudo apt remove nodesignal     keeps /etc/nodesignal and your data
-    sudo apt purge nodesignal      also removes /etc/nodesignal
+    sudo apt remove nodesignal     keeps /etc/nodesignal, the RPC login and your data
+    sudo apt purge nodesignal      also removes /etc/nodesignal and the
+                                   "# NodeSignal RPC access" block from
+                                   bitcoin.conf (restart bitcoind after)
 
-Neither ever deletes ~/.nodesignal (your identity key and history).
+Neither ever deletes /var/lib/nodesignal (your identity key and
+history). The nodesignal system user stays too, as is usual for Debian
+system users.
 If you turned on advertising, run "sudo nodesignal advertise off"
 before removing, or delete the uacomment=nodesignal line yourself.
 
@@ -183,36 +209,34 @@ node:
     nodesignal status
     journalctl -u nodesignal -n 40 --no-pager
 
-It prints every path it tried and why each failed. The daemon searches,
-in order: explicit settings, rpc-cookie, then rpcuser/rpcpassword or
-rpccookiefile or datadir from bitcoin.conf in ~/.bitcoin, /etc/bitcoin
-and /var/lib/bitcoind, then the usual .cookie locations. It re-reads
-the cookie on every attempt, so a node restart (new cookie) is fine.
+NodeSignal logs in as its own RPC user, nodesignal. It never reads the
+node's cookie or bitcoin.conf at run time. The common outcomes:
 
-Two common outcomes:
+  "rejected the nodesignal login (401)"
+      bitcoind has not read the new rpcauth line yet. Restart it
+      (Linux, on the node):
+          sudo systemctl restart bitcoind
+      If that does not help, check the line is there and matches:
+          sudo nodesignal rpc-access show
+      and rewrite it if it does not:
+          sudo nodesignal rpc-access add
 
-  "permission denied"
-      The service user cannot read bitcoind's cookie. Re-detect the
-      node's owner (Linux, on the node):
+  "refused ... (403)"
+      The rpcwhitelist line for nodesignal is missing a method. It
+      must read exactly:
+          rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo
+
+  "has no RPC login yet" / "connection refused"
+      Your bitcoin.conf is somewhere setup did not find, or the node
+      listens on another port. Point setup at it (Linux, on the node):
+          sudo nodesignal rpc-access add --bitcoin-conf /path/to/bitcoin.conf
           sudo nodesignal setup --redetect
-          sudo systemctl daemon-reload
-          sudo systemctl restart nodesignal
-      Or add to bitcoin.conf:
-          rpcuser=someone
-          rpcpassword=a-long-random-value
       then restart bitcoind and NodeSignal.
 
-  "not found"
-      Your data directory is elsewhere. Point at it in
-      /etc/nodesignal/config.json:
-          "rpc-cookie": "/path/to/.cookie"
-      or  "rpc-conf":   "/path/to/bitcoin.conf"
-      then (Linux, on the node):
-          sudo systemctl restart nodesignal
-
-If bitcoin.conf uses rpcauth= (a hash), the password cannot be read from
-it. Put "rpc-user" and "rpc-pass" in /etc/nodesignal/config.json, or add
-plain rpcuser= and rpcpassword= lines and restart bitcoind.
+Other RPC users can lose access only if an rpcwhitelist line is added
+without rpcwhitelistdefault=0; NodeSignal writes that line whenever
+bitcoin.conf had no whitelist settings of its own. If you already use
+rpcwhitelist, your rpcwhitelistdefault choice is left alone.
 
 
 -----------------------------------------------------------------------
@@ -245,14 +269,11 @@ For Tor, which needs no port forwarding at all, see TorSetupGuide.txt.
 HARDENING
 -----------------------------------------------------------------------
 NodeSignal only calls getpeerinfo, getnetworkinfo and getblockchaininfo.
-If you use rpcuser/rpcpassword, restrict what those credentials can do
-(in bitcoin.conf, on the node):
-
-    rpcwhitelist=nodesignal:getpeerinfo,getnetworkinfo,getblockchaininfo
-
-The package already runs the daemon as an unprivileged user under a
-hardened systemd unit. Consider also running it on a machine that is
-not the node, talking to the node over your LAN.
+The package already limits its RPC user to exactly those with
+rpcwhitelist, runs the daemon as the unprivileged nodesignal user under
+a hardened systemd unit, and never touches the cookie (which grants
+full RPC access, wallet included). Consider also running it on a
+machine that is not the node, talking to the node over your LAN.
 
 
 -----------------------------------------------------------------------
@@ -275,19 +296,21 @@ No.
 It refuses to install without a Bitcoin node, copies the program files
 (listed in packaging/files.json) to /opt/nodesignal, writes
 /etc/nodesignal/config.json and a hardened systemd unit running as the
-user who owns your node's data, installs a `nodesignal` command in
-/usr/local/bin, and starts the service. Settings never go on the
+dedicated nodesignal user, adds NodeSignal's rpcauth and rpcwhitelist
+lines to bitcoin.conf (restart bitcoind afterwards), installs a
+`nodesignal` command in /usr/local/bin, and starts the service. A
+Node.js inside a home folder (nvm) is copied to /opt/nodesignal/node,
+because the service user cannot reach /home. Settings never go on the
 command line. If an older install-node.sh unit had settings (or a web
 token) on its ExecStart line, they are carried into the config file.
 
 To run it by hand for debugging. Linux, on the node:
 
     sudo systemctl stop nodesignal
-    node /opt/nodesignal/nodesignald.js --config /etc/nodesignal/config.json --web-root /opt/nodesignal
+    sudo -u nodesignal node /opt/nodesignal/nodesignald.js --config /etc/nodesignal/config.json --web-root /opt/nodesignal
 
 Ctrl+C to quit, then start the service again. Do not run both at once;
-the second will exit with a port-in-use error. Run it as the service
-user if the config file is locked to that user.
+the second will exit with a port-in-use error. Never run it as root.
 
 To upgrade a from-source install, pull the new code and run
 ./install-node.sh again. It stops the service, replaces the files and

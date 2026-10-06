@@ -11,7 +11,8 @@
 //   selftest --rpc-url U --rpc-user X --rpc-pass Y
 //                       non-interactive install into a temp folder, run, check
 //                       /health, clean up; exit 0 or 1 (for CI, mock node only)
-//   uninstall [--purge]
+//   uninstall [--purge] --purge also removes the settings and NodeSignal's
+//                       RPC login in bitcoin.conf; never the identity or history
 //   anything else       handled by cli.js (status, advertise, port-mapping, ...)
 //
 // Internal, not for people: __daemon (the daemon itself, started by the
@@ -561,7 +562,8 @@ async function choosePorts(cfg, P, interactive) {
   return { web, peer };
 }
 /* performInstall: the steps shared by the interactive installer and selftest.
-   answers = { nick, portMapping, rpc: {...optional config keys} }
+   answers = { nick, portMapping, config: {...keys for a new install},
+               rpc: {...RPC keys that always win} }
    opts = { userLevel: register Startup/Desktop/Apps entry/firewall,
             startupDir: where the launcher goes, P: prompter, interactive } */
 async function performInstall(L, answers, opts) {
@@ -585,6 +587,10 @@ async function performInstall(L, answers, opts) {
   if (!cfg.data) cfg.data = path.join(os.homedir(), '.nodesignal');
   if (answers.portMapping) cfg['port-mapping'] = true; else delete cfg['port-mapping'];
   for (const [k, v] of Object.entries(answers.config || {})) if (!(k in existing)) cfg[k] = v;
+  // NodeSignal's own RPC login replaces whatever an older install used
+  Object.assign(cfg, answers.rpc || {});
+  delete cfg['rpc-cookie'];
+  delete cfg['rpc-conf'];
   if (!core.writeConfig(L.config, cfg)) step('Warning: could not restrict the config file to your account; check its permissions.');
   step(`Settings: ${L.config}`);
 
@@ -639,6 +645,12 @@ function refuseNoNode() {
   say('');
   say('  Nothing was installed.');
 }
+// An elevated (administrator) process: "net session" only succeeds then.
+// Root counts too, for the Linux build of this file.
+function runsElevated() {
+  if (!IS_WIN) return typeof process.getuid === 'function' && process.getuid() === 0;
+  try { execFileSync('net', ['session'], { stdio: 'ignore', timeout: 10000, windowsHide: true }); return true; } catch { return false; }
+}
 async function cmdInstall(L) {
   const P = core.createPrompter();
   say('');
@@ -646,6 +658,15 @@ async function cmdInstall(L) {
   say('  Encrypted chat between Bitcoin node operators, running beside your node.');
   say('  ------------------------------------------------------------------------');
   say('');
+  if (runsElevated()) {
+    say('  This installer was started as administrator. NodeSignal never runs with');
+    say('  admin rights and does not need them: it installs for your account only.');
+    say('  Start it again with a normal double-click (not "Run as administrator").');
+    say('');
+    say('  Nothing was installed.');
+    await P.pause(); P.close();
+    return 1;
+  }
   say('  Looking for your Bitcoin node...');
   let det = await core.detectBitcoinNode();
   if (!det.installed) { refuseNoNode(); await P.pause(); P.close(); return 1; }
@@ -654,25 +675,25 @@ async function cmdInstall(L) {
   let existing = {};
   try { existing = core.readConfig(L.config); say(`    upgrading the existing install in ${L.root}`); } catch { }
 
-  for (;;) {
+  const confPath = core.nodeConfPath(det);
+  // An upgrade whose RPC login already works needs no bitcoin.conf change.
+  const loginReady = existing['rpc-user'] === core.RPC_USER && existing['rpc-pass'] && confPath
+    && core.rpcAuthMatches(core.rpcAccessState(confPath).rpcauth, core.RPC_USER, existing['rpc-pass']);
+  if (loginReady) {
     const r = await core.checkNode(det, existing);
-    if (r.ok) {
-      say(`  Connected: ${r.subversion || 'Bitcoin node'}, ${r.chain} chain, height ${r.blocks}${r.pruned ? ', pruned' : ''}`);
-      break;
-    }
+    if (r.ok) say(`  Connected: ${r.subversion || 'Bitcoin node'}, ${r.chain} chain, height ${r.blocks}${r.pruned ? ', pruned' : ''}`);
+    else say(`  Your node is not answering RPC right now (${r.error}). NodeSignal connects by itself once it does.`);
+  } else {
     say('');
-    say(`  Your node is installed but is not answering RPC right now: ${r.error}.`);
-    if (r.hint) say(`  ${r.hint}`);
-    say('  You can fix that now and check again, or carry on: NodeSignal installs');
-    say('  anyway and connects by itself (it retries every 30 seconds).');
-    if (!(await P.askYesNo('Check again?', true))) break;
-    det = await core.detectBitcoinNode();
+    say('  NodeSignal logs in to your node as its own RPC user, "nodesignal", limited to');
+    say('  three read-only methods (getblockchaininfo, getnetworkinfo, getpeerinfo).');
+    say(`  Setup adds two or three lines for it to ${confPath || 'bitcoin.conf'}; the password stays`);
+    say('  in NodeSignal\'s settings, locked to your account. The cookie file is never used.');
   }
 
   say('');
   const nick = (await P.askDefault('Display name other operators will see', existing.nick || os.hostname())).slice(0, 60);
 
-  const confPath = det.confPath || (det.datadir ? path.join(det.datadir, 'bitcoin.conf') : null);
   let advertise = false;
   const ua = confPath ? core.uaCommentState(confPath) : { on: false };
   say('');
@@ -690,15 +711,26 @@ async function cmdInstall(L) {
     portMapping = await P.askYesNo(core.OPT_IN_TEXT.portMapping[0], false);
   }
 
-  // Only point the daemon at the node when it lives where it would not look.
-  const rpcCfg = {};
-  if (det.cookiePath && !core.daemonFindsCookie(det.cookiePath, os.homedir())) rpcCfg['rpc-cookie'] = det.cookiePath;
-  if (det.confPath && !core.daemonFindsConf(det.confPath, os.homedir())) rpcCfg['rpc-conf'] = det.confPath;
-  if (det.rpcUrlNeeded) rpcCfg['rpc-url'] = det.rpcUrl;
-
+  // NodeSignal's own RPC login: the password for its config, the hash for bitcoin.conf
+  const rpcCfg = { 'rpc-user': existing['rpc-user'], 'rpc-pass': existing['rpc-pass'] };
+  let access = null;
   say('');
   say('  Installing...');
-  const res = await performInstall(L, { nick, portMapping, config: rpcCfg }, { userLevel: true, P, interactive: true });
+  if (confPath) {
+    try { access = core.installRpcAccess({ cfg: rpcCfg, cfgPath: L.config, confPath }); }
+    catch (e) { say(`  - Could not add NodeSignal's RPC login to bitcoin.conf: ${e.message}`); }
+  }
+  core.ensureRpcLogin(rpcCfg);
+  rpcCfg['rpc-url'] = det.rpcUrl;                    // the daemon does not read bitcoin.conf
+  if (access && access.result.changed) {
+    say(`  - Added NodeSignal's RPC login to ${confPath}${access.result.backup ? ` (original saved as ${path.basename(access.result.backup)})` : ''}`);
+  } else if (!access) {
+    say('    Add these lines to bitcoin.conf by hand, then restart your node:');
+    say('      ' + core.makeRpcAuth(core.RPC_USER, rpcCfg['rpc-pass']));
+    say(`      rpcwhitelist=${core.RPC_USER}:${core.RPC_METHODS.join(',')}`);
+    say('      rpcwhitelistdefault=0   (only if bitcoin.conf has no rpcwhitelist lines of its own)');
+  }
+  const res = await performInstall(L, { nick, portMapping, rpc: rpcCfg }, { userLevel: true, P, interactive: true });
 
   if (advertise) {
     try {
@@ -710,10 +742,12 @@ async function cmdInstall(L) {
 
   say('');
   const h = res.health;
+  const needsRestart = !!(access && access.result.changed);
   if (h) {
     say(`  NodeSignal is running as "${h.nick}".`);
-    say(h.rpcConnected ? `  Bitcoin node connected: ${h.peerCount} peers on the map.`
-      : '  Bitcoin node not connected yet. NodeSignal keeps trying every 30 seconds.');
+    if (h.rpcConnected) say(`  Bitcoin node connected: ${h.peerCount} peers on the map.`);
+    else if (needsRestart) for (const l of core.RPC_RESTART_TEXT.win32) say('  ' + l);
+    else say('  Bitcoin node not connected yet. NodeSignal keeps trying every 30 seconds.');
     openBrowser(res.url);
   } else {
     say('  NodeSignal did not answer its health check. The log says why:');
@@ -744,6 +778,15 @@ async function cmdUninstall(L, args) {
   try {
     const det = await core.detectBitcoinNode();
     const confPath = det.confPath;
+    // NodeSignal's RPC login: always removed on --purge, offered otherwise
+    const rpcConf = core.readRpcRecord(L.config) || confPath;
+    if (rpcConf && core.rpcAccessState(rpcConf).on) {
+      if (purge || (P.tty && await P.askYesNo(`Remove NodeSignal's RPC login (rpcauth, rpcwhitelist) from ${rpcConf}?`, true))) {
+        core.setRpcAccess(rpcConf, null);
+        try { fs.unlinkSync(core.rpcRecordPath(L.config)); } catch { }
+        say(`  - Removed NodeSignal's RPC login from ${rpcConf}. Restart your node for it to take effect.`);
+      } else say(`  - Kept NodeSignal's RPC login in ${rpcConf} (reinstalling reuses it). Remove: uninstall --purge`);
+    }
     if (confPath && core.uaCommentState(confPath).on) {
       say(`  Your bitcoin.conf still has uacomment=nodesignal (${confPath}).`);
       if (P.tty && await P.askYesNo('Remove it?', true)) {
@@ -767,18 +810,12 @@ async function cmdUninstall(L, args) {
   fs.rmSync(L.app, { recursive: true, force: true });
   say(`  - Removed ${L.app}`);
 
+  // Purge never deletes the identity key or history, on Windows as on Linux.
   if (purge) {
     const dataDir = cfg.data || path.join(os.homedir(), '.nodesignal');
-    let sure = args.includes('--yes');
-    if (!sure && P.tty) {
-      say(`  --purge also deletes ${dataDir}: your identity key, contacts and message history.`);
-      sure = (await P.ask('  Type DELETE to confirm: ')) === 'DELETE';
-    }
-    if (sure) {
-      for (const f of [L.config, L.log, L.log + '.1', L.pid, daemonPidPath(L)]) { try { fs.unlinkSync(f); } catch { } }
-      fs.rmSync(dataDir, { recursive: true, force: true });
-      say(`  - Removed settings and ${dataDir}`);
-    } else say('  - Kept settings and history (not confirmed).');
+    for (const f of [L.config, core.rpcRecordPath(L.config), L.log, L.log + '.1', L.pid, daemonPidPath(L)]) { try { fs.unlinkSync(f); } catch { } }
+    say('  - Removed settings and logs.');
+    say(`  - Kept your identity key and history in ${dataDir}. Delete that folder yourself if you want.`);
   } else {
     say(`  - Kept your settings (${L.config}) and history (${cfg.data || path.join(os.homedir(), '.nodesignal')}).`);
     say('    Reinstalling picks them up again. Delete everything with: uninstall --purge');
@@ -813,6 +850,16 @@ async function cmdSelftest(args) {
     core.setUaComment(conf, false);
     check('advertise off restores bitcoin.conf byte for byte', fs.readFileSync(conf, 'utf8') === original);
     check('one-time backup kept', fs.readFileSync(conf + core.BACKUP_SUFFIX, 'utf8') === original);
+    const login = {};
+    const acc = core.installRpcAccess({ cfg: login, cfgPath: path.join(tmp, 'rpc-config.json'), confPath: conf });
+    const rs = core.rpcAccessState(conf);
+    check('RPC login: rpcauth for nodesignal at the top level, password only in the config', acc.result.changed && rs.on
+      && core.rpcAuthMatches(rs.rpcauth, 'nodesignal', login['rpc-pass']) && !fs.readFileSync(conf, 'utf8').includes(login['rpc-pass'])
+      && fs.readFileSync(conf, 'utf8').indexOf(core.RPC_END) < fs.readFileSync(conf, 'utf8').indexOf('[main]'));
+    check('RPC login: whitelist is exactly the three methods', rs.lines.includes('rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo'));
+    check('RPC login: reinstall changes nothing', !core.installRpcAccess({ cfg: login, cfgPath: path.join(tmp, 'rpc-config.json'), confPath: conf }).result.changed);
+    core.setRpcAccess(core.readRpcRecord(path.join(tmp, 'rpc-config.json')), null);
+    check('RPC login: removal restores bitcoin.conf byte for byte', fs.readFileSync(conf, 'utf8') === original);
 
     const webPort = await freePort();
     let peerPort = await freePort();

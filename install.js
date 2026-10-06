@@ -13,9 +13,12 @@
 //
 // Run it through install-windows.bat, or directly:  node install.js
 //
-// It never writes secrets to a command line. Credentials go into
-// nodesignal-config.json, which is locked to the current user on Windows via
-// icacls and chmod 600 elsewhere.
+// It never writes secrets to a command line. NodeSignal logs in to the node
+// as its own RPC user: setup adds an rpcauth line (a salted hash) and an
+// rpcwhitelist of the three methods it calls to bitcoin.conf, and keeps the
+// password in nodesignal-config.json, which is locked to the current user on
+// Windows via icacls and chmod 600 elsewhere. The node's cookie is never read.
+// Setup refuses to run as root or as Windows administrator.
 // ============================================================================
 'use strict';
 const fs = require('fs');
@@ -95,6 +98,13 @@ async function askHidden(q) {
 /* ------------------------------------------------------------ main */
 const TOTAL = 7;
 
+// root on Linux/macOS; an elevated (administrator) window on Windows, where
+// "net session" only succeeds with admin rights
+function runsPrivileged() {
+  if (!IS_WIN) return typeof process.getuid === 'function' && process.getuid() === 0;
+  try { execFileSync('net', ['session'], { stdio: 'ignore', timeout: 10000, windowsHide: true }); return true; } catch { return false; }
+}
+
 async function main() {
   say('');
   say(`${C.org}${C.b}  ◈ NodeSignal setup${C.r}`);
@@ -110,6 +120,13 @@ async function main() {
     return 1;
   }
   ok(`Node.js ${process.versions.node}`);
+  if (runsPrivileged()) {
+    bad(IS_WIN ? 'This window runs as administrator.' : 'This runs as root.');
+    info('NodeSignal never runs with admin rights and does not need them.');
+    info(IS_WIN ? 'Open a normal Command Prompt or PowerShell window and run setup again.'
+      : 'Run it as your normal user, or use the .deb or ./install-node.sh, which run NodeSignal as a dedicated nodesignal user.');
+    return 1;
+  }
 
   let list;
   try { list = core.readFileList(HERE); }
@@ -136,12 +153,13 @@ async function main() {
     }
   }
 
+  const cfg = {};
   if (fs.existsSync(CONFIG_FILE)) {
     warn('An existing nodesignal-config.json was found.');
     if (!(await askYesNo('Overwrite it?', false))) { say('\n  Setup cancelled. Nothing changed.\n'); return 0; }
+    // keep NodeSignal's RPC password, so bitcoin.conf (and the node) need no change
+    try { const old = core.readConfig(CONFIG_FILE); if (old['rpc-user'] === core.RPC_USER && old['rpc-pass']) { cfg['rpc-user'] = old['rpc-user']; cfg['rpc-pass'] = old['rpc-pass']; } } catch { }
   }
-
-  const cfg = {};
 
   /* ---- Step 2: the Bitcoin node ---- */
   header(2, TOTAL, 'Finding your Bitcoin node');
@@ -160,35 +178,41 @@ async function main() {
   say(`  ${C.dim}It never touches your wallet. Pruned nodes are fully supported.${C.r}`);
   say('');
 
-  let rpc = null;
-  for (;;) {
-    rpc = await core.checkNode(det, cfg);
-    if (rpc.ok) {
-      ok(`Connected via ${rpc.source}`);
-      info(`Node: ${rpc.subversion || 'unknown'}`);
-      info(`Chain: ${rpc.chain} · height ${Number(rpc.blocks).toLocaleString()}${rpc.pruned ? ' · pruned' : ''}`);
-      break;
-    }
-    warn(`Your node is installed but RPC is not answering right now: ${rpc.error}.`);
-    if (rpc.hint) info(rpc.hint);
-    for (const n of rpc.notes || []) info(n);
-    if ((rpc.code === 'auth' || rpc.code === 'no-auth') && det.running
-      && await askYesNo('Enter an RPC username and password instead?', false)) {
-      const u = await ask('  RPC username: ');
-      const p = await askHidden('RPC password');
-      cfg['rpc-user'] = u; cfg['rpc-pass'] = p;
-      continue;
-    }
-    info('NodeSignal can be set up anyway: it reconnects by itself every 30 seconds.');
-    if (!(await askYesNo('Check again?', true))) { delete cfg['rpc-user']; delete cfg['rpc-pass']; break; }
-    det = await core.detectBitcoinNode();
+  // NodeSignal's own RPC login: rpcauth + rpcwhitelist in bitcoin.conf
+  const nodeConf = core.nodeConfPath(det);
+  let access = null;
+  if (nodeConf) {
+    try { access = core.installRpcAccess({ cfg, cfgPath: CONFIG_FILE, confPath: nodeConf, owner: det.owner }); }
+    catch (e) { warn(e.message); }
   }
-  // Only point the daemon at the node when it lives where it would not look.
-  if (!cfg['rpc-user']) {
-    if (det.cookiePath && !core.daemonFindsCookie(det.cookiePath, os.homedir())) cfg['rpc-cookie'] = det.cookiePath;
-    if (det.confPath && !core.daemonFindsConf(det.confPath, os.homedir())) cfg['rpc-conf'] = det.confPath;
+  core.ensureRpcLogin(cfg);
+  cfg['rpc-url'] = det.rpcUrl;                         // the daemon does not read bitcoin.conf
+  if (access && access.result.changed) {
+    ok(`Added NodeSignal's RPC login (user ${core.RPC_USER}, three read-only methods) to ${nodeConf}`);
+    if (access.result.backup) info(`The original was saved as ${access.result.backup}`);
+    for (const l of core.RPC_RESTART_TEXT[IS_WIN ? 'win32' : 'linux']) warn(l);
+  } else {
+    if (access) ok(`NodeSignal's RPC login is already in ${nodeConf}`);
+    else {
+      warn('NodeSignal could not add its RPC login to bitcoin.conf. Add these lines to it by hand, then restart the node:');
+      say(`      ${C.cyn}${core.makeRpcAuth(core.RPC_USER, cfg['rpc-pass'])}${C.r}`);
+      say(`      ${C.cyn}rpcwhitelist=${core.RPC_USER}:${core.RPC_METHODS.join(',')}${C.r}`);
+      info('Plus rpcwhitelistdefault=0 if bitcoin.conf has no rpcwhitelist lines of its own.');
+    }
+    for (;;) {
+      const rpc = await core.checkNode(det, cfg);
+      if (rpc.ok) {
+        ok(`Connected as ${core.RPC_USER}`);
+        info(`Node: ${rpc.subversion || 'unknown'}`);
+        info(`Chain: ${rpc.chain} · height ${Number(rpc.blocks).toLocaleString()}${rpc.pruned ? ' · pruned' : ''}`);
+        break;
+      }
+      warn(`Your node is installed but RPC is not answering right now: ${rpc.error}.`);
+      if (rpc.hint) info(rpc.hint);
+      info('NodeSignal can be set up anyway: it reconnects by itself every 30 seconds.');
+      if (!(await askYesNo('Check again?', true))) break;
+    }
   }
-  if (det.rpcUrlNeeded) cfg['rpc-url'] = det.rpcUrl;
 
   /* ---- Step 3: identity ---- */
   header(3, TOTAL, 'Naming this node');
@@ -395,7 +419,8 @@ async function main() {
   if (netMode === 'tor') say(`  ${C.b}Tor:${C.r}                 ${C.dim}finish the torrc steps, then share your .onion${C.r}`);
   say('');
   say(`  ${C.dim}Settings live in nodesignal-config.json. Edit and restart to change them,${C.r}`);
-  say(`  ${C.dim}or use: node cli.js advertise on|off, node cli.js port-mapping on|off${C.r}`);
+  say(`  ${C.dim}or use: node cli.js advertise on|off, node cli.js port-mapping on|off,${C.r}`);
+  say(`  ${C.dim}node cli.js rpc-access show|add|remove${C.r}`);
   say('');
   return 0;
 }

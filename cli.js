@@ -8,6 +8,7 @@
 //   nodesignal logs                   where the log is and how to follow it
 //   nodesignal uninstall              Windows; on Linux use apt
 //   nodesignal version
+//   nodesignal rpc-access show|add|remove   NodeSignal's rpcauth in bitcoin.conf
 //   nodesignal setup                  Linux, root: used by the .deb postinst
 //
 // Options: --config <file>  (default: /etc/nodesignal/config.json on Linux,
@@ -33,7 +34,7 @@ function optValue(argv, name) {
 function positional(argv) {
   const out = [];
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith('--')) { if (['--config', '--root', '--wait', '--bitcoin-conf', '--user', '--nick', '--migrate-unit'].includes(argv[i])) i++; continue; }
+    if (argv[i].startsWith('--')) { if (['--config', '--root', '--wait', '--bitcoin-conf', '--nick', '--migrate-unit'].includes(argv[i])) i++; continue; }
     out.push(argv[i]);
   }
   return out;
@@ -212,113 +213,208 @@ async function cmdUninstall(ctx) {
   if (ctx.deps.hooks && ctx.deps.hooks.uninstall) return ctx.deps.hooks.uninstall(ctx.argv);
   if (IS_WIN) { say('Run uninstall from the installed program: %LOCALAPPDATA%\\NodeSignal\\nodesignal.exe uninstall'); return 1; }
   say('On Linux NodeSignal is removed with the package manager:');
-  say('  sudo apt remove nodesignal     keeps /etc/nodesignal and your ~/.nodesignal');
-  say('  sudo apt purge nodesignal      also removes /etc/nodesignal (never ~/.nodesignal)');
+  say('  sudo apt remove nodesignal     keeps /etc/nodesignal, the RPC login and /var/lib/nodesignal');
+  say('  sudo apt purge nodesignal      also removes /etc/nodesignal and NodeSignal\'s rpcauth and');
+  say('                                 rpcwhitelist lines in bitcoin.conf (never /var/lib/nodesignal,');
+  say('                                 which holds your identity key and history)');
   say('If you turned it on, run "sudo nodesignal advertise off" first.');
   return 0;
 }
 
 /* ------------------------------------------------------------ setup (Linux)
-   Called by the .deb postinst as root. Picks the service user (the owner of
-   the node's data directory or cookie, so the daemon can read the cookie),
-   writes /etc/nodesignal/config.json if absent, the systemd drop-in that sets
-   User=/Group= and the writable state directory, and checks RPC.
+   Called by the .deb postinst (and install-node.sh) as root. NodeSignal
+   never runs as root and never reads the node's cookie:
+     1. the dedicated "nodesignal" system user (created if missing)
+     2. /etc/nodesignal/config.json, 0600, owned by that user, holding
+        NodeSignal's own RPC login (rpc-user nodesignal, a random rpc-pass)
+     3. the state directory /var/lib/nodesignal (an older install's state is
+        copied in once; the original stays where it was)
+     4. bitcoin.conf gets rpcauth=nodesignal:<salt>$<hash> plus an
+        rpcwhitelist of exactly the three methods the daemon calls; the node
+        must be restarted to read them, and we say so instead of doing it
    --root <dir> runs it against a fake filesystem for tests. */
+const STATE_DIR = '/var/lib/nodesignal';
+const OLD_DROP_IN = '/etc/systemd/system/nodesignal.service.d/10-user.conf';
 async function cmdSetup(ctx) {
   const { core, argv } = ctx;
   const root = optValue(argv, 'root') || process.env.NODESIGNAL_TEST_ROOT || '';
   const P = (p) => (root ? path.join(root, p) : p);
-  const redetect = argv.includes('--redetect');
   if (!root && !isRoot()) { say('nodesignal setup must run as root: sudo nodesignal setup'); return 1; }
 
   const cfgPath = optValue(argv, 'config') || '/etc/nodesignal/config.json';
-  const dropDir = '/etc/systemd/system/nodesignal.service.d';
-  const dropIn = path.join(dropDir, '10-user.conf');
   const det = await core.detectBitcoinNode({ root });
 
   if (det.installed) say(`Bitcoin node found: ${det.how.slice(0, 3).join('; ')}`);
   else say('No Bitcoin node was found on this machine.');
 
   // an older from-source unit (install-node.sh before 1.3) kept its settings
-  // on the ExecStart line; carry them over once
+  // on the ExecStart line; carry them over once (but not its User=)
   const migrated = parseOldUnit(optValue(argv, 'migrate-unit') ? P(optValue(argv, 'migrate-unit')) : null);
   if (migrated) say(`Carrying over settings from ${optValue(argv, 'migrate-unit')}`);
 
-  // 1. service user
-  let user = null;
-  const wantUser = optValue(argv, 'user') || (migrated && migrated.user);
-  if (wantUser) {
-    user = core.readPasswd(root).find((u) => u.name === wantUser) || null;
-    if (!user) { say(`No such user: ${wantUser}`); return 1; }
-  }
-  const existingDrop = readDropInUser(P(dropIn));
-  if (!user && existingDrop && !redetect) user = core.readPasswd(root).find((u) => u.name === existingDrop) || null;
-  if (!user && det.owner && det.owner.username) user = core.readPasswd(root).find((u) => u.uid === det.owner.uid) || null;
-  let dedicated = false;
-  if (!user) {
-    user = ensureSystemUser(core, root);
-    dedicated = true;
-  }
-  if (user.uid === 0) say('Warning: the node runs as root, so NodeSignal will too, to read its cookie. Consider running bitcoind as its own user.');
-  else say(`Service user: ${user.name}${dedicated ? ' (dedicated account; no node owner was found)' : ' (owns the node\'s data, so it can read the RPC cookie)'}`);
+  // 1. the dedicated service user, always
+  const user = ensureSystemUser(core, root);
+  say(`Service user: ${user.name} (a dedicated system account; NodeSignal never runs as root)`);
+  if (det.owner && det.owner.uid === 0) say('Note: your Bitcoin node runs as root. NodeSignal does not need to, and does not.');
 
-  // 2. config, only if absent
-  let cfg;
+  // 2. config
+  let cfg = {};
+  const fresh = !fs.existsSync(P(cfgPath));
+  if (!fresh) {
+    try { cfg = JSON.parse(fs.readFileSync(P(cfgPath), 'utf8')); }
+    catch (e) { say(`Cannot read ${cfgPath}: ${e.message}. Fix or delete it and run setup again.`); return 1; }
+  } else cfg = { nick: hostnameOf(root) };
+  if (migrated) for (const [k, v] of Object.entries(migrated.config)) if (fresh || !(k in cfg)) cfg[k] = v;
   const nickArg = optValue(argv, 'nick');
-  if (fs.existsSync(P(cfgPath))) {
-    cfg = JSON.parse(fs.readFileSync(P(cfgPath), 'utf8'));
-    if (nickArg && nickArg !== cfg.nick) { cfg.nick = nickArg.slice(0, 60); core.writeConfig(P(cfgPath), cfg); say(`Display name set to "${cfg.nick}" in ${cfgPath}`); }
-    else say(`Keeping existing ${cfgPath}`);
-  } else {
-    const home = user.home && user.home !== '/' && user.home !== '/nonexistent' && fs.existsSync(P(user.home)) ? user.home : '/var/lib/nodesignal';
-    cfg = { nick: hostnameOf(root), data: home === '/var/lib/nodesignal' ? home : path.join(home, '.nodesignal') };
-    if (det.cookiePath && !core.daemonFindsCookie(det.cookiePath, user.home || '/', 'linux')) cfg['rpc-cookie'] = det.cookiePath;
-    if (det.confPath && !core.daemonFindsConf(det.confPath, user.home || '/', 'linux')) cfg['rpc-conf'] = det.confPath;
-    if (det.rpcUrlNeeded) cfg['rpc-url'] = det.rpcUrl;
-    if (migrated) Object.assign(cfg, migrated.config);
-    if (nickArg) cfg.nick = nickArg.slice(0, 60);
-    core.writeConfig(P(cfgPath), cfg, { owner: { uid: user.uid, gid: user.gid } });
-    say(`Wrote ${cfgPath}`);
-  }
+  if (nickArg) cfg.nick = nickArg.slice(0, 60);
   if (argv.includes('--generate-token') && !cfg['web-token']) {
     cfg['web-token'] = require('crypto').randomBytes(24).toString('base64url');
-    core.writeConfig(P(cfgPath), cfg);
     say('Web login token (save it, you need it to sign in):');
     say('  ' + cfg['web-token']);
   }
-  // the service user must be able to read its own config
-  try { fs.chownSync(P(cfgPath), user.uid, user.gid); fs.chmodSync(P(cfgPath), 0o600); } catch { }
-  try { fs.chmodSync(P(path.dirname(cfgPath)), 0o755); } catch { }
+  // the daemon cannot read bitcoin.conf any more, so it learns the RPC
+  // address (rpcport, rpcconnect, test chains) from its own config
+  if (det.installed && (!cfg['rpc-url'] || argv.includes('--redetect'))) cfg['rpc-url'] = det.rpcUrl;
 
   // 3. state directory, never emptied or replaced
-  const dataDir = cfg.data || path.join(user.home || '/var/lib/nodesignal', '.nodesignal');
-  if (!fs.existsSync(P(dataDir))) {
-    fs.mkdirSync(P(dataDir), { recursive: true, mode: 0o700 });
-    try { fs.chownSync(P(dataDir), user.uid, user.gid); } catch { }
+  const oldData = cfg.data && cfg.data !== STATE_DIR ? cfg.data : null;
+  cfg.data = STATE_DIR;
+  if (!fs.existsSync(P(STATE_DIR))) fs.mkdirSync(P(STATE_DIR), { recursive: true, mode: 0o700 });
+  if (oldData && fs.existsSync(P(path.join(oldData, 'state.json')))) {
+    if (fs.existsSync(P(path.join(STATE_DIR, 'state.json')))) {
+      say(`Note: ${oldData} also holds NodeSignal state; ${STATE_DIR} already has its own, so it was left alone.`);
+    } else {
+      fs.cpSync(P(oldData), P(STATE_DIR), { recursive: true, force: false, errorOnExist: false });
+      say(`Copied your identity and history from ${oldData} to ${STATE_DIR}. The original stays where it was.`);
+    }
   }
+  chownTree(P(STATE_DIR), user);
+  try { fs.chmodSync(P(STATE_DIR), 0o700); } catch { }
 
-  // 4. systemd drop-in
-  const drop = ['# Written by nodesignal setup. Re-detect with: sudo nodesignal setup --redetect',
-    '[Service]', `User=${user.name}`, `Group=${groupName(core, root, user)}`, `ReadWritePaths=${dataDir}`, ''].join('\n');
-  fs.mkdirSync(P(dropDir), { recursive: true });
-  fs.writeFileSync(P(dropIn), drop, { mode: 0o644 });
-
-  // 5. can that user read the cookie?
-  if (det.cookiePath && !cfg['rpc-user']) {
+  // 4. NodeSignal's own RPC login, in bitcoin.conf and in the config
+  const confPath = optValue(argv, 'bitcoin-conf') || core.readRpcRecord(P(cfgPath)) || core.nodeConfPath(det);
+  let access = null;
+  if (confPath) {
     try {
-      const st = fs.statSync(P(det.cookiePath));
-      const readable = st.uid === user.uid || (st.mode & 0o004) || ((st.mode & 0o040) && st.gid === user.gid);
-      if (!readable) say(`Warning: ${user.name} cannot read ${det.cookiePath}. See "permission denied" in the install guide.`);
-    } catch { }
-  }
+      access = core.installRpcAccess({ cfg, cfgPath, confPath, owner: det.owner, P });
+    } catch (e) {
+      core.ensureRpcLogin(cfg);
+      say(e.message);
+    }
+  } else core.ensureRpcLogin(cfg);
+  core.writeConfig(P(cfgPath), cfg, { owner: { uid: user.uid, gid: user.gid } });
+  try { fs.chownSync(P(cfgPath), user.uid, user.gid); fs.chmodSync(P(cfgPath), 0o600); } catch { }
+  try { fs.chmodSync(P(path.dirname(cfgPath)), 0o755); } catch { }
+  say(`${fresh ? 'Wrote' : 'Updated'} ${cfgPath} (readable by ${user.name} only)`);
 
+  // a 1.3 pre-release drop-in ran the daemon as the node's owner; the unit
+  // now says User=nodesignal itself
+  removeOldDropIn(P);
   if (!root && hasSystemd()) {
     try { execFileSync('systemctl', ['daemon-reload'], { stdio: 'ignore', timeout: 30000 }); } catch { }
   }
 
-  // 6. RPC check, as root (it can read any cookie)
+  if (access && access.result.changed) {
+    say(`Added NodeSignal's RPC login to ${confPath}${access.result.created ? ' (new file)' : ''}:`);
+    for (const l of access.result.lines) say('  ' + l.replace(/\$[0-9a-f]{64}$/, '$<hash>'));
+    if (access.result.backup) say(`The original was saved once as ${access.result.backup}.`);
+    say('');
+    for (const l of core.RPC_RESTART_TEXT.linux) say(l);
+    return 0;
+  }
+  if (access) say(`RPC login: user ${core.RPC_USER} in ${confPath} (unchanged)`);
+  else {
+    say(confPath ? 'NodeSignal could not add its RPC login to bitcoin.conf. Add these lines by hand,'
+      : 'No bitcoin.conf was found, so NodeSignal\'s RPC login was not added. Add these lines to');
+    say(confPath ? 'then restart your node:' : 'the node\'s bitcoin.conf, then restart it (or run: sudo nodesignal rpc-access add --bitcoin-conf <file>):');
+    printManualLines(core, cfg);
+  }
+
+  // 5. RPC check
   if (det.installed) await printRpcCheck(core, det, cfg, { root });
   return 0;
+}
+function printManualLines(core, cfg) {
+  say('  ' + core.makeRpcAuth(core.RPC_USER, cfg['rpc-pass']));
+  say(`  rpcwhitelist=${core.RPC_USER}:${core.RPC_METHODS.join(',')}`);
+  say('  rpcwhitelistdefault=0      (only if bitcoin.conf has no rpcwhitelist lines of its own)');
+}
+function chownTree(dir, user) {
+  if (!isRoot()) return;
+  const walk = (p) => {
+    try { fs.lchownSync(p, user.uid, user.gid); } catch { }
+    let st; try { st = fs.lstatSync(p); } catch { return; }
+    if (st.isDirectory()) for (const e of fs.readdirSync(p)) walk(path.join(p, e));
+  };
+  walk(dir);
+}
+function removeOldDropIn(P) {
+  try {
+    if (/^# Written by nodesignal setup/.test(fs.readFileSync(P(OLD_DROP_IN), 'utf8'))) {
+      fs.unlinkSync(P(OLD_DROP_IN));
+      try { fs.rmdirSync(path.dirname(P(OLD_DROP_IN))); } catch { }
+      say(`Removed the old ${OLD_DROP_IN} (it ran NodeSignal as the node's user).`);
+    }
+  } catch { }
+}
+
+/* ------------------------------------------------------------ rpc-access
+   show | add | remove: NodeSignal's rpcauth + rpcwhitelist block in
+   bitcoin.conf. The password is never printed. */
+async function cmdRpcAccess(ctx, sub) {
+  const { core, cfgPath, cfgError } = ctx;
+  if (!['show', 'add', 'remove'].includes(sub)) { say('usage: nodesignal rpc-access show|add|remove [--bitcoin-conf <file>]'); return 2; }
+  let confPath = optValue(ctx.argv, 'bitcoin-conf') || core.readRpcRecord(cfgPath);
+  let det = null;
+  if (!confPath) { det = await core.detectBitcoinNode(); confPath = core.nodeConfPath(det); }
+  if (!confPath) {
+    say('No bitcoin.conf was found. Point at it: nodesignal rpc-access ' + sub + ' --bitcoin-conf /path/to/bitcoin.conf');
+    return 1;
+  }
+  const sudo = IS_WIN ? '' : 'Try again with sudo.';
+  if (sub === 'show') {
+    const st = core.rpcAccessState(confPath);
+    if (st.unreadable) { say(`Cannot read ${confPath}: ${st.unreadable}.`); if (/EACCES/.test(st.unreadable)) say(sudo); return 1; }
+    say(`bitcoin.conf: ${confPath}`);
+    if (!st.on) { say('NodeSignal RPC access: not set up. Add it with: ' + (IS_WIN ? 'nodesignal.exe' : 'sudo nodesignal') + ' rpc-access add'); return 0; }
+    say('NodeSignal RPC access: on');
+    for (const l of st.lines) say('  ' + l.replace(/\$[0-9a-f]{64}$/, '$<hash>'));
+    if (!cfgError && ctx.cfg['rpc-pass']) say(core.rpcAuthMatches(st.rpcauth, core.RPC_USER, ctx.cfg['rpc-pass'])
+      ? `It matches the password in ${cfgPath}.` : `It does NOT match the password in ${cfgPath}. Fix it with: rpc-access add`);
+    return 0;
+  }
+  if (sub === 'remove') {
+    let r;
+    try { r = core.setRpcAccess(confPath, null); }
+    catch (e) { say(e.message); if (/EACCES|EPERM/.test(e.message)) say(sudo); return 1; }
+    try { fs.unlinkSync(core.rpcRecordPath(cfgPath)); } catch { }
+    if (!r.changed) { say(`Nothing to remove: ${confPath} has no NodeSignal RPC block.`); return 0; }
+    say(`Removed NodeSignal's rpcauth and rpcwhitelist lines from ${confPath}.`);
+    say('NodeSignal cannot reach your node until you add them again (rpc-access add).');
+    say('Restart your Bitcoin node for this to take effect. NodeSignal does not do it for you.');
+    return 0;
+  }
+  // add
+  if (cfgError) { say(`Cannot read ${cfgPath}: ${cfgError}.`); if (cfgError === 'permission denied') say(sudo); return 1; }
+  const cfg = Object.assign({}, ctx.cfg);
+  if (!det) det = await core.detectBitcoinNode();
+  let access;
+  try {
+    access = core.installRpcAccess({ cfg, cfgPath, confPath, owner: det.owner });
+    if (access.cfgChanged) core.writeConfig(cfgPath, cfg);
+  } catch (e) {
+    say(e.message);
+    if (/EACCES|EPERM/.test(e.message + (e.code || ''))) say(sudo);
+    return 1;
+  }
+  if (!access.result.changed) say(`Nothing to change: ${confPath} already has NodeSignal's RPC login.`);
+  else {
+    say(`Added NodeSignal's RPC login to ${confPath}.`);
+    if (access.result.backup) say(`The original was saved once as ${access.result.backup}.`);
+    say('');
+    for (const l of core.RPC_RESTART_TEXT[IS_WIN ? 'win32' : 'linux']) say(l);
+  }
+  return access.cfgChanged ? restartDaemon(ctx) : 0;
 }
 async function printRpcCheck(core, det, cfg, opts = {}) {
   const r = await core.checkNode(det, cfg, opts);
@@ -357,18 +453,6 @@ function parseOldUnit(file) {
   }
   return { user: user ? user.trim() : null, config };
 }
-function readDropInUser(file) {
-  try { const m = fs.readFileSync(file, 'utf8').match(/^User=(.+)$/m); return m ? m[1].trim() : null; } catch { return null; }
-}
-function groupName(core, root, user) {
-  try {
-    for (const line of fs.readFileSync(path.join(root || '/', 'etc', 'group'), 'utf8').split('\n')) {
-      const p = line.split(':');
-      if (p.length >= 3 && Number(p[2]) === user.gid) return p[0];
-    }
-  } catch { }
-  return user.name;
-}
 function hostnameOf(root) {
   if (root) { try { return fs.readFileSync(path.join(root, 'etc', 'hostname'), 'utf8').trim() || os.hostname(); } catch { } }
   return os.hostname();
@@ -398,13 +482,16 @@ usage: nodesignal <command> [--config <file>]
   status               is the daemon up, is the Bitcoin node connected
   advertise on|off     add/remove uacomment=nodesignal in bitcoin.conf (public)
   port-mapping on|off  ask the router to forward the peer port (exposes your IP)
+  rpc-access show|add|remove
+                       NodeSignal's own RPC login (rpcauth + rpcwhitelist) in
+                       bitcoin.conf; restart the node after add or remove
   open                 print the web interface address and open it
   logs                 show where the log is and how to follow it
   uninstall            remove NodeSignal (Windows; on Linux use apt)
   version              print the version%EXTRA%`;
 const HELP_LINUX = `
-  setup [--redetect]   Linux, as root: pick the service user and write the
-                       config if missing (the .deb runs this for you)`;
+  setup [--redetect]   Linux, as root: the nodesignal user, the config and the
+                       RPC login (the .deb runs this for you)`;
 const HELP_WIN = `
   start | stop | restart
                        control the background daemon`;
@@ -425,6 +512,7 @@ async function main(argv = process.argv.slice(2), deps = {}) {
     case 'logs': return cmdLogs(ctx);
     case 'uninstall': return cmdUninstall(ctx);
     case 'setup': return cmdSetup(ctx);
+    case 'rpc-access': return cmdRpcAccess(ctx, pos[1]);
     case 'rpc-check': {
       const det = await core.detectBitcoinNode();
       const r = await printRpcCheck(core, det, cfg);

@@ -115,16 +115,30 @@ PROTECT YOUR RPC CREDENTIALS
 Never expose Bitcoin RPC to the internet. It should listen on localhost
 only, which is the default.
 
-rpcuser/rpcpassword grants FULL RPC access, including wallet commands.
-NodeSignal only needs three read methods, so restrict it in bitcoin.conf:
+The cookie file and rpcuser/rpcpassword grant FULL RPC access, including
+wallet commands, so NodeSignal uses neither. The installers give it its
+own RPC user instead. In bitcoin.conf, between two "# NodeSignal RPC
+access" marker comments:
 
-    rpcwhitelist=nodesignal:getpeerinfo,getnetworkinfo,getblockchaininfo
+    rpcauth=nodesignal:<salt>$<hash>
+    rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo
+    rpcwhitelistdefault=0
 
-Prefer the cookie file over a static password where you can, and run the
-daemon as an unprivileged user.
+rpcauth is a salted HMAC-SHA256, so bitcoin.conf never holds the
+password. The whitelist is exactly the three read methods the daemon
+calls; anything else answers 403. rpcwhitelistdefault=0 is written only
+when bitcoin.conf has no whitelist settings of its own: without it, the
+first rpcwhitelist line would lock every other RPC user out. bitcoind
+reads these lines when it starts, so restart it once after installing;
+NodeSignal never restarts it. Uninstalling with purge removes the block.
 
-The Windows installer stores credentials in nodesignal-config.json and
-locks that file to your user account. Do not put passwords on a command
+On Linux the daemon runs as a dedicated "nodesignal" system user, never
+root and never the node's user, with no access to /home. On Windows it
+runs as your account, and the installers refuse an administrator window.
+
+The installers store NodeSignal's RPC password in its config file
+(/etc/nodesignal/config.json, readable by the nodesignal user only, or
+config.json locked to your account on Windows). Do not put passwords on a command
 line: on Linux they show up in `systemctl cat`, and on Windows in a
 process listing.
 

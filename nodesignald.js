@@ -33,8 +33,10 @@
 //     --web-root <dir>     where nodesignal.html lives     (default: this dir)
 //     --data <dir>         state directory                 (default: ~/.nodesignal)
 //     --rpc-url <url>      bitcoind/knots RPC              (default: http://127.0.0.1:8332)
-//     --rpc-user <u> --rpc-pass <p>    RPC credentials, or:
-//     --rpc-cookie <path>  cookie file (auto-tried: ~/.bitcoin/.cookie)
+//     --rpc-user <u> --rpc-pass <p>    NodeSignal's own RPC login (normally in
+//                          the config file; setup creates a "nodesignal"
+//                          rpcauth user limited by rpcwhitelist). The node's
+//                          cookie file is never read.
 //     --port-mapping       ask the router to forward the peer port (UPnP/NAT-PMP).
 //                          Opt-in: it publishes your IP on clearnet.
 //     --checkin-ms <n>     how often to check in with established contacts
@@ -106,7 +108,6 @@ const CFG = {
   rpcUrl: arg('rpc-url', 'http://127.0.0.1:8332'),
   rpcUser: arg('rpc-user', ''),
   rpcPass: arg('rpc-pass', ''),
-  rpcCookie: arg('rpc-cookie', ''),
   rpcConf: arg('rpc-conf', ''),
   noRpc: boolOpt('no-rpc'),
   portMapping: boolOpt('port-mapping'),
@@ -270,10 +271,14 @@ function buildImpersonation() {
 
 /* ------------------------------------------------------------ node RPC */
 const rpc = { ok: false, self: null, peers: [], error: 'not configured' };
-/* Credential discovery. bitcoind/Knots can be configured half a dozen ways and
-   the daemon may run as a different user than the node, so we try each source
-   in turn and REMEMBER what we tried: a silent "not connected" is useless to
-   an operator. Re-run on every call because the cookie rotates on restart. */
+/* Credentials. NodeSignal logs in to the node as its OWN RPC user: setup
+   adds "rpcauth=nodesignal:<salt>$<hash>" plus "rpcwhitelist=nodesignal:
+   getblockchaininfo,getnetworkinfo,getpeerinfo" to bitcoin.conf and keeps the
+   password in NodeSignal's 0600 config (rpc-user / rpc-pass). The node's
+   cookie file is never read, so the daemon needs no access to the node's
+   data directory and can run as its own unprivileged user.
+   For a daemon started by hand, rpcuser=/rpcpassword= in a bitcoin.conf it
+   can read (--rpc-conf, or the default locations) still work. */
 function parseBitcoinConf(file) {
   try {
     const txt = fs.readFileSync(file, 'utf8');
@@ -292,20 +297,7 @@ function parseBitcoinConf(file) {
     return out;
   } catch { return null; }
 }
-function readCookie(file, tried) {
-  try {
-    const s = fs.readFileSync(file, 'utf8').trim();
-    tried.push({ path: file, result: 'ok' });
-    return s;
-  } catch (e) {
-    tried.push({ path: file, result:
-      e.code === 'EACCES' ? 'permission denied: the daemon user cannot read it'
-      : e.code === 'ENOENT' ? 'not found' : (e.code || 'error') });
-    return null;
-  }
-}
-/* Bitcoin's default data directory is platform-specific. Getting this wrong is
-   the #1 reason the peer map stays empty, so search all of them:
+/* Bitcoin's default data directory is platform-specific:
      Linux    ~/.bitcoin
      Windows  %APPDATA%\Bitcoin      (C:\Users\<you>\AppData\Roaming\Bitcoin)
      macOS    ~/Library/Application Support/Bitcoin                            */
@@ -323,12 +315,6 @@ function defaultDataDirs() {
   dirs.push(path.join(home, 'snap', 'bitcoin-core', 'common', '.bitcoin'));
   return [...new Set(dirs)];
 }
-const COOKIE_PATHS = [
-  ...defaultDataDirs().map(d => path.join(d, '.cookie')),
-  '/var/lib/bitcoind/.cookie',
-  '/var/lib/bitcoin/.cookie',
-  '/home/bitcoin/.bitcoin/.cookie',
-];
 const CONF_PATHS = [
   ...defaultDataDirs().map(d => path.join(d, 'bitcoin.conf')),
   '/etc/bitcoin/bitcoin.conf',
@@ -337,40 +323,17 @@ const CONF_PATHS = [
 const rpcDiag = { source: null, tried: [], port: null };
 function rpcAuth() {
   const tried = [];
-  if (CFG.rpcUser) { rpcDiag.source = '--rpc-user / --rpc-pass'; rpcDiag.tried = tried; return CFG.rpcUser + ':' + CFG.rpcPass; }
-  if (CFG.rpcCookie) {
-    const c = readCookie(CFG.rpcCookie, tried);
-    if (c) { rpcDiag.source = 'cookie ' + CFG.rpcCookie; rpcDiag.tried = tried; return c; }
-  }
+  if (CFG.rpcUser) { rpcDiag.source = `RPC user "${CFG.rpcUser}"`; rpcDiag.tried = tried; return CFG.rpcUser + ':' + CFG.rpcPass; }
   for (const cp of [CFG.rpcConf, ...CONF_PATHS].filter(Boolean)) {
     const conf = parseBitcoinConf(cp);
-    if (!conf) { tried.push({ path: cp, result: 'no bitcoin.conf here' }); continue; }
-    tried.push({ path: cp, result: 'read ok' });
+    if (!conf) { tried.push({ path: cp, result: 'not readable here' }); continue; }
+    tried.push({ path: cp, result: 'read ok, no rpcuser/rpcpassword' });
     if (conf.rpcport) rpcDiag.port = conf.rpcport;
     if (conf.rpcuser && conf.rpcpassword) {
+      tried[tried.length - 1].result = 'rpcuser/rpcpassword';
       rpcDiag.source = 'rpcuser/rpcpassword in ' + cp; rpcDiag.tried = tried;
       return conf.rpcuser + ':' + conf.rpcpassword;
     }
-    // rpcauth= stores a salted hash, so the password is NOT recoverable from
-    // the file. Say so plainly instead of reporting a vague failure.
-    if (conf.rpcauth && !conf.rpcpassword) {
-      tried.push({ path: cp, result:
-        'uses rpcauth= (hashed): the password cannot be read from this file; ' +
-        'pass --rpc-user/--rpc-pass in the systemd unit, or add plain ' +
-        'rpcuser=/rpcpassword= lines and restart bitcoind' });
-    }
-    if (conf.rpccookiefile) {
-      const c = readCookie(conf.rpccookiefile, tried);
-      if (c) { rpcDiag.source = 'cookie ' + conf.rpccookiefile + ' (from ' + cp + ')'; rpcDiag.tried = tried; return c; }
-    }
-    if (conf.datadir) {
-      const c = readCookie(path.join(conf.datadir, '.cookie'), tried);
-      if (c) { rpcDiag.source = 'cookie in datadir ' + conf.datadir; rpcDiag.tried = tried; return c; }
-    }
-  }
-  for (const cpath of COOKIE_PATHS) {
-    const c = readCookie(cpath, tried);
-    if (c) { rpcDiag.source = 'cookie ' + cpath; rpcDiag.tried = tried; return c; }
   }
   rpcDiag.source = null; rpcDiag.tried = tried;
   return null;
@@ -378,7 +341,7 @@ function rpcAuth() {
 function rpcCall(method, params = []) {
   return new Promise((resolve, reject) => {
     const auth = rpcAuth();
-    if (!auth) return reject(new Error('no RPC credentials (--rpc-user/--rpc-pass or --rpc-cookie)'));
+    if (!auth) return reject(new Error('NodeSignal has no RPC login yet: run "sudo nodesignal setup" (Linux) or the installer'));
     const u = new URL(CFG.rpcUrl);
     if (rpcDiag.port && u.port === '8332' && !argv.includes('--rpc-url') && !FILE_CFG['rpc-url']) u.port = rpcDiag.port;
     const body = JSON.stringify({ jsonrpc: '1.0', id: 'ns', method, params });
@@ -387,8 +350,12 @@ function rpcCall(method, params = []) {
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
         'Authorization': 'Basic ' + Buffer.from(auth).toString('base64') }, timeout: 5000,
     }, (res) => {
-      let d = ''; res.on('data', c => d += c);
+      let d = ''; res.on('data', c => { if (d.length < 16 * 1024 * 1024) d += c; });
       res.on('end', () => {
+        if (res.statusCode === 401) return reject(new Error(CFG.rpcUser
+          ? `the node rejected the "${CFG.rpcUser}" login (401). If NodeSignal was just installed, restart bitcoind so it reads the new rpcauth line`
+          : 'the node rejected the login (401)'));
+        if (res.statusCode === 403) return reject(new Error(`the node refused "${method}" for this user (403): check the rpcwhitelist line in bitcoin.conf`));
         try { const j = JSON.parse(d); j.error ? reject(new Error(j.error.message)) : resolve(j.result); }
         catch { reject(new Error('bad RPC response (' + res.statusCode + ')')); }
       });
@@ -424,11 +391,10 @@ async function pollRpc() {
       rpc._loggedFail = true;
       log('!! Bitcoin RPC not connected: ' + e.message);
       if (!rpcDiag.source && rpcDiag.tried.length) {
-        log('   looked for credentials in:');
+        log('   looked for rpcuser/rpcpassword in:');
         for (const t of rpcDiag.tried) log(`     ${t.path}  ->  ${t.result}`);
-        log('   fix: add rpcuser=/rpcpassword= to bitcoin.conf and restart, or');
-        log('        run this service as the user that owns the .cookie file, or');
-        log('        pass --rpc-cookie /path/to/.cookie in the systemd unit');
+        log('   fix (Linux, on the node): sudo nodesignal setup   then restart bitcoind');
+        log('   it adds NodeSignal\'s own rpcauth user to bitcoin.conf; the cookie is never used');
       }
       broadcastUi({ type: 'node', self: null, peers: [], error: rpc.error, diag: rpcDiag });
     }
@@ -1449,7 +1415,9 @@ peerServer.listen(CFG.peerPort, PEER_BIND, () => {
     log(`web auth       : ${AUTH_ON ? 'token required (login page)' : 'open: safe only on a private tailnet'}`);
     log(`web root       : ${CFG.webRoot}`);
     log(`state          : ${STATE_FILE}  (${Object.keys(state.contacts).length} contacts)`);
-    log(CFG.noRpc ? 'node RPC       : disabled (--no-rpc)' : `node RPC       : ${CFG.rpcUrl}`);
+    log(CFG.noRpc ? 'node RPC       : disabled (--no-rpc)' : `node RPC       : ${CFG.rpcUrl}${CFG.rpcUser ? ` as "${CFG.rpcUser}"` : ''}`);
+    if (FILE_CFG['rpc-cookie'] || argv.includes('--rpc-cookie'))
+      log('!! rpc-cookie is no longer used (v1.3 never reads the cookie): run "sudo nodesignal setup" to create NodeSignal\'s own RPC login');
     IMPERSONATED = buildImpersonation();
     if (IMPERSONATED) {
       log(`impersonating  : ${IMPERSONATED.ua}`);

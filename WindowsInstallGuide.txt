@@ -57,22 +57,43 @@ and the installer:
      data folder %APPDATA%\Bitcoin (or the custom folder Bitcoin Core
      remembers), and Bitcoin Core in Program Files. With none it stops
      and nothing is installed.
-  2. connects to the node and prints its version and block height. If
-     the node is installed but not answering right now (not started,
-     RPC server off, still loading), it explains what to do and lets
-     you check again, or carry on: NodeSignal installs anyway and
-     connects by itself every 30 seconds.
-  3. asks for a display name other operators will see (default: this
+  2. refuses to run as administrator. NodeSignal runs as your own
+     account and never needs admin rights; double-click it normally.
+  3. gives NodeSignal its own RPC login. It adds an rpcauth= line for a
+     user called nodesignal to bitcoin.conf (a salted hash; the
+     password stays in NodeSignal's config.json, locked to your
+     account), plus an rpcwhitelist= line allowing exactly the three
+     read-only methods it calls:
+         rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo
+     and rpcwhitelistdefault=0 if bitcoin.conf has no whitelist lines
+     of its own, so anything else using your node's RPC keeps working.
+     The first change keeps the original as
+     bitcoin.conf.nodesignal-backup. NodeSignal never reads the
+     cookie file. An upgrade reuses the same login and changes nothing.
+  4. asks for a display name other operators will see (default: this
      PC's name)
-  4. offers the two optional extras below, both defaulting to No
-  5. stops an older NodeSignal if one is running, and installs to
+  5. offers the two optional extras below, both defaulting to No
+  6. stops an older NodeSignal if one is running, and installs to
      %LOCALAPPDATA%\NodeSignal (program in app\, settings in
      config.json, log in nodesignal.log)
-  6. sets NodeSignal to start hidden when you sign in (a small launcher
+  7. sets NodeSignal to start hidden when you sign in (a small launcher
      in your Startup folder, no admin needed), adds a "NodeSignal"
      Desktop shortcut and an entry in Settings > Apps for uninstalling
-  7. starts NodeSignal now, waits until it answers, and opens it in
+  8. starts NodeSignal now, waits until it answers, and opens it in
      your browser
+
+RESTART YOUR NODE after the first install: close Bitcoin Core or Knots
+and start it again. It reads bitcoin.conf only when it starts, so until
+then it does not know the nodesignal login and NodeSignal shows "Bitcoin
+RPC not connected" (it retries every 30 seconds). The installer says so
+and never restarts the node for you.
+
+Bitcoin Core's GUI (bitcoin-qt) only answers RPC with server=1 in
+bitcoin.conf, or with "Enable RPC server" ticked in its Options.
+
+There is no separate Windows account for NodeSignal, as there is on
+Linux: it runs as you, without admin rights, and its files are locked
+to your account.
 
 Your contacts, message history and encryption identity live in
 %USERPROFILE%\.nodesignal and are never touched by an upgrade.
@@ -145,8 +166,11 @@ Prompt:
 
 It stops NodeSignal, removes the program, the sign-in launcher, the
 Desktop shortcut and the Apps entry, and offers to remove
-uacomment=nodesignal from bitcoin.conf. Your settings and history are
-kept unless you add --purge (it asks you to type DELETE first).
+uacomment=nodesignal and NodeSignal's RPC login from bitcoin.conf. Your
+settings and history are kept. --purge also removes the settings, the
+log and the RPC login (without asking), but still never your identity
+key and history in %USERPROFILE%\.nodesignal: delete that folder
+yourself if you want them gone. Restart your node after either.
 
 
 -----------------------------------------------------------------------
@@ -157,9 +181,13 @@ getnetworkinfo and getblockchaininfo, none of which need block history.
 
 A CUSTOM DATA FOLDER (for example on another drive) is found through
 the setting Bitcoin Core keeps in the registry, or while the node is
-running. If NodeSignal still cannot find it, add "rpc-cookie":
-"D:\\Bitcoin\\.cookie" (your path, with doubled backslashes) to
-config.json and restart.
+running. If NodeSignal still cannot find it, point it at the right
+bitcoin.conf. Command Prompt:
+
+    "%LOCALAPPDATA%\NodeSignal\nodesignal.exe" rpc-access add --bitcoin-conf "D:\Bitcoin\bitcoin.conf"
+
+then restart Bitcoin Core or Knots. "rpc-access show" prints what is
+there (never the password).
 
 FIREWALL: if other operators cannot reach you, the peer port is blocked.
 Run the netsh command from section 3 once in an ADMIN PowerShell.
@@ -190,8 +218,10 @@ that says "npm.cmd install", skip that line; it is obsolete.
 3. Double-click install-windows.bat. It runs install.js, which asks a
    short series of questions and checks each answer against your real
    system: it refuses to continue without a Bitcoin node, actually
-   connects to bitcoind and prints the node's version and chain
-   height, asks for a display name, how peers reach you (Tailscale,
+   adds NodeSignal's own RPC login (rpcauth and rpcwhitelist, as
+   above) to bitcoin.conf, connects to bitcoind if the node already
+   knows that login and prints the node's version and chain height,
+   asks for a display name, how peers reach you (Tailscale,
    Tor, localhost only, or clearnet), verifies the ports are free,
    offers a login token and the same two optional extras. It writes
    nodesignal-config.json (locked to your user account),
@@ -206,5 +236,6 @@ script it. Command Prompt, in the repository folder:
 
     node install.js < answers.txt
 
-start-node.bat is a manual launcher that runs the daemon in a window
-with default settings.
+start-node.bat is a manual launcher that runs the daemon in a window,
+using nodesignal-config.json when it exists. Like install.js, never run
+it from an administrator window.

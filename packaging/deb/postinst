@@ -1,6 +1,7 @@
 #!/bin/sh
-# nodesignal postinst: pick the service user, write the config if absent,
-# start the service, check the Bitcoin RPC and print what to do next.
+# nodesignal postinst: the nodesignal user, the config and NodeSignal's own
+# RPC login in bitcoin.conf (cli.js setup), then start the service, check
+# the Bitcoin RPC and print what to do next.
 # NODESIGNAL_TEST_ROOT runs it against a fake filesystem with no systemctl.
 set -e
 
@@ -50,7 +51,7 @@ if [ -z "$R" ] && [ -d /run/systemd/system ]; then
   fi
 else
   echo "systemd is not running here, so NodeSignal was not started."
-  echo "Start it by hand: sudo -u <node user> /opt/nodesignal/node /opt/nodesignal/nodesignald.js --config /etc/nodesignal/config.json --web-root /opt/nodesignal"
+  echo "Start it by hand: sudo -u nodesignal /opt/nodesignal/node /opt/nodesignal/nodesignald.js --config /etc/nodesignal/config.json --web-root /opt/nodesignal"
 fi
 
 echo ""

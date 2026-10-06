@@ -37,6 +37,28 @@ require breaking one, stop and ask.
    into the page it serves (`<meta name="ns-action-token">`). Only `hello`
    and `ping` are exempt. Never add a remote web bind; remote access is an
    SSH tunnel with the same port. `tests/websecurity.test.js` guards this.
+11. NodeSignal never runs as root and never reads the node's cookie
+   (decided Oct 2026). Linux: setup (`cli.js setup`, run by the .deb
+   postinst and `install-node.sh`) creates the `nodesignal` system user;
+   the unit says `User=nodesignal`, `StateDirectory=nodesignal`
+   (`/var/lib/nodesignal`), `ProtectHome=yes`. RPC: setup generates a
+   random password for user `nodesignal`, keeps it in NodeSignal's 0600
+   config (`rpc-user`/`rpc-pass`, plus `rpc-url` because the daemon cannot
+   read bitcoin.conf), and writes a marked block to bitcoin.conf:
+   `rpcauth=nodesignal:<salt>$<hmac>`, `rpcwhitelist=nodesignal:` with
+   exactly the methods the daemon calls (below), and `rpcwhitelistdefault=0`
+   only when the conf has no whitelist settings of its own (otherwise the
+   first whitelist line locks every other RPC user out). Setup tells the
+   operator to restart bitcoind, as advertise does, and never restarts it.
+   Purge removes the block; it never deletes identity or history. Windows
+   has no dedicated account: the daemon runs as the signed-in user, the
+   same rpcauth block is written, and both Windows installers refuse an
+   administrator window. `nodesignal rpc-access show|add|remove` manages
+   the block by hand.
+   The RPC methods the daemon calls, from `grep "rpcCall('" nodesignald.js`
+   (`tests/setup-core.test.js` fails if this drifts from `RPC_METHODS`):
+   `getblockchaininfo`, `getnetworkinfo`, `getpeerinfo`. setup-core's own
+   install-time check uses `getblockchaininfo` and `getnetworkinfo`.
 
 There is no Bitcoin node in cloud sessions. Never run against live RPC;
 mock `getnetworkinfo`, `getblockchaininfo`, `getpeerinfo` and the 8333
@@ -94,7 +116,10 @@ docs, and commit messages.
 5. **Fail honestly.** Undeliverable messages say why. Unknown data shows as
    unknown or N/A. Nothing silently disappears.
 6. **Never put secrets on a command line.** Credentials live in
-   `nodesignal-config.json` (locked to the user) or the cookie file.
+   NodeSignal's own config (`/etc/nodesignal/config.json` 0600 owned by
+   `nodesignal`, `%LOCALAPPDATA%\NodeSignal\config.json` or
+   `nodesignal-config.json` locked to the user). The node's cookie file is
+   never read; bitcoin.conf only ever gets the rpcauth hash.
 7. **No personal data in the repo.** No real IPs, hostnames, or usernames
    in code, placeholders, or docs. This repo is public.
 
@@ -127,12 +152,12 @@ From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 | `nodesignal.html` | **Operator console.** Real data only. Goes on a node. |
 | `nodesignal-demo.html` | **Retired.** Removed from the tree in `2d479c6`; the maintainer considers it obsolete. Do not restore it. The demo-only rules below apply only if it ever returns. |
 | `packaging/` | One-download installers. `files.json` is THE list of program files (update it when adding a module). `build-sea.js` + `windows/sea-main.js` build `NodeSignal-Setup-windows-x64.exe` (Node SEA); `deb/` builds `nodesignal-linux-{amd64,arm64}.deb` with the official Node binary. Both require a Bitcoin node. |
-| `setup-core.js` + `cli.js` | Shared node detection / RPC check / config / uacomment editing, and the `nodesignal` command (status, advertise, port-mapping, setup). |
+| `setup-core.js` + `cli.js` | Shared node detection / RPC check / config / uacomment and rpcauth editing, and the `nodesignal` command (status, advertise, port-mapping, rpc-access, setup). |
 | `.github/workflows/` | `ci.yml` (all tests, deb install under systemd, Windows exe selftest) and `release.yml` (tag `v*` -> release assets with stable names + SHA256SUMS.txt). |
 | `install.js` + `install-windows.bat`, `install-node.sh` | From-source installers; also require a node. |
 | `start-node.bat` | Manual Windows launcher for a from-source copy. |
 | `tools/screenshots/` | Publishable screenshots of the console from a fake daemon (`fixture-ws.js`). Optional Playwright. |
-| `tests/` | `console.test.js` (plain node), `console.e2e.js` (optional Playwright), `mock-node.js`. |
+| `tests/` | `run-all.js` runs every `*.test.js` with plain node; `console.e2e.js` (optional Playwright); `mock-node.js` (mock RPC that applies rpcauth/rpcwhitelist from a bitcoin.conf like bitcoind, and a :8333 identify listener). |
 
 ### Two interfaces, deliberately separate
 
@@ -147,8 +172,9 @@ From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 ### Daemon options worth knowing
 
 `--config <file>` (flags override the file), `--nick`, `--web-port`,
-`--peer-port`, `--web-token`, `--bind`, `--no-rpc`, `--rpc-user`,
-`--rpc-pass`, `--rpc-cookie`, `--rpc-conf`, `--tor-proxy`, `--tor-all`,
+`--peer-port`, `--web-token`, `--bind` (peer port only), `--no-rpc`,
+`--rpc-url`, `--rpc-user`, `--rpc-pass` (normally in the config, never on a
+command line), `--rpc-conf`, `--tor-proxy`, `--tor-all`,
 `--impersonate`, `--impersonate-height`, `--max-conns`, `--rl-burst`,
 `--rl-refill-ms`, `--port-mapping` (opt-in), `--checkin-ms` (default 180000,
 0 disables), `--retry-scale` (tests only).
@@ -248,6 +274,8 @@ status table. Keep it current whenever security changes.
 - Zero dependencies.
 - Optional web login token; HttpOnly SameSite=Strict session cookie also
   authenticates the `/ws` upgrade. Never put the token in a query string.
+- Least RPC privilege (v1.3): own rpcauth user with an `rpcwhitelist` of the
+  three methods, no cookie, dedicated `nodesignal` system user on Linux.
 - Web front door (v1.3): loopback-only bind, Host and Origin checks,
   per-launch action token on every state-changing op, `no-store` and
   frame-blocking headers on the console page. A console socket error can
@@ -309,16 +337,18 @@ status table. Keep it current whenever security changes.
 6b. **Next release:** drop `noise.legacy` and the v2 dial/answer branches.
 6c. **Outside review** of `nodesignald.js` + `noise.js` before calling it
    reviewed anywhere.
-7. **Docs:** add `rpcwhitelist=nodesignal:getpeerinfo,getnetworkinfo,getblockchaininfo`
-   to the Linux installer's output as a recommended hardening step.
+7. **[DONE v1.3, stronger than planned]** The installers now write
+   `rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo`
+   themselves, for NodeSignal's own rpcauth user.
 
 ### Direction decided with the maintainer (Oct 2026)
 
 - **Installers:** bundled Node. Windows gets a single `.exe` (Node single
   executable application, no separate Node install) that registers a
-  background service; Ubuntu gets a `.deb` with a systemd unit. Both find the
-  cookie or `bitcoin.conf`, connect, and start with no questions in the common
-  case. Built by GitHub Actions and attached to GitHub Releases; the site's
+  background service; Ubuntu gets a `.deb` with a systemd unit. Both find
+  `bitcoin.conf`, add NodeSignal's own rpcauth login to it, and start with no
+  questions in the common case (one bitcoind restart needed, which they ask
+  the operator to do). Built by GitHub Actions and attached to GitHub Releases; the site's
   download buttons point at `releases/latest/download/<asset>`.
 - **Encryption, all wanted:** encrypt history and the identity key at rest;
   retire the v1 PIN path; a deliberate "accept new key" flow showing both
@@ -338,8 +368,8 @@ status table. Keep it current whenever security changes.
   and Homepage is https://github.com/Connor-03/NodeSignal. **TODO (maintainer):**
   replace `ID` with your numeric GitHub user id in `packaging/deb/build-deb.sh`
   (the default of `MAINTAINER`); the build prints a note until you do.
-- If bitcoind runs as root, the .deb runs NodeSignal as root (with a
-  warning). Alternative: a dedicated user plus rpcuser / `rpccookieperms`.
+- **Decided (Oct 2026): never run as root.** Dedicated `nodesignal` user,
+  rpcauth + rpcwhitelist instead of the cookie; see locked decision 11.
 - **Decided (Oct 2026): Windows supervisor.** `nodesignal.exe run` (what the
   sign-in launcher starts) is a parent that spawns the daemon as a child
   (`__daemon`) and respawns it on exit, backoff 1s doubling to 60s (reset after

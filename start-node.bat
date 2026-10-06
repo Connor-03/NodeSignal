@@ -56,19 +56,23 @@ echo    NodeSignal starting as: !NICK!
 echo    Interface:  http://localhost:8789
 echo   ==============================================================
 echo.
-echo   RPC: the daemon looks for your cookie file and bitcoin.conf in
-echo   the usual Windows locations, e.g.
-echo     %%APPDATA%%\Bitcoin\.cookie
-echo   If your node keeps its data elsewhere, point at the file on the
-echo   line below:
-echo     --rpc-cookie "D:\Bitcoin\.cookie"
-echo   For a username and password, use install-windows.bat instead: it
-echo   keeps them in a locked config file, never on a command line.
+echo   RPC: NodeSignal logs in to your node as its own user, never with
+echo   the cookie file. Run install-windows.bat once: it adds an rpcauth
+echo   line and an rpcwhitelist line to bitcoin.conf and keeps the password
+echo   in nodesignal-config.json, locked to your account. Restart the node
+echo   after that so it reads the new lines.
 echo.
 echo   If Windows Firewall prompts, ALLOW it so peers can reach 8788.
 echo.
 
-node nodesignald.js --nick "!NICK!" --web-port 8789 --peer-port 8788
+if exist nodesignal-config.json (
+  node nodesignald.js --config nodesignal-config.json --nick "!NICK!" --web-port 8789 --peer-port 8788
+) else (
+  echo   No nodesignal-config.json yet, so the node map stays empty until
+  echo   you run install-windows.bat.
+  echo.
+  node nodesignald.js --nick "!NICK!" --web-port 8789 --peer-port 8788
+)
 
 echo.
 echo   Daemon stopped. If it exited immediately, the message above is the reason.

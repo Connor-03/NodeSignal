@@ -132,9 +132,10 @@ t('detectBitcoinNode: running node, datadir, owner, cookie', async () => {
   assert.strictEqual(d.owner.uid, uid);
   assert.strictEqual(d.owner.username, 'alice');
   assert.strictEqual(d.rpcUrlNeeded, false);
-  assert(core.daemonFindsCookie(d.cookiePath, '/home/alice', 'linux'));
+  // the cookie is found (detection reports it) but never used to log in
   const a = core.findRpcAuth(d, {}, { root: r });
-  assert.strictEqual(a.auth, '__cookie__:abc');
+  assert.strictEqual(a.auth, null);
+  assert(/run setup/.test(a.notes.join(' ')));
 });
 
 t('detectBitcoinNode: testnet cookie subfolder and port', async () => {
@@ -152,7 +153,9 @@ t('checkNode: connects with conf credentials, explains failures', async () => {
   try {
     const { r } = fakeRoot('rpc', { conf: `rpcport=${port}\nrpcuser=u\nrpcpassword=p\n` });
     const d = await core.detectBitcoinNode({ root: r, platform: 'linux' });
-    const ok = await core.checkNode(d, {}, { root: r });
+    const none = await core.checkNode(d, {}, { root: r });
+    assert.strictEqual(none.code, 'no-auth', 'bitcoin.conf is not read unless rpc-conf points at it');
+    const ok = await core.checkNode(d, { 'rpc-conf': '/home/alice/.bitcoin/bitcoin.conf' }, { root: r });
     assert(ok.ok, ok.error);
     assert.strictEqual(ok.blocks, 950000);
     const bad = await core.checkNode(d, { 'rpc-user': 'u', 'rpc-pass': 'wrong' }, { root: r });
@@ -163,20 +166,161 @@ t('checkNode: connects with conf credentials, explains failures', async () => {
   } finally { srv.close(); }
 });
 
-t('cli setup (the .deb postinst step) writes config, drop-in and state dir', async () => {
-  const { r } = fakeRoot('deb', { conf: 'server=1\n' });
-  const run = () => spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r], { encoding: 'utf8', timeout: 30000 });
+/* ---------------------------------------------------------- RPC access */
+t('rpcauth matches Bitcoin Core (test/functional/rpc_users.py vector)', () => {
+  const line = 'rpcauth=rt:93648e835a54c573682c2eb19f882535$7681e9c5b74bdd85e78166031d2058e1069b3ed7ed967c93fc63abba06f31144';
+  const pw = 'cA773lm788buwYe4g4WT+05pKyNruVKjQ25x3n0DQcM=';
+  assert.strictEqual(core.makeRpcAuth('rt', pw, '93648e835a54c573682c2eb19f882535'), line);
+  assert(core.rpcAuthMatches(line, 'rt', pw));
+  assert(!core.rpcAuthMatches(line, 'rt', pw + 'x'));
+  assert(!core.rpcAuthMatches(line, 'other', pw));
+  assert(core.generateRpcPassword().length >= 43, '256-bit password');
+});
+
+t('every rpcCall in nodesignald.js is in RPC_METHODS, and nothing else is', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'nodesignald.js'), 'utf8');
+  const used = [...new Set([...src.matchAll(/rpcCall\(\s*'([a-z]+)'/g)].map((m) => m[1]))].sort();
+  assert.deepStrictEqual(used, [...core.RPC_METHODS].sort());
+  assert.deepStrictEqual(core.RPC_METHODS, ['getblockchaininfo', 'getnetworkinfo', 'getpeerinfo']);
+  // setup-core's own check uses a subset
+  const own = [...new Set([...fs.readFileSync(path.join(ROOT, 'setup-core.js'), 'utf8').matchAll(/method: '([a-z]+)'/g)].map((m) => m[1]))];
+  for (const m of own) assert(core.RPC_METHODS.includes(m), m);
+});
+
+t('setRpcAccess: add, idempotent, refresh, remove restores the file byte for byte', () => {
+  const f = path.join(tmp, 'ra', 'bitcoin.conf');
+  const orig = 'server=1\n# kept\nprune=550\n\n[test]\nrpcport=18332\n';
+  write(f, orig);
+  const r1 = core.setRpcAccess(f, 'pw1');
+  assert(r1.changed && r1.backup);
+  const on = fs.readFileSync(f, 'utf8');
+  const top = on.slice(0, on.indexOf('[test]'));
+  assert(top.includes(core.RPC_BEGIN) && top.includes(core.RPC_END), 'block at the top level');
+  assert(/^rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo$/m.test(top));
+  assert(/^rpcwhitelistdefault=0$/m.test(top), 'other users keep full access');
+  const st = core.rpcAccessState(f);
+  assert(st.on && core.rpcAuthMatches(st.rpcauth, 'nodesignal', 'pw1'));
+  assert(!on.includes('pw1'), 'the password never lands in bitcoin.conf');
+  assert.strictEqual(core.setRpcAccess(f, 'pw1').changed, false, 'same password: untouched, no restart needed');
+  assert.strictEqual(fs.readFileSync(f, 'utf8'), on);
+  assert(core.setRpcAccess(f, 'pw2').changed, 'new password refreshes the block');
+  assert(core.rpcAuthMatches(core.rpcAccessState(f).rpcauth, 'nodesignal', 'pw2'));
+  assert.strictEqual(fs.readFileSync(f, 'utf8').split(core.RPC_BEGIN).length, 2, 'one block only');
+  assert(core.setRpcAccess(f, null).changed);
+  assert.strictEqual(fs.readFileSync(f, 'utf8'), orig);
+  assert.strictEqual(core.setRpcAccess(f, null).changed, false);
+  assert.strictEqual(fs.readFileSync(f + core.BACKUP_SUFFIX, 'utf8'), orig);
+});
+
+t('setRpcAccess: CRLF and no sections round trip; a missing file is created 0600', () => {
+  const f = path.join(tmp, 'rb', 'bitcoin.conf');
+  const orig = 'server=1\r\ntxindex=0';                        // no final newline
+  write(f, orig);
+  core.setRpcAccess(f, 'pw');
+  assert(!/[^\r]\n/.test(fs.readFileSync(f, 'utf8')), 'CRLF only');
+  core.setRpcAccess(f, null);
+  assert.strictEqual(fs.readFileSync(f, 'utf8'), orig + '\r\n');
+  const g = path.join(tmp, 'rc', 'bitcoin.conf');
+  assert(core.setRpcAccess(g, 'pw').created);
+  if (process.platform !== 'win32') assert.strictEqual(fs.statSync(g).mode & 0o777, 0o600);
+  assert(core.rpcAccessState(g).on);
+});
+
+t('setRpcAccess leaves an operator\'s own rpcwhitelist settings alone', () => {
+  for (const extra of ['rpcwhitelist=electrs:getblock\n', 'rpcwhitelistdefault=1\n']) {
+    const f = path.join(tmp, 'rd' + extra.length, 'bitcoin.conf');
+    write(f, 'server=1\n' + extra);
+    core.setRpcAccess(f, 'pw');
+    const text = fs.readFileSync(f, 'utf8');
+    assert(!/^rpcwhitelistdefault=0$/m.test(text), 'no rpcwhitelistdefault=0 when they configure whitelists');
+    assert(text.includes(extra));
+  }
+});
+
+t('setRpcAccess refuses files it cannot parse or a broken block, and changes nothing', () => {
+  const f = path.join(tmp, 're', 'bitcoin.conf');
+  write(f, 'server=1\nnot an option\n');
+  assert.throws(() => core.setRpcAccess(f, 'pw'), /refusing to edit/);
+  assert.strictEqual(fs.readFileSync(f, 'utf8'), 'server=1\nnot an option\n');
+  write(f, `server=1\n${core.RPC_BEGIN}\nrpcauth=x:00$${'0'.repeat(64)}\n`);
+  assert.throws(() => core.setRpcAccess(f, null), /no end marker/);
+});
+
+t('the mock node applies rpcauth and rpcwhitelist like bitcoind, after a restart', async () => {
+  const f = path.join(tmp, 'rf', 'bitcoin.conf');
+  write(f, 'server=1\n');
+  const srv = await rpcServer({ port: 0, conf: f });
+  const url = `http://127.0.0.1:${srv.address().port}`;
+  const call = (auth, method) => core.rpcCall({ url, auth, method });
+  try {
+    const pw = core.generateRpcPassword();
+    core.setRpcAccess(f, pw);
+    assert.strictEqual((await call('nodesignal:' + pw, 'getpeerinfo')).code, 'auth', 'the node reads bitcoin.conf at start only');
+    srv.reload();
+    for (const m of core.RPC_METHODS) assert((await call('nodesignal:' + pw, m)).ok, m);
+    assert.strictEqual((await call('nodesignal:' + pw, 'dumpprivkey')).code, 'forbidden', 'whitelist enforced');
+    assert.strictEqual((await call('nodesignal:wrong', 'getpeerinfo')).code, 'auth');
+    assert((await call('u:p', 'getpeerinfo')).ok, 'rpcwhitelistdefault=0 keeps other users working');
+    // without our rpcwhitelistdefault=0, the first whitelist would lock them out
+    fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('rpcwhitelistdefault=0\n', ''));
+    srv.reload();
+    assert.strictEqual((await call('u:p', 'getpeerinfo')).code, 'forbidden');
+  } finally { srv.close(); }
+});
+
+t('cli setup (the .deb postinst step): nodesignal user, rpcauth, never the cookie', async () => {
+  const { r } = fakeRoot('deb', { conf: 'server=1\nrpcport=18555\n' });
+  const confFile = path.join(r, 'home/alice/.bitcoin/bitcoin.conf');
+  const origConf = fs.readFileSync(confFile, 'utf8');
+  write(path.join(r, 'home/alice/.bitcoin/.cookie'), '__cookie__:abc');
+  // an older 1.3 pre-release: drop-in running as the node owner, state in her home
+  write(path.join(r, 'etc/systemd/system/nodesignal.service.d/10-user.conf'), '# Written by nodesignal setup. Re-detect with: sudo nodesignal setup --redetect\n[Service]\nUser=alice\n');
+  write(path.join(r, 'home/alice/.nodesignal/state.json'), '{"old":true}');
+  write(path.join(r, 'etc/nodesignal/config.json'), JSON.stringify({ nick: 'kept', data: '/home/alice/.nodesignal', 'rpc-cookie': '/home/alice/.bitcoin/.cookie' }));
+  const run = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r, ...a], { encoding: 'utf8', timeout: 30000 });
   const out = run();
   assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert(/Service user: nodesignal/.test(out.stdout), out.stdout);
+  assert(/restart bitcoind/i.test(out.stdout), 'tells the operator to restart the node');
   const cfg = JSON.parse(fs.readFileSync(path.join(r, 'etc/nodesignal/config.json'), 'utf8'));
-  assert.deepStrictEqual(cfg, { nick: 'testbox', data: '/home/alice/.nodesignal' });
-  const drop = fs.readFileSync(path.join(r, 'etc/systemd/system/nodesignal.service.d/10-user.conf'), 'utf8');
-  assert(/^User=alice$/m.test(drop) && /^ReadWritePaths=\/home\/alice\/\.nodesignal$/m.test(drop));
-  assert(fs.statSync(path.join(r, 'home/alice/.nodesignal')).isDirectory());
-  // a second run keeps the existing config
-  fs.writeFileSync(path.join(r, 'etc/nodesignal/config.json'), JSON.stringify({ nick: 'kept', data: '/home/alice/.nodesignal' }));
-  assert.strictEqual(run().status, 0);
-  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(r, 'etc/nodesignal/config.json'), 'utf8')).nick, 'kept');
+  assert.strictEqual(cfg.nick, 'kept');
+  assert.strictEqual(cfg.data, '/var/lib/nodesignal');
+  assert.strictEqual(cfg['rpc-user'], 'nodesignal');
+  assert(cfg['rpc-pass'] && cfg['rpc-pass'].length >= 43);
+  assert.strictEqual(cfg['rpc-url'], 'http://127.0.0.1:18555', 'the daemon cannot read bitcoin.conf, so it is told the port');
+  assert(!('rpc-cookie' in cfg) && !('rpc-conf' in cfg), 'no cookie, no bitcoin.conf pointer');
+  if (process.platform !== 'win32') assert.strictEqual(fs.statSync(path.join(r, 'etc/nodesignal/config.json')).mode & 0o777, 0o600);
+  assert(!out.stdout.includes(cfg['rpc-pass']), 'password never printed');
+  const conf = fs.readFileSync(confFile, 'utf8');
+  assert(!conf.includes(cfg['rpc-pass']));
+  assert(core.rpcAuthMatches(core.rpcAccessState(confFile).rpcauth, 'nodesignal', cfg['rpc-pass']));
+  assert.strictEqual(fs.readFileSync(path.join(r, 'etc/nodesignal/bitcoin-conf'), 'utf8').trim(), '/home/alice/.bitcoin/bitcoin.conf');
+  assert(!fs.existsSync(path.join(r, 'etc/systemd/system/nodesignal.service.d/10-user.conf')), 'old drop-in removed');
+  assert.strictEqual(fs.readFileSync(path.join(r, 'var/lib/nodesignal/state.json'), 'utf8'), '{"old":true}', 'state copied');
+  assert(fs.existsSync(path.join(r, 'home/alice/.nodesignal/state.json')), 'original kept');
+  // a second run (an upgrade) changes nothing in bitcoin.conf: no restart needed
+  const again = run();
+  assert.strictEqual(again.status, 0, again.stdout);
+  assert.strictEqual(fs.readFileSync(confFile, 'utf8'), conf);
+  assert(!/restart bitcoind/i.test(again.stdout), again.stdout);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(r, 'etc/nodesignal/config.json'), 'utf8'))['rpc-pass'], cfg['rpc-pass']);
+  // purge's job, as postrm does it, restores bitcoin.conf
+  const purge = spawnSync('sh', [path.join(ROOT, 'packaging/deb/postrm'), 'purge'], { encoding: 'utf8', env: Object.assign({}, process.env, { NODESIGNAL_TEST_ROOT: r }) });
+  assert.strictEqual(purge.status, 0, purge.stdout + purge.stderr);
+  assert.strictEqual(fs.readFileSync(confFile, 'utf8'), origConf, 'purge removes exactly our lines');
+  assert(!fs.existsSync(path.join(r, 'etc/nodesignal')));
+  assert(fs.existsSync(path.join(r, 'var/lib/nodesignal/state.json')), 'purge never deletes identity or history');
+});
+
+t('cli setup on a fresh machine writes a new config', async () => {
+  const { r } = fakeRoot('deb2', { conf: 'server=1\n' });
+  const out = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r, '--nick', 'fresh'], { encoding: 'utf8', timeout: 30000 });
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  const cfg = JSON.parse(fs.readFileSync(path.join(r, 'etc/nodesignal/config.json'), 'utf8'));
+  assert.deepStrictEqual(Object.keys(cfg).sort(), ['data', 'nick', 'rpc-pass', 'rpc-url', 'rpc-user']);
+  assert.strictEqual(cfg.nick, 'fresh');
+  assert.strictEqual(cfg['rpc-url'], 'http://127.0.0.1:8332');
+  assert(fs.statSync(path.join(r, 'var/lib/nodesignal')).isDirectory());
 });
 
 (async () => {

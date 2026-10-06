@@ -121,26 +121,59 @@ jobs:
       - name: Install, run under systemd against the mock node, purge
         if: matrix.arch == 'amd64'
         run: |
-          nohup node -e "require('./tests/mock-node.js').rpcServer()" > "$RUNNER_TEMP/mock.log" 2>&1 &
-          sleep 1
-          sudo env NODESIGNAL_SKIP_NODE_CHECK=1 dpkg -i dist/nodesignal-linux-amd64.deb
+          # a fake node: its own user, a data directory and a bitcoin.conf the
+          # mock reads rpcauth / rpcwhitelist from, like bitcoind (at start only)
+          sudo useradd --system --create-home --home-dir /home/bitcoin bitcoin
+          sudo -u bitcoin mkdir -p /home/bitcoin/.bitcoin/blocks
+          printf 'server=1\nrpcport=18332\n' | sudo -u bitcoin tee /home/bitcoin/.bitcoin/bitcoin.conf >/dev/null
+          sudo chmod 600 /home/bitcoin/.bitcoin/bitcoin.conf
+          sudo cp -p /home/bitcoin/.bitcoin/bitcoin.conf "$RUNNER_TEMP/bitcoin.conf.orig"
+          echo '__cookie__:never-used' | sudo -u bitcoin tee /home/bitcoin/.bitcoin/.cookie >/dev/null
+          start_mock() {
+            sudo nohup "$(command -v node)" tests/mock-node.js --conf /home/bitcoin/.bitcoin/bitcoin.conf --no-p2p >> "$RUNNER_TEMP/mock.log" 2>&1 &
+            echo $! > "$RUNNER_TEMP/mock.pid"
+            sleep 1
+          }
+          start_mock
+
+          sudo dpkg -i dist/nodesignal-linux-amd64.deb | tee "$RUNNER_TEMP/install.log"
+          grep -q 'Restart your Bitcoin node' "$RUNNER_TEMP/install.log"
           nodesignal version
-          # point the installed service at the mock node (CI only: credentials in the config file)
-          sudo /opt/nodesignal/node -e '
-            const c = require("/opt/nodesignal/setup-core.js"), f = "/etc/nodesignal/config.json";
-            c.writeConfig(f, Object.assign(c.readConfig(f), { "rpc-url": "http://127.0.0.1:18332", "rpc-user": "u", "rpc-pass": "p" }));'
-          sudo systemctl restart nodesignal
-          nodesignal status --wait 30 || { sudo journalctl -u nodesignal -n 80 --no-pager; exit 1; }
+
+          # the dedicated user, never root and never the node's user
+          id nodesignal
+          test "$(systemctl show nodesignal -p User --value)" = nodesignal
+          pid="$(systemctl show nodesignal -p MainPID --value)"
+          test "$(ps -o user= -p "$pid")" = nodesignal
+          sudo test "$(sudo stat -c %U:%a /etc/nodesignal/config.json)" = nodesignal:600
+          # rpcauth + whitelist in bitcoin.conf, the password only in the config
+          sudo grep -q '^rpcauth=nodesignal:[0-9a-f]*\$[0-9a-f]\{64\}$' /home/bitcoin/.bitcoin/bitcoin.conf
+          sudo grep -qx 'rpcwhitelist=nodesignal:getblockchaininfo,getnetworkinfo,getpeerinfo' /home/bitcoin/.bitcoin/bitcoin.conf
+          pass="$(sudo /opt/nodesignal/node -p 'require("/etc/nodesignal/config.json")["rpc-pass"]')"
+          if sudo grep -qF "$pass" /home/bitcoin/.bitcoin/bitcoin.conf; then echo "::error::password in bitcoin.conf"; exit 1; fi
+          if sudo grep -q cookie /etc/nodesignal/config.json; then echo "::error::config refers to the cookie"; exit 1; fi
+
+          # "restart bitcoind", as the installer asked; NodeSignal reconnects by itself
+          sudo kill "$(cat "$RUNNER_TEMP/mock.pid")"; sleep 1
+          start_mock
+          for i in $(seq 1 50); do
+            if curl -fsS http://127.0.0.1:8789/health | grep -q '"rpcConnected":true'; then break; fi
+            sleep 2
+          done
           curl -fsS http://127.0.0.1:8789/health | node -e '
             let d = ""; process.stdin.on("data", (c) => (d += c)).on("end", () => {
               const h = JSON.parse(d);
               if (!h.rpcConnected) { console.error("RPC not connected:", d); process.exit(1); }
               console.log("health ok:", h.peerCount, "peers");
-            });'
-          systemctl show nodesignal -p User -p ProtectSystem -p NoNewPrivileges
+            });' || { sudo journalctl -u nodesignal -n 80 --no-pager; cat "$RUNNER_TEMP/mock.log"; exit 1; }
+          nodesignal status
+          systemctl show nodesignal -p User -p ProtectSystem -p ProtectHome -p NoNewPrivileges
+
           sudo dpkg --purge nodesignal
           test ! -e /etc/nodesignal
+          sudo cmp /home/bitcoin/.bitcoin/bitcoin.conf "$RUNNER_TEMP/bitcoin.conf.orig"   # purge removed exactly our lines
           sudo test -f /var/lib/nodesignal/state.json   # state survives a purge
+          sudo kill "$(cat "$RUNNER_TEMP/mock.pid")" || true
 
   windows:
     name: Windows .exe (build and selftest)
