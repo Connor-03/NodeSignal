@@ -4,13 +4,13 @@ Encrypted chat between Bitcoin node operators. It runs beside Bitcoin
 Core or Knots, uses your node to discover and identify peers, and serves
 its own web interface.
 
-**Messages are not sent over the Bitcoin P2P network.** They cannot be —
+**Messages are not sent over the Bitcoin P2P network.** They cannot be:
 the protocol has no message type that can carry chat, and nodes drop
 peers that send unknown data. NodeSignal is honest about the split:
 
 | Layer | Source |
 |---|---|
-| **Discovery** | `getpeerinfo` — your map is your node's real peer list |
+| **Discovery** | `getpeerinfo`: your map is your node's real peer list |
 | **Identity** | a real `version`/`verack` handshake on port 8333 |
 | **Transport** | a separate encrypted channel on port 8788 |
 
@@ -20,7 +20,7 @@ peers that send unknown data. NodeSignal is honest about the split:
 - End-to-end encrypted, with forward secrecy and key pinning
 - Bitcoin Core and Bitcoin Knots, including pruned nodes
 - Tor, Tailscale, IPv4 and IPv6
-- **Zero dependencies** — Node.js and nothing else
+- **Zero dependencies**: Node.js and nothing else
 - Self-hosted web interface
 
 ## How it works
@@ -40,7 +40,7 @@ Your Bitcoin node
 | Platform | Guide |
 |---|---|
 | Ubuntu / Linux | `LinuxInstallGuide.txt` |
-| Windows | `WindowsInstallGuide.txt` — run `install-windows.bat` |
+| Windows | `WindowsInstallGuide.txt`: run `install-windows.bat` |
 | Tor (recommended) | `TorSetupGuide.txt` |
 
 On Windows the installer asks a short series of questions and verifies
@@ -58,8 +58,8 @@ On Linux, `install-node.sh` installs a systemd service.
 | `nodesignald.js` | the daemon |
 | `noise.js` | encryption (X25519 / ChaCha20-Poly1305) |
 | `nodeps.js` | http + websocket layer, replaces express/ws |
-| `nodesignal.html` | operator console — for a machine with a node |
-| `nodesignal-demo.html` | demo build — for a machine without one |
+| `nodesignal.html` | operator console: for a machine with a node |
+| `nodesignal-demo.html` | demo build: for a machine without one |
 | `install.js` + `install-windows.bat` | Windows installer |
 | `install-node.sh` | Linux installer |
 
@@ -92,7 +92,7 @@ because two of them are genuinely sensitive:
 | `nodesignal-config.json` | your RPC **password** and web login token, in plain text |
 | `state.json` / `~/.nodesignal/` | your **private identity key** and full message history |
 | `run-nodesignal.*` | generated per machine by the installer |
-| `node_modules/` | not used — NodeSignal has no dependencies |
+| `node_modules/` | not used: NodeSignal has no dependencies |
 
 If you ever commit `state.json` by accident, treat that identity as burned:
 delete it, restart the daemon to generate a new keypair, and tell your
@@ -114,7 +114,7 @@ Worth knowing before you run it:
 - Messages are stored **decrypted at rest**.
 - Running it **links a social identity to a node IP**. That is inherent
   to the design, and the reason to prefer Tor.
-- Content is encrypted; **metadata is not** — who talks to whom, and
+- Content is encrypted; **metadata is not**: who talks to whom, and
   when, is visible to anyone positioned to watch.
 - Every claim a peer makes about its node is **self-declared**.
 
@@ -135,4 +135,4 @@ reachable.
 
 ## License
 
-MIT — see `LICENSE`.
+MIT: see `LICENSE`.

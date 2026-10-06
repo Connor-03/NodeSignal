@@ -110,7 +110,9 @@ IP, a hostname, a domain, or a reverse proxy with no configuration.
 | File | Role |
 |---|---|
 | `nodesignald.js` | The daemon. RPC discovery, identify, messaging, web server. |
-| `noise.js` | Noise-XX handshake: X25519, HKDF-SHA256, ChaCha20-Poly1305. |
+| `noise.js` | Noise_XX_25519_ChaChaPoly_SHA256 (v3, standard, test-vector checked) plus the v1.2 handshake as `noise.legacy` for one release. |
+| `store.js` | History at rest: scrypt passphrase vault + X25519 sealed boxes per message. |
+| `portmap.js` | Opt-in UPnP IGD / NAT-PMP port mapping. |
 | `nodeps.js` | Static file server + RFC 6455 WebSocket server, stdlib only. |
 | `nodesignal.html` | **Operator console.** Real data only. Goes on a node. |
 | `nodesignal-demo.html` | **Retired.** Removed from the tree in `2d479c6`; the maintainer considers it obsolete. Do not restore it. The demo-only rules below apply only if it ever returns. |
@@ -136,7 +138,16 @@ IP, a hostname, a domain, or a reverse proxy with no configuration.
 `--peer-port`, `--web-token`, `--bind`, `--no-rpc`, `--rpc-user`,
 `--rpc-pass`, `--rpc-cookie`, `--rpc-conf`, `--tor-proxy`, `--tor-all`,
 `--impersonate`, `--impersonate-height`, `--max-conns`, `--rl-burst`,
-`--rl-refill-ms`.
+`--rl-refill-ms`, `--port-mapping` (opt-in), `--checkin-ms` (default 180000,
+0 disables), `--retry-scale` (tests only).
+
+Peer protocol (v3): length-prefixed frames, Noise XX handshake (msg1 32
+bytes; a 44-byte msg1 is the v1.2 handshake), then JSON frames `hello`,
+`msg` {id, ts, text}, `ack` {id}, `ping`/`pong`. Either side of a link may
+send `msg`; the dialling side hangs up when idle. Outgoing message status:
+`sending` -> `delivered`, or `pending` (retrying, with `error` and
+`nextTry`) -> `failed` (gave up or cancelled). The console adds its own
+`queued` for messages typed while the daemon is unreachable.
 
 State (contacts, history, private identity key) lives in
 `~/.nodesignal/state.json`. Upgrades must never touch it.
@@ -203,8 +214,17 @@ status table. Keep it current whenever security changes.
 
 **Done**
 - Noise-XX handshake replaced the shared PIN: mutual authentication, forward
-  secrecy, persistent X25519 identity per daemon.
-- TOFU key pinning. A changed key is REJECTED with a red banner.
+  secrecy, persistent X25519 identity per daemon. Since v1.3 it is the
+  standard Noise_XX_25519_ChaChaPoly_SHA256, checked against the cacophony and
+  snow vectors (`tests/noise.test.js`). v1.2 peers are still answered; remove
+  `noise.legacy` and the v2 branches in the release after v1.3.
+- TOFU key pinning. A changed key is REJECTED with a red banner and held as
+  `pendingFp` until the operator accepts it (echoing the exact fingerprint)
+  or keeps the old one.
+- History at rest (v1.3): optional passphrase; text sealed on arrival, the
+  daemon receives while locked. The PIN code is gone.
+- Every peer-supplied field is validated and capped; claimed node info never
+  overwrites what we measured over :8333.
 - No persisted state before a completed handshake (closes the disk-exhaustion
   DoS that could take bitcoind down with it).
 - Rate limiting per source block (/32 IPv4, /64 IPv6), which defeats IPv6
@@ -218,7 +238,12 @@ status table. Keep it current whenever security changes.
   authenticates the `/ws` upgrade. Never put the token in a query string.
 
 **Still open, in honest terms**
-- Messages are stored decrypted at rest in `state.json`.
+- Without a passphrase, messages are stored in the clear in `state.json`;
+  with one, metadata and the identity key are still readable by the daemon's
+  user.
+- No outside review of the daemon yet (vectors only prove `noise.js`).
+- Opt-in features that cost privacy: `uacomment=nodesignal` advertising and
+  router port mapping. Keep both off by default.
 - Running NodeSignal links a social identity to a node IP. Inherent to the
   design; Tor is the mitigation.
 - Metadata (who, when, how often) is not hidden.
@@ -241,7 +266,10 @@ status table. Keep it current whenever security changes.
    enabled, and when the daemon is disconnected the message is held and
    labeled honestly as "queued", then sent on reconnect. Currently
    `sendMsg()` toasts "daemon not connected" and discards it.
-3. **Add a real test suite.** Started: `tests/console.test.js` (static
+3. **Add a real test suite.** v1.3 adds `noise.test.js` (vectors),
+   `store.test.js`, `daemon.test.js` (real daemons: delivery, reply over the
+   peer's link, retry, dedupe, v1.2 interop, key change, vault, hostile
+   input) and `portmap.test.js`. Earlier: `tests/console.test.js` (static
    checks, plain node), `tests/console.e2e.js` (two daemons + mock node,
    optional Playwright, skips without it) and `tests/mock-node.js` (mock
    RPC and :8333). Still to add, in the same `tests/` folder runnable with plain `node` (no test framework, keep zero
@@ -258,12 +286,13 @@ status table. Keep it current whenever security changes.
 
 ### Then
 
-4. **Encrypt state at rest**, or stop persisting decrypted plaintext.
-5. **Retire the legacy v1 PIN code path** in `nodesignald.js` once nothing
-   depends on it, along with `encMsg`/`decMsg` and the `contact.pin` message.
-6. **Reinstall flow for TOFU.** Today a peer who reinstalls must be removed
-   and re-added. Consider an explicit, deliberate "accept new key" action
-   that shows both fingerprints.
+4. **[DONE v1.3, passphrase-to-read]** Encrypt state at rest.
+5. **[DONE v1.3]** Retire the legacy v1 PIN code path.
+6. **[DONE v1.3]** Reinstall flow for TOFU ("accept new key" with both
+   fingerprints shown).
+6b. **Next release:** drop `noise.legacy` and the v2 dial/answer branches.
+6c. **Outside review** of `nodesignald.js` + `noise.js` before calling it
+   reviewed anywhere.
 7. **Docs:** add `rpcwhitelist=nodesignal:getpeerinfo,getnetworkinfo,getblockchaininfo`
    to the Linux installer's output as a recommended hardening step.
 
@@ -279,7 +308,10 @@ status table. Keep it current whenever security changes.
   retire the v1 PIN path; a deliberate "accept new key" flow showing both
   fingerprints; check `noise.js` against Noise spec test vectors and get an
   outside review before presenting it as reviewed.
-- **Making it actually work, all four are real blockers:** reaching operators
+- **Making it actually work** (v1.3 builds all four: reply over the peer's
+  own connection so only one side needs to be reachable, daemon retry queue
+  with check-ins, `uacomment=nodesignal` advertising, opt-in UPnP/NAT-PMP).
+  The original blockers: reaching operators
   behind NAT (8788 unreachable without Tailscale or Tor); finding which peers
   run NodeSignal at all; offline delivery (hold and retry instead of failing);
   setup friction (RPC credentials, ports, launch steps).
