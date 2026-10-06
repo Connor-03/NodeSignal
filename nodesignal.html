@@ -294,6 +294,22 @@
   .bubble.me.queued .ts{color:var(--amber);opacity:.85}
   .bubble.me.failed{background:rgba(255,69,58,.10);color:#ff9a93;border:1px dashed rgba(255,69,58,.55)}
   .bubble.me.failed .ts{color:#ff9a93;opacity:.9}
+  .bubble.me.pending{background:rgba(255,209,102,.07);color:var(--amber);border:1px dashed rgba(255,209,102,.5)}
+  .bubble.me.pending .ts{color:var(--amber);opacity:.85}
+  .bubble.me.locked{background:rgba(247,147,26,.08);color:var(--btc-bright);border:1px solid rgba(247,147,26,.35);font-family:var(--mono);font-size:var(--fs-xs)}
+  .bubble.me.locked .ts{color:var(--btc-bright)}
+  .lockstrip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;align-self:stretch;margin-bottom:var(--s3);padding:10px 14px;border-radius:var(--r);
+    background:rgba(247,147,26,.06);border:1px solid rgba(247,147,26,.3);color:var(--btc-bright);font-size:var(--fs-sm)}
+  .lockstrip span{flex:1;min-width:180px}
+  .keycard{align-self:stretch;margin-bottom:var(--s3);padding:14px 16px;border-radius:var(--r-lg);background:rgba(255,69,58,.06);
+    border:1px solid rgba(255,69,58,.35);color:var(--ink-dim);font-size:var(--fs-sm);line-height:1.55}
+  .keycard b{display:block;color:#ff8078;font-family:var(--display);font-weight:600;font-size:var(--fs-md);margin-bottom:4px}
+  .keycard .fps{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:10px 0;font-family:var(--mono);font-size:var(--fs-xs)}
+  .keycard .fps span:nth-child(odd){color:var(--ink-faint)}
+  .keycard .fps code{background:none;padding:0;color:var(--ink);letter-spacing:.5px;word-break:break-all}
+  .keycard .fps code.new{color:#ff9a93}
+  .keycard .acts{display:flex;gap:var(--s2);flex-wrap:wrap;margin-top:6px}
+  .modal .err{color:#ff8078;font-size:var(--fs-xs);min-height:16px}
   .bubble .why{display:block;margin-top:4px;font-family:var(--mono);font-size:var(--fs-2xs);white-space:normal;opacity:.95}
   .bubble .retry{appearance:none;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer;padding:0;margin-left:6px;font:inherit}
   .intro{align-self:center;max-width:460px;width:100%;margin:auto 0;text-align:center;color:var(--ink-dim);font-size:var(--fs-sm);line-height:1.6;
@@ -553,6 +569,29 @@
   </div>
 </div>
 
+<!-- history passphrase: set / unlock / change -->
+<div class="scrim" id="vault-scrim">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="vault-title">
+    <div class="modal-head">
+      <div class="mt"><b id="vault-title">History passphrase</b><span id="vault-sub"></span></div>
+      <button class="x" onclick="closeVault()" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field" id="vf-old-wrap"><label for="vf-old">Current passphrase</label><input id="vf-old" type="password" autocomplete="current-password"/></div>
+      <div class="field"><label for="vf-pass" id="vf-pass-label">Passphrase</label>
+        <input id="vf-pass" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter')submitVault()"/></div>
+      <div class="field" id="vf-again-wrap"><label for="vf-again">Type it again</label>
+        <input id="vf-again" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter')submitVault()"/></div>
+      <div class="callout" id="vf-note"></div>
+      <div class="err" id="vf-err"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" onclick="closeVault()">Cancel</button>
+      <button class="btn primary" id="vf-go" onclick="submitVault()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- status drawer -->
 <div class="drawer-scrim" id="drawer-scrim" onclick="toggleDrawer(false)"></div>
 <aside class="drawer" id="drawer" aria-label="Status">
@@ -645,7 +684,7 @@ function handle(m){
       if(msg.from==='them'){
         const viewing = state.active===p.id && state.tab==='msgs';
         if(viewing)send({type:'chat.read',host:p.host});
-        else{ p.unread=m.unread!=null?m.unread:p.unread+1; notify(p,msg.text,msg.locked); }
+        else{ p.unread=m.unread!=null?m.unread:p.unread+1; notify(p,msg.text,msg.lockKind); }
         pulse(p);
       }
       renderAll(); break;
@@ -653,17 +692,27 @@ function handle(m){
     case 'chat.status': {
       const p=byHost(m.host); if(!p)break;
       const msg=p.msgs.find(x=>x.id===m.id);
-      if(msg){msg.status=m.status; if(m.error)msg.error=m.error;}
+      if(msg){msg.status=m.status; msg.error=m.error||null; msg.nextTry=m.nextTry||null;}
       if(m.status==='failed')toast('not delivered: '+(m.error||'unknown error'));
       renderAll(); break;
     }
     case 'chat.readack': { const p=byHost(m.host); if(p){p.unread=0;renderAll();} break; }
     case 'security':
-      if(m.kind==='fp-mismatch'){
-        toast('⚠ identity mismatch for '+m.host+': connection rejected');
-        state.security={host:m.host,expected:m.expected,got:m.got};
-        renderChrome();
-      }
+      // The contact update that follows carries pendingFp; the banner and the
+      // thread's review card are driven from that, so they survive a reload.
+      if(m.kind==='fp-mismatch')toast('⚠ identity mismatch for '+m.host+': connection rejected');
+      break;
+    case 'vault':
+      closeVault();
+      toast(m.op==='set'?'history passphrase set; stored messages are now sealed':m.op==='unlock'?'history unlocked':'passphrase changed');
+      break;
+    case 'portmap':
+      if(state.daemon){state.daemon.portMapping=m.status;renderChrome();if(document.getElementById('drawer').classList.contains('open'))renderDrawer();}
+      break;
+    case 'error':
+      if(/^vault\./.test(m.op||'')&&document.getElementById('vault-scrim').classList.contains('show')){
+        document.getElementById('vf-err').textContent=m.error;document.getElementById('vf-go').disabled=false;
+      }else toast(m.error||'error');
       break;
     case 'identified':
       if(m.error)toast('identify: '+m.error);
@@ -671,7 +720,8 @@ function handle(m){
       break;
   }
 }
-const wireMsg=w=>({id:w.id,from:w.from,ts:w.ts,text:w.text,locked:!!w.locked,status:w.status||null,error:w.error||null});
+const wireMsg=w=>({id:w.id,from:w.from,ts:w.ts,text:w.text,locked:!!w.locked,lockKind:w.lockKind||null,status:w.status||null,
+  error:w.error||null,nextTry:w.nextTry||null,attempts:w.attempts||0});
 const byHost=h=>state.peers.find(p=>p.host===h);
 
 /* ===================== OUTBOX =====================
@@ -723,12 +773,13 @@ function rebuild(nodePeers, contacts){
       if(np.latency!=null){existing.latency=np.latency;existing.unmeasured=false;}
       if(!existing.ua&&np.ua)existing.ua=np.ua;
       if(existing.impl==='Unknown'&&np.impl)existing.impl=np.impl;
+      if(np.nodesignal)existing.ns=np.nodesignal;
       if(!existing.version&&np.version)existing.version=np.version;
       existing.inbound=np.inbound; existing.isNodePeer=true;
       continue;
     }
     next.push({
-      id:uid(), kind:'peer', host, addr:np.addr, port:8788,
+      id:uid(), kind:'peer', host, addr:np.addr, port:(np.nodesignal&&np.nodesignal.port)||8788, ns:np.nodesignal||null,
       nick:'', impl:np.impl||'Unknown', version:np.version||'', ua:np.ua||null,
       declared:np.declared||[], supports:[], services:[], network:null,
       height:np.height??null, latency:np.latency??null, unmeasured:np.latency==null,
@@ -757,6 +808,8 @@ function contactModel(c,angles){
     // SOLID green tether and persists even after they go offline.
     established:!!c.established,
     peerFp:c.peerFp||null,
+    pendingFp:c.pendingFp||null,   // a different key was presented and rejected; awaiting review
+    proto:c.proto||null,
     // online = established AND seen within the daemon's freshness window. Drives
     // the blinking dot, only shown for peers we could actually message now.
     online:!!c.online,
@@ -774,6 +827,7 @@ function upsertContact(c){
     if(fresh.latency==null&&old.latency!=null){fresh.latency=old.latency;fresh.unmeasured=false;}
     if(fresh.impl==='Unknown'&&old.impl!=='Unknown'){fresh.impl=old.impl;fresh.version=old.version;fresh.ua=fresh.ua||old.ua;}
     fresh.isNodePeer=old.isNodePeer;
+    fresh.ns=old.ns||null;
     state.peers[i]=fresh;
   }
   layoutDirty=true;
@@ -1067,6 +1121,7 @@ function showTip(p,g){
     if(p.peerFp)rows.push(['identity',p.peerFp.slice(0,16)+'…']);
     rows.push(['link',p.online?'online now':p.established?'established, offline':'not yet replied']);
   }
+  if(p.ns)rows.push(['NodeSignal','advertised in user agent']);
 
   const dec=p.declared||[],sup=p.supports||[];
   let chips=`<div class="row"><span class="k">signaling</span></div>
@@ -1113,7 +1168,10 @@ function dayLabel(ts){
 const threadMsgs=p=>p.msgs.concat(queuedFor(p.host).map(q=>({id:q.qid,from:'me',ts:q.ts,text:q.text,status:'queued'})));
 const lastMsg=p=>{const a=threadMsgs(p);return a[a.length-1];};
 const nameOf=p=>p.nick||p.host;
-const LOCKED_TXT='🔒 legacy PIN-encrypted message. This console no longer handles PINs, so it cannot be shown.';
+const LOCKED_TXT={legacy:'🔒 legacy PIN-encrypted message. PINs were retired in v1.3, so it cannot be shown.',
+  vault:'🔒 locked: unlock your history to read this message'};
+const vaultState=()=>(state.daemon&&state.daemon.vault)||{set:false,unlocked:false};
+const fpGroups=fp=>String(fp).match(/.{1,4}/g).join(' ');
 
 function linkState(p){
   if(p.kind!=='contact')return {cls:'dash',txt:'node peer · not a contact yet'};
@@ -1145,12 +1203,13 @@ function renderConvList(){
     const c=color(p),m=lastMsg(p);
     let prev,cls='';
     if(!m){prev=esc(p.kind==='contact'?linkState(p).txt:'no messages yet');}
-    else if(m.locked){prev=esc('🔒 legacy PIN message');cls='locked';}
+    else if(m.locked){prev=esc(m.lockKind==='vault'?'🔒 locked':'🔒 legacy PIN message');cls='locked';}
     else{
-      const tag=m.status==='queued'?'<span class="q">queued · </span>':m.status==='failed'?'<span class="f">not delivered · </span>':'';
+      const tag=m.status==='queued'?'<span class="q">queued · </span>':m.status==='pending'?'<span class="q">retrying · </span>':m.status==='failed'?'<span class="f">not delivered · </span>':'';
       prev=tag+esc((m.from==='me'?'you: ':'')+(m.text||''));
     }
     const isAddr=!p.nick;
+    if(p.pendingFp)prev='<span class="f">⚠ identity key changed · review</span>';
     return `<div class="conv ${state.active===p.id?'active':''} ${p.unread?'unread':''}" onclick="openChat('${p.id}')">
       ${state.active===p.id?`<span class="bar" style="background:${c}"></span>`:''}
       <div class="avatar" style="background:${c}22;border-color:${c};color:${c}">${glyph(p)}
@@ -1181,16 +1240,20 @@ function renderThread(){
     ? `<button class="actbtn opt" onclick="doIdentify('${p.id}')" title="Re-read their node over :8333">identify</button>
        <button class="actbtn danger" onclick="doRemove('${p.id}')">remove</button>`
     : `<button class="actbtn primary" onclick="doAddPeer('${p.id}')" title="Save as a NodeSignal contact">add as contact</button>`;
+  const hasPending=p.msgs.some(m=>m.from==='me'&&m.status==='pending');
 
   const sub=[p.impl==='Unknown'?'not identified':p.impl, p.version?p.version:null, p.addr||p.host,
     p.height!=null?('height '+Number(p.height).toLocaleString()):null].filter(Boolean).join(' · ');
 
   const enc=p.kind!=='contact'?null
-    : p.peerFp?{cls:'ok',txt:'🔒 Noise · key '+p.peerFp.slice(0,8)+'…'}
+    : p.pendingFp?{cls:'',txt:'⚠ key change rejected · review below'}
+    : p.peerFp?{cls:'ok',txt:'🔒 Noise · key '+p.peerFp.slice(0,8)+'…'+(p.proto===2?' · old v1.2 handshake':'')}
     : {cls:'wait',txt:'🔒 Noise · key pinned on first connection'};
   const pills=`<span class="pill ${ls.cls}"><span class="d"></span>${esc(ls.txt)}</span>`+
     (enc?`<span class="pill ${enc.cls}" title="${p.peerFp?esc('pinned identity '+p.peerFp):''}">${esc(enc.txt)}</span>`:'')+
-    (p.unmeasured||p.latency==null?'':`<span class="pill">${esc(p.latency+' ms')}</span>`);
+    (p.ns?`<span class="pill ok" title="its user agent carries the nodesignal comment">◈ advertises NodeSignal</span>`:'')+
+    (p.unmeasured||p.latency==null?'':`<span class="pill">${esc(p.latency+' ms')}</span>`)+
+    (hasPending?`<button class="actbtn" style="margin-left:auto" onclick="send({type:'chat.retry',host:'${esc(p.host)}'})&&toast('retrying now')">retry now</button>`:'');
 
   const head=`<div class="thread-head" style="--accent:${c}">
     <button class="icon-btn back" onclick="closeChat()" aria-label="Back to conversations">←</button>
@@ -1201,6 +1264,16 @@ function renderThread(){
 
   const all=threadMsgs(p);
   let body='',prevDay='',prev=null;
+  if(p.pendingFp)body+=`<div class="keycard"><b>This contact presented a different identity key</b>
+    The connection was rejected. Either the operator reinstalled NodeSignal, or someone else is answering at this address.
+    <div class="fps"><span>pinned</span><code>${esc(fpGroups(p.peerFp||''))}</code><span>presented</span><code class="new">${esc(fpGroups(p.pendingFp.got))}</code>
+      <span>seen</span><span>${esc(new Date(p.pendingFp.at).toLocaleString())}</span></div>
+    Ask them, over another channel you trust, to read you the fingerprint in their Status panel. Accept only if it matches the presented key.
+    <div class="acts"><button class="btn primary" onclick="acceptKey('${p.id}')">Accept new key</button>
+      <button class="btn" onclick="dismissKey('${p.id}')">Keep the old key</button></div></div>`;
+  if(vaultState().set&&!vaultState().unlocked&&p.msgs.some(m=>m.lockKind==='vault'))
+    body+=`<div class="lockstrip"><span>🔒 History is locked. New messages still arrive; unlock to read them.</span>
+      <button class="btn primary" onclick="openVault('unlock')">Unlock</button></div>`;
   for(let i=0;i<all.length;i++){
     const m=all[i];
     const dl=dayLabel(m.ts);
@@ -1210,18 +1283,22 @@ function renderThread(){
     const gap=prev&&(prev.from!==m.from||(m.ts-prev.ts)>5*60000);
     prev=m;
     const shape=(tail?' tail':'')+(gap?' gap':'');
-    if(m.locked){ body+=`<div class="bubble them locked${shape}">${esc(LOCKED_TXT)}<span class="ts">${clock(m.ts)}</span></div>`; continue; }
     const st=m.status;
-    const cls=m.from+(st==='sending'?' sending':st==='failed'?' failed':st==='queued'?' queued':'');
-    const tailTxt=st==='sending'?' · sending…':st==='failed'?' · not delivered':st==='delivered'?' · delivered':st==='queued'?' · queued, waiting for the daemon':'';
-    const why=st==='failed'?`<span class="why">${esc(m.error||'no reason given')}<button class="retry" data-mid="${esc(m.id)}" onclick="resend(this.dataset.mid)">send again</button></span>`:'';
+    const tailTxt=st==='sending'?' · sending…':st==='failed'?' · not delivered':st==='delivered'?' · delivered':
+      st==='queued'?' · queued, waiting for the daemon':st==='pending'?' · not delivered yet, retrying'+(m.nextTry?' at '+clock(m.nextTry):''):'';
+    if(m.locked){ body+=`<div class="bubble ${m.from} locked${shape}">${esc(LOCKED_TXT[m.lockKind]||LOCKED_TXT.legacy)}<span class="ts">${clock(m.ts)}${tailTxt}</span></div>`; continue; }
+    const cls=m.from+(st==='sending'?' sending':st==='failed'?' failed':st==='queued'?' queued':st==='pending'?' pending':'');
+    const why=st==='failed'?`<span class="why">${esc(m.error||'no reason given')}<button class="retry" data-mid="${esc(m.id)}" onclick="resend(this.dataset.mid)">send again</button></span>`
+      :st==='pending'?`<span class="why">${esc(m.error||'')}<button class="retry" data-mid="${esc(m.id)}" onclick="cancelMsg(this.dataset.mid)">cancel</button></span>`:'';
     body+=`<div class="bubble ${cls}${shape}">${esc(m.text)}${why}<span class="ts">${clock(m.ts)}${tailTxt}</span></div>`;
   }
 
   if(!all.length){
     body = p.kind==='contact'
       ? `<div class="intro"><b>Say hello</b>Messages go straight to this operator's daemon, end to end encrypted. No server in between.<br><span class="where">${esc(p.host)}:${esc(p.port)}</span></div>`
-      : `<div class="intro"><b>A peer of your Bitcoin node</b>It isn't a NodeSignal contact yet. A message only arrives if its operator runs nodesignald on port 8788; if not, you'll see why it failed.<br><span class="where">${esc(p.host)}</span></div>`;
+      : p.ns
+      ? `<div class="intro"><b>This peer advertises NodeSignal</b>Its user agent carries the nodesignal comment, so its operator says they run nodesignald. That's self-declared. Your message goes to their daemon and waits there for a reply.<br><span class="where">${esc(p.host)}:${esc(p.port)}</span></div>`
+      : `<div class="intro"><b>A peer of your Bitcoin node</b>It isn't a NodeSignal contact yet. A message only arrives if its operator runs nodesignald on port 8788; until then it waits and retries, and you'll see why.<br><span class="where">${esc(p.host)}</span></div>`;
   }
 
   const box=document.getElementById('msgs');
@@ -1257,6 +1334,59 @@ function openChat(id){
   switchTab('msgs'); renderAll();
 }
 function closeChat(){ state.active=null; renderAll(); }
+function cancelMsg(mid){
+  const p=state.peers.find(x=>x.id===state.active); if(!p)return;
+  send({type:'chat.cancel',host:p.host,id:mid});
+}
+function acceptKey(id){
+  const p=state.peers.find(x=>x.id===id); if(!p||!p.pendingFp)return;
+  if(!confirm('Accept the new identity key for '+nameOf(p)+'?\n\nPresented: '+fpGroups(p.pendingFp.got)+
+    '\n\nOnly do this if the operator confirmed this fingerprint through another channel.'))return;
+  send({type:'contact.acceptKey',host:p.host,fp:p.pendingFp.got});
+}
+function dismissKey(id){
+  const p=state.peers.find(x=>x.id===id); if(!p)return;
+  send({type:'contact.dismissKey',host:p.host});
+  toast('kept the pinned key; that connection stays rejected');
+}
+
+/* ===================== HISTORY PASSPHRASE ===================== */
+let vaultMode='unlock';
+function openVault(mode){
+  vaultMode=mode;
+  const T={set:['Set a history passphrase','Seals message history on this node.','Save passphrase',
+      'Every message is sealed before it touches the disk. The daemon keeps receiving while locked; you type this after each restart to read. There is no recovery: if you lose it, the history is gone (contacts are kept).'],
+    unlock:['Unlock history','Needed after every daemon restart.','Unlock','Only this daemon process holds the key, in memory, until you lock it or it restarts.'],
+    change:['Change passphrase','History stays as it is; only the key wrapping changes.','Change','At least 8 characters. A sentence you will remember beats a short password.']}[mode];
+  document.getElementById('vault-title').textContent=T[0];
+  document.getElementById('vault-sub').textContent=T[1];
+  document.getElementById('vf-go').textContent=T[2];
+  document.getElementById('vf-note').textContent=T[3];
+  document.getElementById('vf-pass-label').textContent=mode==='unlock'?'Passphrase':'New passphrase';
+  document.getElementById('vf-old-wrap').style.display=mode==='change'?'':'none';
+  document.getElementById('vf-again-wrap').style.display=mode==='unlock'?'none':'';
+  ['vf-old','vf-pass','vf-again'].forEach(i=>document.getElementById(i).value='');
+  document.getElementById('vf-err').textContent='';
+  document.getElementById('vf-go').disabled=false;
+  document.getElementById('vault-scrim').classList.add('show');
+  document.getElementById(mode==='change'?'vf-old':'vf-pass').focus();
+}
+function closeVault(){
+  document.getElementById('vault-scrim').classList.remove('show');
+  ['vf-old','vf-pass','vf-again'].forEach(i=>document.getElementById(i).value='');
+}
+function submitVault(){
+  const pass=document.getElementById('vf-pass').value,again=document.getElementById('vf-again').value,old=document.getElementById('vf-old').value;
+  const err=document.getElementById('vf-err');
+  if(vaultMode!=='unlock'){
+    if([...pass].length<8){err.textContent='at least 8 characters';return;}
+    if(pass!==again){err.textContent='the two entries differ';return;}
+  }
+  const msg=vaultMode==='set'?{type:'vault.set',passphrase:pass}:vaultMode==='unlock'?{type:'vault.unlock',passphrase:pass}:{type:'vault.change',old,passphrase:pass};
+  if(!send(msg)){err.textContent='daemon not connected';return;}
+  err.textContent=vaultMode==='unlock'?'unlocking…':'working… (this takes a moment on purpose)';
+  document.getElementById('vf-go').disabled=true;
+}
 function sendMsg(){
   const p=state.peers.find(x=>x.id===state.active); if(!p)return;
   const inp=document.getElementById('composer-in'); if(!inp)return;
@@ -1306,7 +1436,8 @@ function notifHost(){
   if(!h){h=document.createElement('div');h.className='notifs';h.id='notifs';document.body.appendChild(h);}
   return h;
 }
-function notify(peer,text,locked){
+function notify(peer,text,lockKind){
+  const locked=!!lockKind;
   const host=notifHost();
   const c=color(peer);
   const card=document.createElement('div');
@@ -1317,7 +1448,7 @@ function notify(peer,text,locked){
        <div class="av" style="background:${c}22;border-color:${c};color:${c}">${glyph(peer)}</div>
        <div class="txt">
          <div class="who" style="color:${c}">${esc(nameOf(peer))}</div>
-         <div class="prev${locked?' locked':''}">${locked?'🔒 legacy PIN-encrypted message':esc(text||'')}</div>
+         <div class="prev${locked?' locked':''}">${locked?(lockKind==='vault'?'🔒 new message: unlock your history to read it':'🔒 legacy PIN-encrypted message'):esc(text||'')}</div>
          <div class="when">now</div>
        </div>
        <button class="x" title="dismiss" aria-label="Dismiss">×</button>
@@ -1374,25 +1505,29 @@ function renderChrome(){
     }
     return;
   }
-  if(state.security){
-    const s=state.security;
-    setBanner('bad','⚠','<b>Security:</b> '+esc(s.host)+' presented a different identity key than the one pinned on first contact, so the connection was rejected. '+
-      'Either the operator reinstalled, or someone is impersonating them. Confirm with them through another channel before re-adding.',
-      ['dismiss','state.security=null;renderChrome()']);
+  const changed=state.peers.find(p=>p.pendingFp);
+  const vs=vaultState();
+  if(changed){
+    setBanner('bad','⚠','<b>Security:</b> '+esc(nameOf(changed))+' presented a different identity key than the one pinned on first contact, so the connection was rejected. '+
+      'Either the operator reinstalled, or someone is impersonating them.',['review',`openChat('${changed.id}')`]);
   }
   if(state.node){
     pulseEl.classList.add('ok');
     name.textContent=state.daemon?state.daemon.nick:'Your Node';
     desc.textContent=`${state.node.impl} ${state.node.version} · height ${Number(state.node.height).toLocaleString()}${state.node.pruned?' · pruned':''} · ${state.node.connections} peers`;
-    if(!state.security)setBanner(null);
+    if(changed){}
+    else if(vs.set&&!vs.unlocked)setBanner('warn','🔒','<b>History is locked.</b> Messages still arrive and are sealed on disk; unlock to read them.',['unlock',"openVault('unlock')"]);
+    else if(!vs.set&&!vaultNagOff())setBanner('warn','!','<b>Message history is stored unencrypted on this node.</b> Set a passphrase to seal it at rest.',['set passphrase',"openVault('set')"]);
+    else setBanner(null);
   }else{
     pulseEl.classList.add('bad');
     name.textContent=nick;
     desc.textContent='Bitcoin RPC not connected';
-    if(!state.security)setBanner('warn','₿','<b>Bitcoin RPC not connected</b>'+(state.rpcError?': <code>'+esc(state.rpcError)+'</code>':'')+
+    if(!changed)setBanner('warn','₿','<b>Bitcoin RPC not connected</b>'+(state.rpcError?': <code>'+esc(state.rpcError)+'</code>':'')+
       '. The peer map stays empty until the daemon can read getpeerinfo; messaging still works.',['details','toggleDrawer(true)']);
   }
 }
+function vaultNagOff(){ try{return localStorage.getItem('nodesignal.vaultNag')==='off';}catch{return false;} }
 function updateUnread(){
   const total=state.peers.reduce((a,p)=>a+p.unread,0),e=document.getElementById('tab-unread');
   if(total){
@@ -1401,7 +1536,6 @@ function updateUnread(){
   } else e.style.display='none';
   updateTitle(total);
 }
-const fpGroups=fp=>String(fp).match(/.{1,4}/g).join(' ');
 function renderDrawer(){
   const d=document.getElementById('drawer-body');
   const n=state.node,dm=state.daemon,ws=state.wsState;
@@ -1409,12 +1543,13 @@ function renderDrawer(){
   const pill=(cls,txt)=>`<span class="pill ${cls}"><span class="d"></span>${esc(txt)}</span>`;
   const contacts=state.peers.filter(p=>p.kind==='contact');
   const wsTxt=ws==='open'?'connected':state.everOpen?'reconnecting':'connecting';
+  const vs=vaultState();
   d.innerHTML=
     `<section class="card">
        <div class="card-h"><h4>This daemon</h4>${pill(ws==='open'?'ok':state.everOpen?'':'wait',wsTxt)}</div>
        ${kv('nick',dm?dm.nick:'n/a')}
        ${kv('version',dm?dm.ua:'n/a')}
-       ${dm?kv('encryption',dm.secure?'Noise handshake':'PIN fallback (noise.js missing)',dm.secure?'ok':'bad'):''}
+       ${dm?kv('handshake','Noise_XX_25519_ChaChaPoly_SHA256','ok'):''}
        ${kv('peer port',dm?dm.peerPort:'n/a')}
        ${state.outbox.length?kv('queued messages',state.outbox.length,'bad'):''}
        ${dm&&dm.fingerprint?`<div class="fp"><div><div class="fl">identity fingerprint · peers pin this on first contact</div>
@@ -1422,10 +1557,28 @@ function renderDrawer(){
          <button class="actbtn copy" onclick="copyFp()">copy</button></div>`:''}
      </section>
      <section class="card">
+       <div class="card-h"><h4>Message history</h4>${pill(vs.set?(vs.unlocked?'ok':'wait'):'',vs.set?(vs.unlocked?'sealed · unlocked':'sealed · locked'):'not encrypted')}</div>
+       <div class="note">${vs.set?'Message text is sealed on disk with a key only your passphrase opens. Who you talk to and when is not hidden.'
+         :'Messages are stored in the clear in state.json. Anyone who can read that file (a backup, a stolen disk) can read them.'}</div>
+       <div class="drawer-foot">${vs.set
+         ?(vs.unlocked?`<button class="btn" onclick="send({type:'vault.lock'})">Lock now</button><button class="btn" onclick="openVault('change')">Change passphrase</button>`
+           :`<button class="btn primary" onclick="openVault('unlock')">Unlock</button>`)
+         :`<button class="btn primary" onclick="openVault('set')">Set a passphrase</button>`}</div>
+     </section>
+     ${dm&&dm.portMapping?`<section class="card">
+       <div class="card-h"><h4>Router port mapping</h4>${pill(dm.portMapping.state==='mapped'?'ok':dm.portMapping.state==='failed'?'':'wait',dm.portMapping.state)}</div>
+       ${dm.portMapping.method?kv('method',dm.portMapping.method==='upnp'?'UPnP':'NAT-PMP'):''}
+       ${dm.portMapping.externalIp?kv('public address',dm.portMapping.externalIp+':'+dm.portMapping.externalPort):''}
+       ${dm.portMapping.error?`<div class="errbox">${esc(dm.portMapping.error)}</div>`:''}
+       <div class="note">Your router forwards the peer port to this machine, so anyone can reach it and your IP is public to everyone you contact. Turn it off with <code>nodesignal port-mapping off</code>.</div>
+     </section>`:''}
+     <section class="card">
        <div class="card-h"><h4>Bitcoin node</h4>${pill(n?'ok':'wait',n?'RPC connected':'RPC not connected')}</div>
        ${n?kv('implementation',n.impl)+kv('version',n.version)+kv('height',Number(n.height).toLocaleString())+kv('network',n.network)+
           kv('pruned',n.pruned?('yes, from '+Number(n.pruneHeight||0).toLocaleString()):'no')+kv('connections',n.connections)+
-          (n.declared&&n.declared.length?kv('signaling',n.declared.join(', ')):''):
+          (n.declared&&n.declared.length?kv('signaling',n.declared.join(', ')):'')+
+          kv('advertises NodeSignal',n.advertising?'yes (uacomment=nodesignal)':'no','')+
+          (n.advertising?'':`<div class="note">Let peers find you: <code>nodesignal advertise on</code>, then restart bitcoind. It is public to every peer.</div>`):
           `<div class="note">The daemon can't read your node. Peers stay off the map until it can; messaging is unaffected.</div>
            ${state.rpcError?`<div class="errbox">${esc(state.rpcError)}</div>`:''}
            <div class="note">The daemon log lists every credential path it tried. Linux, on the node: <code>journalctl -u nodesignal -n 40</code></div>`}
@@ -1438,6 +1591,7 @@ function renderDrawer(){
          <div class="stat"><b>${contacts.filter(p=>p.established).length}</b><span>established</span></div>
          <div class="stat"><b>${contacts.filter(p=>p.online).length}</b><span>online</span></div>
        </div>
+       ${kv('peers advertising NodeSignal',state.peers.filter(p=>p.ns).length)}
      </section>
      <div class="note">Peers come from <code>getpeerinfo</code> on this node. Contacts are operators running nodesignald; messages travel directly between daemons on <code>:8788</code>, encrypted by the daemon.</div>
      <div class="drawer-foot">
@@ -1481,7 +1635,8 @@ function toast(m){
 function renderAll(){ renderChrome(); renderRadar(); renderConvList(); renderThread(); updateUnread(); if(document.getElementById('drawer').classList.contains('open'))renderDrawer(); }
 
 document.getElementById('scrim').addEventListener('click',e=>{if(e.target.id==='scrim')closeAdd();});
-window.addEventListener('keydown',e=>{if(e.key==='Escape'){closeAdd();toggleDrawer(false);}});
+document.getElementById('vault-scrim').addEventListener('click',e=>{if(e.target.id==='vault-scrim')closeVault();});
+window.addEventListener('keydown',e=>{if(e.key==='Escape'){closeAdd();closeVault();toggleDrawer(false);}});
 
 renderChrome();
 renderAll();
