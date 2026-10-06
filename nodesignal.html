@@ -1297,7 +1297,7 @@ function renderThread(){
     body = p.kind==='contact'
       ? `<div class="intro"><b>Say hello</b>Messages go straight to this operator's daemon, end to end encrypted. No server in between.<br><span class="where">${esc(p.host)}:${esc(p.port)}</span></div>`
       : p.ns
-      ? `<div class="intro"><b>This peer advertises NodeSignal</b>Its user agent carries the nodesignal comment, so its operator says they run nodesignald. That's self-declared. Your message goes to their daemon and waits there for a reply.<br><span class="where">${esc(p.host)}:${esc(p.port)}</span></div>`
+      ? `<div class="intro"><b>This peer advertises NodeSignal</b>Its user agent carries the nodesignal comment, so its operator says they run nodesignald. That's self-declared. Your message goes straight to their daemon; if it isn't there, yours keeps retrying.<br><span class="where">${esc(p.host)}:${esc(p.port)}</span></div>`
       : `<div class="intro"><b>A peer of your Bitcoin node</b>It isn't a NodeSignal contact yet. A message only arrives if its operator runs nodesignald on port 8788; until then it waits and retries, and you'll see why.<br><span class="where">${esc(p.host)}</span></div>`;
   }
 

@@ -7,21 +7,35 @@
 > proof of concept, here is the threat model, here is what I have already
 > hardened, and here is what I would still not trust it with."
 
+> **Update (v1.3):** the handshake is now standard Noise_XX_25519_ChaChaPoly_SHA256,
+> checked against published test vectors; message text can be sealed at rest
+> under a passphrase; the shared-PIN code is gone; a changed key is reviewed and
+> accepted deliberately instead of remove-and-re-add; every peer-supplied field
+> is validated. Two new opt-in features (user-agent advertising and router port
+> mapping) trade privacy for reach, and are listed below as new risks.
+
 ## Status summary
 
 | Risk | State |
 |---|---|
 | Weak PIN / no key exchange | **[FIXED]** — replaced with a Noise-XX X25519 handshake |
+| Custom "Noise-like" handshake, unverifiable | **[FIXED in v1.3]**: standard Noise_XX_25519_ChaChaPoly_SHA256, passes the cacophony and snow test vectors. The old handshake is still answered for one release so v1.2 peers keep working |
+| Legacy PIN code path still shipped | **[FIXED in v1.3]**: PBKDF2/AES-GCM line protocol, `contact.pin` and stored PINs removed |
+| Reinstalled peer = remove and re-add | **[FIXED in v1.3]**: the new key is held for review; accepting must echo the exact presented fingerprint |
+| Hostile field values from authenticated peers | **[FIXED in v1.3]**: every field type-checked, length-capped, control characters stripped; claims never overwrite measured node data |
 | No forward secrecy | **[FIXED]** — ephemeral keys per session |
 | No peer authentication / MITM | **[FIXED]** — mutual static-key auth + TOFU pinning |
 | Unauthenticated disk-exhaustion DoS | **[FIXED]** — no persisted state before a completed handshake |
 | IPv6 spray defeats per-IP limits | **[FIXED]** — rate limit per /64 source block |
 | No connection cap | **[FIXED]** — `--max-conns`, default 128 |
 | Clearnet-exposed by default | **[MITIGATED]** — binds to Tailscale/localhost by default |
-| Plaintext at rest | **[OPEN]** — messages still stored decrypted on disk |
+| Plaintext at rest | **[MITIGATED in v1.3]**: with a passphrase, message text is sealed (scrypt + X25519 sealed boxes) and the daemon still receives while locked. Without one it is still plaintext. Metadata, and the identity key (needed unattended), stay readable by the daemon's user |
 | 66-package supply chain | **[FIXED]** — express and ws removed; zero dependencies |
 | Identity ↔ node-IP linkage | **[OPEN by design]** — inherent to the concept |
-| Metadata (timing/presence) leakage | **[OPEN]** — inherent to any direct-connection design |
+| Metadata (timing/presence) leakage | **[OPEN]** — inherent to any direct-connection design. v1.3 check-ins (every ~3 min to established contacts) make presence more visible to those contacts |
+| User-agent advertising (`uacomment=nodesignal`) | **[NEW, opt-in]**: tells every peer of your node that you run NodeSignal. Makes enumeration trivial for anyone connected to you; off by default |
+| Router port mapping (UPnP / NAT-PMP) | **[NEW, opt-in]**: opens the peer port to the internet and publishes your IP to every contact; off by default, never needed on Tailscale or Tor |
+| No independent review | **[OPEN]**: the vector tests prove `noise.js` computes the Noise spec correctly; they say nothing about the daemon around it. Nobody outside the project has audited it yet |
 
 ---
 
@@ -59,6 +73,9 @@ saying it first is worth more than any feature demo.
 ---
 
 ## 2. Measured weaknesses in the code as it stands
+
+(Measured against v1.0. Sections 2.1 and 2.2 describe the PIN design that
+v1.2 replaced and v1.3 removed; they are kept as the record.)
 
 ### 2.1 The PIN is not key exchange
 
@@ -240,6 +257,9 @@ first rather than being cornered by it.
 ## 5. What honest mitigation looks like
 
 Ordered by value per unit of work:
+
+(Progress as of v1.3: 1, 2, 4 and 6 are done; 3 is done when a passphrase is
+set; 5 is documentation; 7 has outbound SOCKS5 and hidden-service setup.)
 
 1. **Noise_XX or similar handshake with static keys.** Kills §2.1 entirely.
    Identity becomes a keypair, not an IP and a shared PIN. This is the single

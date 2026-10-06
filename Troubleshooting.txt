@@ -5,6 +5,19 @@ NodeSignal — Troubleshooting
 INSTALL
 -----------------------------------------------------------------------
 
+Installer says no Bitcoin node was found
+    The installers require Bitcoin Core or Knots on the same machine.
+    They look for its data directory, bitcoin.conf and a running
+    bitcoind. Install and start your node first. If your data directory
+    is somewhere unusual, use the from-source install and pass
+    --rpc-conf or --rpc-cookie.
+
+Windows says "Windows protected your PC"
+    The installer is not code-signed, so SmartScreen warns about it.
+    Check the file against SHA256SUMS.txt from the same release
+    (PowerShell: Get-FileHash .\NodeSignal-Setup-windows-x64.exe), then
+    choose "More info" > "Run anyway".
+
 "node is not recognized" (Windows)
     Node.js is installed but this window still has the old PATH.
     Close every Command Prompt window, open a new one, try again.
@@ -60,6 +73,18 @@ Pruned node
 MESSAGING
 -----------------------------------------------------------------------
 
+"not delivered yet, retrying"
+    Your daemon could not reach theirs and is holding the message. It
+    retries (30s at first, then up to hourly) for 7 days, 1 day if you
+    have never reached them, and sends it the moment they connect to
+    you. The bubble shows the last reason. "retry now" tries
+    immediately; "cancel" gives up on that message.
+
+"connection closed during the handshake"
+    Something on their port hung up during the handshake. Usually an
+    old daemon (v1.2 and earlier hang up on the new handshake; v1.3
+    falls back automatically), or a different program on that port.
+
 "timeout — is nodesignald running and reachable"
     Nothing is listening on the other side's peer port (8788).
       · is their daemon actually running?
@@ -77,11 +102,31 @@ A peer stays dashed and never turns solid
     exchange — their daemon must actually answer. A contact you added but
     who never replied stays dashed. That is the intended signal.
 
-"identity mismatch — rejected"
+"identity mismatch"
     That host presented a different encryption key than the one pinned on
     first contact. Either they reinstalled (their key changed), or someone
-    is impersonating them. If you know they reinstalled: remove the
-    contact and add it again to pin the new key.
+    is impersonating them. Open the conversation: it shows both
+    fingerprints. Confirm the new one with them over another channel,
+    then "Accept new key". Waiting messages are delivered after that.
+
+History is locked / messages show "unlock to read"
+    You set a history passphrase, and the daemon restarted. Unlock it
+    from the banner or Status > Message history. Messages kept arriving
+    while it was locked.
+
+Forgot the history passphrase
+    It cannot be recovered; that is the point. To carry on without it:
+    stop the daemon, open state.json and delete the "vault" entry, then
+    restart and set a new passphrase. Old messages stay sealed and
+    unreadable; contacts, pinned keys and your identity are kept.
+
+Router port mapping says "failed"
+    Your router has UPnP and NAT-PMP switched off, or you are behind a
+    second NAT (a carrier-grade NAT, or a modem plus your own router).
+    The Status panel shows which. Turn on UPnP in the router, use
+    Tailscale or Tor instead, or rely on the other operator being
+    reachable: only one of you needs to be.
+
 
 A peer shows "not identified"
     Nothing answered on its port 8333. Normal for machines with no
@@ -99,12 +144,10 @@ Page will not load
     (Tailscale down, firewall, or the daemon bound to localhost only),
     not NodeSignal.
 
-Page loads but is blank, or the header shows a placeholder
-    You are serving the DEMO interface over http:// to an IP address.
-    The demo build uses the browser Web Crypto API, which only exists in
-    a "secure context" — file:// and localhost qualify, http://<ip> does
-    not. On a node, install nodesignal.html (the operator console), which
-    performs no browser cryptography.
+Page loads but is blank
+    An old nodesignal-demo.html is being served. The demo build is
+    retired; delete it so the daemon serves nodesignal.html, which needs
+    no browser cryptography and works over plain http.
 
 Asks for a token you do not have
     The token is in nodesignal-config.json as "web-token". To remove the

@@ -37,10 +37,14 @@ srv.listen(0, '127.0.0.1', async () => {
   const g = (await pg.$$('.peer-g'))[3]; if (g) { await g.hover(); await pg.waitForTimeout(300); await shot(pg, 'desktop-constellation-tooltip'); }
   await pg.mouse.move(5, 300);
   await chat(pg, '203.0.113.42'); await pg.waitForTimeout(400); await shot(pg, 'desktop-chat');
-  await chat(pg, '198.51.100.77'); await pg.waitForTimeout(300); await shot(pg, 'desktop-chat-failed');
+  await chat(pg, '198.51.100.77'); await pg.waitForTimeout(300); await shot(pg, 'desktop-chat-retrying');
+  await chat(pg, '203.0.113.88'); await pg.waitForTimeout(300); await shot(pg, 'desktop-key-change-review');
+  await pg.evaluate(() => openChat(state.peers.find((p) => p.ns).id)); await pg.waitForTimeout(300); await shot(pg, 'desktop-advertised-peer');
   await pg.evaluate(() => toggleDrawer(true)); await pg.waitForTimeout(400); await shot(pg, 'desktop-status');
   await pg.evaluate(() => { toggleDrawer(false); switchTab('peers'); openAdd(); }); await pg.waitForTimeout(300); await shot(pg, 'desktop-add-contact');
   await pg.close();
+  pg = await open(1440, 900, 'locked'); await chat(pg, '203.0.113.42'); await pg.waitForTimeout(300); await shot(pg, 'desktop-history-locked');
+  await pg.evaluate(() => openVault('unlock')); await pg.waitForTimeout(200); await shot(pg, 'desktop-unlock'); await pg.close();
   pg = await open(1440, 900, 'norpc'); await shot(pg, 'desktop-waiting-for-rpc'); await pg.close();
   pg = await open(1440, 900, 'slow', 1.25); await shot(pg, 'desktop-connecting'); await pg.close();
   pg = await open(390, 844, 'ok', 3);
