@@ -86,6 +86,30 @@ http anywhere else it is not.
 
 
 -----------------------------------------------------------------------
+THE WEB CONSOLE
+-----------------------------------------------------------------------
+The console on port 8789 can unlock your history and accept a changed
+key, so it is locked down to this machine:
+
+  · it listens on 127.0.0.1 only, whatever "bind" says ("bind" now sets
+    the peer port only)
+  · it answers only to Host localhost:8789 or 127.0.0.1:8789, so a web
+    page cannot reach it by pointing its own domain at 127.0.0.1 (DNS
+    rebinding)
+  · requests and WebSocket connections whose Origin is any other site
+    are refused
+  · every action that changes something (unlock, accept a key change,
+    retry or cancel, add or remove a contact, send) must carry a random
+    token issued at each daemon start and written only into the page the
+    daemon serves. It never appears in a URL, a cookie or the log.
+
+From another computer, use an SSH tunnel that keeps the port number:
+ssh -L 8789:127.0.0.1:8789 <you>@<node>. Programs running as any user
+on the node itself can still reach the console; the optional web login
+token ("web-token") is the defence against them.
+
+
+-----------------------------------------------------------------------
 PROTECT YOUR RPC CREDENTIALS
 -----------------------------------------------------------------------
 Never expose Bitcoin RPC to the internet. It should listen on localhost

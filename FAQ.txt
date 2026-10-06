@@ -58,7 +58,7 @@ Do I need to install Node.js?
     their own copy. Only the from-source install needs Node.js 18+.
 
 What are the ports?
-    8789  web interface and API      (inbound)
+    8789  web interface and API      (this machine only)
     8788  messaging between daemons  (inbound)
     8333  peer identification        (outbound only)
     8332  your bitcoind RPC          (localhost only)
@@ -76,8 +76,15 @@ Does Tor require port forwarding?
     No.
 
 Can I use Tailscale?
-    Yes. The daemon detects a Tailscale interface and binds to it
-    automatically, keeping itself off the public internet.
+    Yes. The daemon detects a Tailscale interface and binds its peer
+    port to it automatically, keeping itself off the public internet.
+
+Can I open the console from another computer?
+    Through an SSH tunnel: on that computer run
+    ssh -L 8789:127.0.0.1:8789 <you>@<node> and open
+    http://localhost:8789. The console listens on the node's loopback
+    only and refuses any other address, so no web page anywhere can
+    reach it, including through DNS rebinding.
 
 Can I use clearnet?
     Yes, but it publishes the link between your identity and your node's

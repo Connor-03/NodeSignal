@@ -29,6 +29,14 @@ require breaking one, stop and ask.
    added. The "identify" button is a manual re-run.
 9. The constellation radar's behaviour (layout, rings, pan/zoom, click to
    chat) is frozen. Visual work around it must not change its code.
+10. The web console is this machine's only (decided Oct 2026): it binds
+   127.0.0.1 and nothing else (`--bind` applies to the peer port only),
+   accepts Host `localhost:<web-port>` / `127.0.0.1:<web-port>` only
+   (DNS rebinding), refuses any other Origin, and every state-changing
+   WebSocket op needs the per-launch `ACTION_TOKEN` that the daemon writes
+   into the page it serves (`<meta name="ns-action-token">`). Only `hello`
+   and `ping` are exempt. Never add a remote web bind; remote access is an
+   SSH tunnel with the same port. `tests/websecurity.test.js` guards this.
 
 There is no Bitcoin node in cloud sessions. Never run against live RPC;
 mock `getnetworkinfo`, `getblockchaininfo`, `getpeerinfo` and the 8333
@@ -101,9 +109,11 @@ Bitcoin node --RPC (3 read methods)--> nodesignald.js
                                          `-- :8333  outbound only, identify peers
 ```
 
-The daemon serves its own web interface. The browser connects back to `/ws`
-on the same origin it loaded from (`location.host`), so it works behind an
-IP, a hostname, a domain, or a reverse proxy with no configuration.
+The daemon serves its own web interface on 127.0.0.1 only. The browser
+connects back to `/ws` on the same origin it loaded from (`location.host`),
+which must be `localhost:<port>` or `127.0.0.1:<port>`: other hostnames,
+IPs, .onion names and reverse proxies are refused on purpose (decision 10).
+From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 
 ### Files
 
@@ -238,6 +248,10 @@ status table. Keep it current whenever security changes.
 - Zero dependencies.
 - Optional web login token; HttpOnly SameSite=Strict session cookie also
   authenticates the `/ws` upgrade. Never put the token in a query string.
+- Web front door (v1.3): loopback-only bind, Host and Origin checks,
+  per-launch action token on every state-changing op, `no-store` and
+  frame-blocking headers on the console page. A console socket error can
+  no longer crash the daemon.
 
 **Still open, in honest terms**
 - Without a passphrase, messages are stored in the clear in `state.json`;

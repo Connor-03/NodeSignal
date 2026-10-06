@@ -33,24 +33,37 @@ function daemon(name, { host, peer, web, rpc = false, data = name, extra = [] })
 const stop = (c) => new Promise((r) => { if (c.exitCode != null) return r(); c.once('exit', r); c.kill('SIGTERM'); });
 function health(c) {
   return new Promise((res) => {
-    const req = http.get({ host: c.host, port: c.web, path: '/health', timeout: 1000 }, (r) => { let d = ''; r.on('data', (x) => (d += x)); r.on('end', () => { try { res(JSON.parse(d)); } catch { res(null); } }); });
+    // the web console listens on loopback only, whatever --bind says
+    const req = http.get({ host: '127.0.0.1', port: c.web, path: '/health', timeout: 1000 }, (r) => { let d = ''; r.on('data', (x) => (d += x)); r.on('end', () => { try { res(JSON.parse(d)); } catch { res(null); } }); });
     req.on('error', () => res(null)); req.on('timeout', () => { req.destroy(); res(null); });
   });
 }
 async function up(c) { for (let i = 0; i < 60; i++) { if (await health(c)) return c; await sleep(100); } throw new Error(c.log || 'daemon did not start'); }
 
 /* ---- a tiny UI client ---- */
-function ui(c) {
+// The action token is written into the page the daemon serves, exactly as the
+// console reads it. send() attaches it; sendBare() does not.
+function pageToken(c) {
+  return new Promise((res, rej) => http.get({ host: '127.0.0.1', port: c.web, path: '/' }, (r) => {
+    let d = ''; r.on('data', (x) => (d += x));
+    r.on('end', () => { const m = /name="ns-action-token" content="([^"]+)"/.exec(d); m ? res(m[1]) : rej(new Error('no action token in page')); });
+  }).on('error', rej));
+}
+async function ui(c) {
+  const token = await pageToken(c);
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://${c.host}:${c.web}/ws`);
+    const ws = new WebSocket(`ws://127.0.0.1:${c.web}/ws`);
     const seen = [], waiters = [];
     ws.onmessage = (e) => {
-      const m = JSON.parse(e.data); seen.push(m);
-      for (const w of [...waiters]) if (w.pred(m)) { waiters.splice(waiters.indexOf(w), 1); w.res(m); }
+      // an event goes to the first waiter that wants it, or into the buffer; never both
+      const m = JSON.parse(e.data);
+      const w = waiters.find((x) => x.pred(m));
+      if (w) { waiters.splice(waiters.indexOf(w), 1); w.res(m); } else seen.push(m);
     };
     ws.onerror = () => reject(new Error('ws error'));
     ws.onopen = () => resolve({
-      send: (o) => ws.send(JSON.stringify(o)),
+      send: (o) => ws.send(JSON.stringify(Object.assign({ token }, o))),
+      sendBare: (o) => ws.send(JSON.stringify(o)),
       wait(pred, ms = 8000) {
         const hit = seen.find(pred); if (hit) { seen.splice(seen.indexOf(hit), 1); return Promise.resolve(hit); }
         return new Promise((r, j) => { const w = { pred, res: r }; waiters.push(w); setTimeout(() => { if (waiters.includes(w)) { waiters.splice(waiters.indexOf(w), 1); j(new Error('timed out waiting for a UI event')); } }, ms); });
@@ -196,8 +209,17 @@ function legacyClient(host, port, id, onJson, localAddress) {
     const sec = await ua.wait((m) => m.type === 'security' && m.kind === 'fp-mismatch');
     const c = await until(async () => { const x = contactOf(await ua.state(), '127.0.0.2'); return x.pendingFp && x; });
     assert.strictEqual(c.pendingFp.got, sec.got); assert.notStrictEqual(c.peerFp, sec.got);
+    // Without this launch's action token the accept is refused outright...
+    ua.sendBare({ type: 'contact.acceptKey', host: '127.0.0.2', fp: sec.got });
+    const refused = await ua.wait((m) => m.type === 'error' && m.op === 'contact.acceptKey');
+    assert.strictEqual(refused.code, 'bad-token');
+    ua.send({ type: 'contact.acceptKey', host: '127.0.0.2', fp: sec.got, token: 'a-guessed-token' });
+    assert.strictEqual((await ua.wait((m) => m.type === 'error' && m.op === 'contact.acceptKey')).code, 'bad-token');
+    assert(contactOf(await ua.state(), '127.0.0.2').pendingFp, 'still pending after the refused accepts');
+    // ...and with the token, a fingerprint that is not the presented one is refused too.
     ua.send({ type: 'contact.acceptKey', host: '127.0.0.2', fp: 'not-the-key' });
-    await ua.wait((m) => m.type === 'error' && m.op === 'contact.acceptKey');
+    const wrong = await ua.wait((m) => m.type === 'error' && m.op === 'contact.acceptKey');
+    assert.notStrictEqual(wrong.code, 'bad-token');
     ua.send({ type: 'contact.acceptKey', host: '127.0.0.2', fp: sec.got });
     await status(ua, rid, 'delivered', 10000);
     const after = contactOf(await ua.state(), '127.0.0.2');

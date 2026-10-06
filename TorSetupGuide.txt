@@ -41,11 +41,10 @@ Add:
 
     HiddenServiceDir /var/lib/tor/nodesignal/
     HiddenServicePort 8788 127.0.0.1:8788
-    HiddenServicePort 8789 127.0.0.1:8789
 
-Port 8788 is the one other operators need. 8789 is your web interface:
-only publish it if you want to reach your own console remotely over Tor,
-and if you do, set a login token first.
+Port 8788 is the one other operators need. Do not publish 8789, your web
+interface: it answers only as localhost:8789 and refuses any other
+address (an .onion included). Reach it remotely through an SSH tunnel.
 
 Restart Tor:
 

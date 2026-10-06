@@ -41,6 +41,14 @@ t('v1.3 features are wired: history passphrase, key review, retry, advertised pe
   // accepting a key must echo the exact fingerprint the operator was shown
   assert(/type:'contact\.acceptKey',host:p\.host,fp:p\.pendingFp\.got/.test(script));
 });
+t('every message to the daemon carries the per-launch action token', () => {
+  assert(/meta\[name="\$\{n\}"\]/.test(script) && /metaOf\('ns-action-token'\)/.test(script));
+  assert(/state\.ws\.send\(JSON\.stringify\(Object\.assign\(\{token:NS_TOKEN\},o\)\)\)/.test(script), 'send() must attach the token');
+  // the only raw socket write is inside send()
+  assert.strictEqual((script.match(/state\.ws\.send\(/g) || []).length, 1);
+  // a page left open across a daemon restart reloads instead of flushing the outbox with a stale token
+  assert(script.indexOf("reloadForNewDaemon();break;}") < script.indexOf('flushOutbox();'));
+});
 t('mobile: single-pane thread and no legend overlay', () => {
   assert(html.includes('#view-msgs.has-thread .thread{display:flex}'));
   assert(/\.legend\{display:none!important\}/.test(html));

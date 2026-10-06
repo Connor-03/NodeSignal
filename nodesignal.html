@@ -652,11 +652,24 @@ function schedule(){
   setTimeout(()=>{ if(state.wsState!=='open')connect(); }, reconnectDelay);
   reconnectDelay=Math.min(15000, reconnectDelay*1.7);
 }
-const send=o=>{ if(state.ws&&state.ws.readyState===1){state.ws.send(JSON.stringify(o));return true;} return false; };
+// The daemon writes a per-launch action token into the page it serves; every
+// message carries it, and the daemon refuses state changes without it. The
+// instance id tells a page left open across a daemon restart to reload.
+const metaOf=n=>{const e=document.querySelector(`meta[name="${n}"]`);return e?e.content:null;};
+const NS_TOKEN=metaOf('ns-action-token'), NS_INSTANCE=metaOf('ns-instance');
+const send=o=>{ if(state.ws&&state.ws.readyState===1){state.ws.send(JSON.stringify(Object.assign({token:NS_TOKEN},o)));return true;} return false; };
+let reloading=false;
+function reloadForNewDaemon(){
+  if(reloading)return; reloading=true;
+  toast('the daemon restarted: reloading the console');   // queued messages are kept in localStorage
+  setTimeout(()=>location.reload(),600);
+}
 
 function handle(m){
   switch(m.type){
     case 'state':
+      // A restarted daemon has a new token; never flush the outbox with a stale one.
+      if(NS_INSTANCE&&m.daemon&&m.daemon.instance&&m.daemon.instance!==NS_INSTANCE){reloadForNewDaemon();break;}
       state.daemon=m.daemon;
       state.node=m.node&&m.node.self?m.node.self:null;
       state.rpcError=m.node?m.node.error:null;
@@ -710,6 +723,7 @@ function handle(m){
       if(state.daemon){state.daemon.portMapping=m.status;renderChrome();if(document.getElementById('drawer').classList.contains('open'))renderDrawer();}
       break;
     case 'error':
+      if(m.code==='bad-token'){reloadForNewDaemon();break;}
       if(/^vault\./.test(m.op||'')&&document.getElementById('vault-scrim').classList.contains('show')){
         document.getElementById('vf-err').textContent=m.error;document.getElementById('vf-go').disabled=false;
       }else toast(m.error||'error');

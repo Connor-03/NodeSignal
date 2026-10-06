@@ -123,7 +123,9 @@ class WSConn extends EventEmitter {
     this._fragOp = 0;
     socket.on('data', (d) => this._onData(d));
     socket.on('close', () => { this.readyState = 3; this.emit('close'); });
-    socket.on('error', (e) => { this.readyState = 3; this.emit('error', e); });
+    // Only re-emit when someone listens: an unhandled 'error' event would
+    // throw and take the whole process down over one dropped browser tab.
+    socket.on('error', (e) => { this.readyState = 3; if (this.listenerCount('error')) this.emit('error', e); });
   }
   _onData(d) {
     this._buf = Buffer.concat([this._buf, d]);

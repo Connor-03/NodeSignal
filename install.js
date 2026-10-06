@@ -355,7 +355,7 @@ async function main() {
   const health = await new Promise((resolve) => {
     const started = Date.now();
     const poll = () => {
-      const host = (cfg.bind && cfg.bind !== '0.0.0.0') ? cfg.bind : '127.0.0.1';
+      const host = '127.0.0.1';                     // the web console only listens on loopback
       const req = http.get({ host, port: webPort, path: '/health', timeout: 2000 }, (res) => {
         let d = ''; res.on('data', (c) => (d += c));
         res.on('end', () => {
@@ -387,7 +387,7 @@ async function main() {
     say(`${C.dim}${out.split('\n').slice(-14).join('\n')}${C.r}`);
   }
 
-  const url = `http://${(cfg.bind && cfg.bind !== '0.0.0.0') ? cfg.bind : 'localhost'}:${webPort}`;
+  const url = `http://localhost:${webPort}`;   // loopback only; from another machine use an SSH tunnel
   say('');
   say(`  ${C.b}To start NodeSignal:${C.r}  ${C.cyn}${path.basename(LAUNCHER)}${C.r}${IS_WIN ? '  (or the Desktop shortcut)' : ''}`);
   say(`  ${C.b}Then open:${C.r}           ${C.cyn}${url}${C.r}`);

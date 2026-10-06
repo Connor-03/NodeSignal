@@ -712,8 +712,10 @@ function tailscaleAddr() {
 }
 const TS_ADDR = tailscaleAddr();
 const explicitBind = argv.includes('--bind') || Object.prototype.hasOwnProperty.call(FILE_CFG, 'bind');
-// web UI: explicit > tailscale > localhost.  peer port: explicit > tailscale > all.
-const WEB_BIND = explicitBind ? CFG.bind : (TS_ADDR || '127.0.0.1');
+// The web console is for THIS machine only: always loopback, whatever --bind
+// says (that option now applies to the peer port only). Reach it from another
+// machine through an SSH tunnel that keeps the same port number.
+const WEB_BIND = '127.0.0.1';
 // Router port mapping forwards to this machine's LAN address, so the peer
 // port must listen there too.
 const PEER_BIND = explicitBind ? CFG.bind : (CFG.portMapping ? '0.0.0.0' : (TS_ADDR || '0.0.0.0'));
@@ -1093,7 +1095,7 @@ const uiContact = (c) => ({ host: c.host, port: c.port || CFG.peerPort, nick: c.
   msgs: c.msgs.slice(-200).map(publicMsg) });
 const fullState = () => ({
   type: 'state',
-  daemon: { nick: CFG.nick, ua: UA, peerPort: CFG.peerPort, webPort: CFG.webPort, proto: PROTO,
+  daemon: { nick: CFG.nick, ua: UA, peerPort: CFG.peerPort, webPort: CFG.webPort, proto: PROTO, instance: INSTANCE,
     fingerprint: myIdentity.fp, secure: true,
     vault: { set: vaultOn(), unlocked: unlocked() },
     portMapping: CFG.portMapping ? (portmapStatus || { state: 'mapping' }) : null },
@@ -1175,12 +1177,46 @@ function healthPayload() {
   };
 }
 const wantsHtml = (req) => String(req.headers.accept || '').includes('text/html');
+
+/* ---- web front door ------------------------------------------------------
+   Three checks on every HTTP request and WebSocket upgrade, plus a token on
+   every state-changing action:
+     · Host must be localhost:<web-port> or 127.0.0.1:<web-port>. A web page
+       that points its own DNS name at 127.0.0.1 (DNS rebinding) still sends
+       its own name as Host, so it is refused.
+     · Origin, when present, must be http://localhost:<port> or
+       http://127.0.0.1:<port>. Browsers always send it on WebSocket upgrades
+       and cross-site requests, so another site cannot drive the console.
+     · ACTION_TOKEN is random per launch and only ever written into the page
+       this daemon serves. Every WebSocket message that changes something
+       must carry it; a page from anywhere else cannot read it. */
+const ACTION_TOKEN = crypto.randomBytes(32).toString('base64url');
+const INSTANCE = crypto.randomBytes(8).toString('hex');      // not secret: lets a stale page notice a restart
+const ALLOWED_HOSTS = new Set([`localhost:${CFG.webPort}`, `127.0.0.1:${CFG.webPort}`]);
+const ALLOWED_ORIGINS = new Set([`http://localhost:${CFG.webPort}`, `http://127.0.0.1:${CFG.webPort}`]);
+const hostOk = (req) => ALLOWED_HOSTS.has(String(req.headers.host || '').toLowerCase());
+const originOk = (req) => req.headers.origin === undefined || ALLOWED_ORIGINS.has(String(req.headers.origin).toLowerCase());
+const SECURITY_HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
+  'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'" };
+function sendConsole(res, file) {
+  // The token goes into the served page only: never a URL, a cookie or a log.
+  const meta = `<meta name="ns-action-token" content="${ACTION_TOKEN}">\n<meta name="ns-instance" content="${INSTANCE}">\n`;
+  let html = fs.readFileSync(file, 'utf8');
+  html = /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, (h) => h + '\n' + meta) : meta + html;
+  W.sendHtml(res, html, 200, SECURITY_HEADERS);
+}
 function redirect(res, to) { res.writeHead(302, { Location: to, 'Content-Length': 0 }); res.end(); }
 
 async function handleRequest(req, res) {
   let pathname = '/';
   try { pathname = new URL(req.url, 'http://x').pathname; } catch { }
   const method = req.method || 'GET';
+
+  if (!hostOk(req)) {
+    W.sendText(res, `NodeSignal only answers as localhost:${CFG.webPort} or 127.0.0.1:${CFG.webPort}.`, 421);
+    return;
+  }
+  if (!originOk(req)) { W.sendText(res, 'cross-origin request refused', 403); return; }
 
   // --- public routes (no auth) ---
   if (pathname === '/health') return W.sendJson(res, healthPayload());
@@ -1214,7 +1250,7 @@ async function handleRequest(req, res) {
     // this machine has (the Windows demo folder ships nodesignal-demo.html).
     for (const name of ['nodesignal.html', 'nodesignal-demo.html']) {
       const f = path.join(CFG.webRoot, name);
-      if (fs.existsSync(f)) return W.sendFile(res, f);
+      if (fs.existsSync(f)) return sendConsole(res, f);
     }
     return W.sendText(res, 'No interface file found in ' + CFG.webRoot +
       '\nExpected nodesignal.html (or nodesignal-demo.html) next to nodesignald.js.', 500);
@@ -1233,21 +1269,18 @@ const requestListener = (req, res) => {
 };
 
 const server = http.createServer(requestListener);
-// Second listener on loopback. When the primary bind is a Tailscale address,
-// the machine's own browser would otherwise get ECONNREFUSED on localhost,
-// confusing when you are sitting at the very machine running the daemon.
-// This adds localhost WITHOUT exposing anything to clearnet.
-const localServer = http.createServer(requestListener);
 const wss = new W.WSServer();
+const refuse = (socket, status) => { try { socket.write(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); } catch { } socket.destroy(); };
 const onUpgrade = (req, socket, head) => {
   let pathname = '/';
   try { pathname = new URL(req.url, 'http://x').pathname; } catch { }
   if (pathname !== '/ws') { socket.destroy(); return; }
-  if (!reqAuthed(req)) { socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n'); socket.destroy(); return; }
+  if (!hostOk(req)) return refuse(socket, '421 Misdirected Request');
+  if (!originOk(req)) return refuse(socket, '403 Forbidden');
+  if (!reqAuthed(req)) return refuse(socket, '401 Unauthorized');
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 };
 server.on('upgrade', onUpgrade);
-localServer.on('upgrade', onUpgrade);
 
 wss.on('connection', (ws) => {
   uiClients.add(ws);
@@ -1260,6 +1293,9 @@ wss.on('connection', (ws) => {
     catch (e) { reply({ type: 'error', op: String(m.type || ''), error: e.message }); }
   });
   ws.on('close', () => uiClients.delete(ws));
+  // A tab closed mid-write raises EPIPE/ECONNRESET on the socket. Without a
+  // listener that 'error' event would be unhandled and stop the whole daemon.
+  ws.on('error', () => uiClients.delete(ws));
 });
 // An address the operator typed: IPv4, IPv6 (brackets stripped), hostname or .onion.
 function uiHost(v) {
@@ -1275,7 +1311,14 @@ function identifyNew(c) {
     scheduleIdentify(c.host, 5000);
   });
 }
+const READ_ONLY_OPS = new Set(['hello', 'ping']);
+let badTokenLogged = 0;
 async function handleUi(m, reply) {
+  if (!READ_ONLY_OPS.has(m.type) && !(typeof m.token === 'string' && timingSafeEq(m.token, ACTION_TOKEN))) {
+    if (Date.now() - badTokenLogged > 60000) { badTokenLogged = Date.now(); log(`!! refused a "${cleanStr(String(m.type || ''), 40)}" request without this launch's action token`); }
+    reply({ type: 'error', op: String(m.type || ''), code: 'bad-token', error: 'refused: missing or stale action token (reload the console)' });
+    return;
+  }
   switch (m.type) {
     case 'hello': reply(fullState()); return;
     case 'ping': reply({ type: 'pong' }); return;
@@ -1391,18 +1434,15 @@ peerServer.listen(CFG.peerPort, PEER_BIND, () => {
     console.log('  ----------------------------------------------------------');
     log(`nick           : ${CFG.nick}`);
     log(`Web app        : http://${WEB_BIND}:${CFG.webPort}`);
-    if (WEB_BIND !== '127.0.0.1' && WEB_BIND !== '0.0.0.0') {
-      localServer.on('error', () => { });          // port busy on loopback is non-fatal
-      localServer.listen(CFG.webPort, '127.0.0.1',
-        () => log(`                 http://localhost:${CFG.webPort}  (same app, from this machine)`));
-    }
+    log(`                 (this machine only; from elsewhere: ssh -L ${CFG.webPort}:127.0.0.1:${CFG.webPort} <this machine>)`);
     log(`WebSocket      : ws://${WEB_BIND}:${CFG.webPort}/ws`);
     log(`Peer messaging : tcp://${PEER_BIND}:${CFG.peerPort}`);
     log(`Health         : http://${WEB_BIND}:${CFG.webPort}/health`);
-    if (TS_ADDR && !explicitBind && !CFG.portMapping) log(`bind           : Tailscale (${TS_ADDR}): private tailnet only, not clearnet`);
-    else if (!explicitBind && CFG.portMapping) log('bind           : peer port on all interfaces for router port mapping (clearnet)');
-    else if (!explicitBind && WEB_BIND === '127.0.0.1') log('bind           : localhost: no Tailscale found; reach the UI via SSH tunnel, peer port is 0.0.0.0');
-    else log(`bind           : ${CFG.bind} (explicit)`);
+    if (TS_ADDR && !explicitBind && !CFG.portMapping) log(`peer bind      : Tailscale (${TS_ADDR}): private tailnet only, not clearnet`);
+    else if (!explicitBind && CFG.portMapping) log('peer bind      : all interfaces, for router port mapping (clearnet)');
+    else if (!explicitBind) log('peer bind      : all interfaces (no Tailscale found)');
+    else log(`peer bind      : ${CFG.bind} (explicit)`);
+    log(`web front door : loopback only, Host + Origin checked, per-launch action token`);
     log(`identity fp    : ${myIdentity.fp}  (peers pin this on first contact)`);
     log(`handshake      : ${noise.PROTOCOL_NAME} (also answers v1.2 peers)`);
     log(`history        : ${vaultOn() ? 'sealed at rest, locked until you unlock it in the console' : 'stored unencrypted; set a passphrase in the console'}`);

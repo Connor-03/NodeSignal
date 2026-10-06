@@ -2,7 +2,8 @@ NodeSignal: Ubuntu / Linux Installation Guide
 =======================================================================
 
 NodeSignal runs beside your Bitcoin node and serves its own web
-interface. Once installed you use it from any browser on your network.
+interface. Once installed you open it in a browser on the node itself, or
+from another computer through an SSH tunnel.
 
 The recommended way to install it is the .deb package from GitHub
 Releases. It brings its own Node.js runtime, so there is nothing else
@@ -107,12 +108,19 @@ with:  sudo nodesignal port-mapping off
 -----------------------------------------------------------------------
 USE IT
 -----------------------------------------------------------------------
-Open, from any machine on your network:
+The console listens on this machine only. On the node, open:
 
-    http://<this-machine's-ip>:8789
+    http://localhost:8789
 
-On the same machine, http://localhost:8789 also works. Linux, on the
-node, to print the address it is really listening on:
+From another computer, open an SSH tunnel that keeps the same port number
+on both ends (on that computer):
+
+    ssh -L 8789:127.0.0.1:8789 <you>@<this-machine>
+
+then browse to http://localhost:8789 there. The console refuses any other
+address on purpose (see Security.txt, "The web console").
+
+Linux, on the node, to print the address:
 
     nodesignal open
 
@@ -210,21 +218,20 @@ plain rpcuser= and rpcpassword= lines and restart bitcoind.
 -----------------------------------------------------------------------
 NETWORKING
 -----------------------------------------------------------------------
-The daemon binds to your Tailscale address automatically if it finds
-one, which keeps it off the public internet. With no Tailscale, the web
-interface binds to localhost and only the peer port listens publicly.
-The boot log states which posture is active. Override with "bind" in
-the config file.
+The web console always listens on 127.0.0.1 only. The peer port binds
+to your Tailscale address automatically if it finds one, which keeps it
+off the public internet; otherwise it listens on all interfaces. The
+boot log states which posture is active. "bind" in the config file sets
+the peer port's address only.
 
 Ports:
-    8789/tcp   web interface + WebSocket API + /health   inbound
+    8789/tcp   web interface + WebSocket API + /health   this machine only
     8788/tcp   daemon-to-daemon messaging                inbound
     8333/tcp   Bitcoin handshake used to identify peers  outbound only
     8332       bitcoind RPC, localhost only              outbound only
 
 With ufw, restrict them to your tailnet. Linux, on the node:
 
-    sudo ufw allow in on tailscale0 to any port 8789 proto tcp
     sudo ufw allow in on tailscale0 to any port 8788 proto tcp
 
 For clearnet, TCP 8788 must be reachable: forward it on your router, or

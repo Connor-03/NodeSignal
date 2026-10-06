@@ -167,7 +167,7 @@ and what has not.
 
 | Port | Purpose | Direction |
 |---|---|---|
-| 8789 | web interface, API, `/health` | inbound |
+| 8789 | web interface, API, `/health` | this machine only (127.0.0.1); use an SSH tunnel from elsewhere |
 | 8788 | daemon-to-daemon messaging | inbound |
 | 8333 | peer identification | outbound only |
 | 8332 | bitcoind RPC | localhost only |

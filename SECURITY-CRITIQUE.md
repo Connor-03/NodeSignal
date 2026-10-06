@@ -22,6 +22,8 @@
 | Custom "Noise-like" handshake, unverifiable | **[FIXED in v1.3]**: standard Noise_XX_25519_ChaChaPoly_SHA256, passes the cacophony and snow test vectors. The old handshake is still answered for one release so v1.2 peers keep working |
 | Legacy PIN code path still shipped | **[FIXED in v1.3]**: PBKDF2/AES-GCM line protocol, `contact.pin` and stored PINs removed |
 | Reinstalled peer = remove and re-add | **[FIXED in v1.3]**: the new key is held for review; accepting must echo the exact presented fingerprint |
+| Web console reachable from the network; DNS rebinding; cross-site actions | **[FIXED in v1.3]**: the console listens on 127.0.0.1 only, checks Host (localhost/127.0.0.1 on its port) and Origin, and every state-changing action needs a random per-launch token served only inside the page (`tests/websecurity.test.js`) |
+| A browser tab dropping mid-write could crash the daemon | **[FIXED in v1.3]**: an EPIPE on a console socket was re-emitted as an unhandled `'error'` event |
 | Hostile field values from authenticated peers | **[FIXED in v1.3]**: every field type-checked, length-capped, control characters stripped; claims never overwrite measured node data |
 | No forward secrecy | **[FIXED]**: ephemeral keys per session |
 | No peer authentication / MITM | **[FIXED]**: mutual static-key auth + TOFU pinning |
@@ -61,7 +63,7 @@ Installing it opens **two new listening ports on the machine running your node**
 | Port | Purpose | Auth by default |
 |---|---|---|
 | 8788 | daemon-to-daemon messaging | **none** |
-| 8789 | web UI + WebSocket API | **none** (`--web-token` optional) |
+| 8789 | web UI + WebSocket API | **none** (`--web-token` optional). Since v1.3: loopback only, Host/Origin checked, per-launch action token |
 
 The failure mode is not "someone reads my chats." It is **lateral movement**: a
 bug in the daemon puts an attacker on the same host as the node, likely as the

@@ -633,12 +633,12 @@ async function waitForHealth(port, { timeoutMs = 20000, wantRpc = false, rpcGrac
   return last;
 }
 // The address the web UI is reachable on, matching the daemon's bind rules.
+// The console listens on loopback only and refuses any other Host header, so
+// this is the one address that works (from another machine: an SSH tunnel
+// that keeps the same port, ssh -L 8789:127.0.0.1:8789 <node>).
 function webUrl(cfg = {}) {
   const port = Number(cfg['web-port']) || 8789;
-  let host = cfg.bind && cfg.bind !== '0.0.0.0' && cfg.bind !== '::' ? cfg.bind : null;
-  if (!host) host = cfg.bind ? 'localhost' : (tailscaleAddr() || 'localhost');
-  if (host.includes(':') && !host.startsWith('[')) host = '[' + host + ']';
-  return `http://${host}:${port}/`;
+  return `http://localhost:${port}/`;
 }
 
 /* ------------------------------------------------------------ paths */

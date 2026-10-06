@@ -140,9 +140,22 @@ WEB INTERFACE
 Page will not load
     From the machine itself:
         curl http://127.0.0.1:8789/health
-    If that works but a remote browser fails, the problem is the network
-    (Tailscale down, firewall, or the daemon bound to localhost only),
-    not NodeSignal.
+    The console only listens on 127.0.0.1, on purpose. From another
+    computer, tunnel it with the same port on both ends (on that
+    computer): ssh -L 8789:127.0.0.1:8789 <you>@<node>
+    then open http://localhost:8789 there.
+
+"NodeSignal only answers as localhost:8789" (HTTP 421)
+    You reached the console under another name (an IP address, a
+    hostname, an .onion, or a tunnel on a different local port). It
+    refuses those so a malicious web page cannot reach it through DNS
+    rebinding. Use http://localhost:8789, with the same port number on
+    both ends of any tunnel.
+
+Console says "the daemon restarted: reloading"
+    Each daemon start issues a new action token, written into the page.
+    A page left open across a restart reloads itself to pick it up.
+    Messages you queued meanwhile are kept and sent after the reload.
 
 Page loads but is blank
     An old nodesignal-demo.html is being served. The demo build is
