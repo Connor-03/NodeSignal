@@ -969,6 +969,9 @@ function connectTo(c, why) {
     const now = Date.now();
     for (const m of c.msgs) if (deliverable(m) && (m.status === 'sending' || (m.nextTry || 0) <= now)) deferMsg(c, m, reason);
     if (why !== 'checkin') log(`deliver to ${c.host}: ${reason}`);
+    // A failed dial is fresher news than the last hello: stop calling it online.
+    c.lastFailAt = Date.now();
+    broadcastUi({ type: 'contact', contact: uiContact(c) });
   }
 }
 function attemptDial(c, port, proto, cb) {
@@ -1086,7 +1089,7 @@ const uiContact = (c) => ({ host: c.host, port: c.port || CFG.peerPort, nick: c.
   pendingFp: c.pendingFp || null,
   proto: c.proto || null,
   lastAddr: c.lastAddr || null,
-  online: !!(c.established && c.lastSeen && (Date.now() - c.lastSeen < 5 * 60 * 1000)),
+  online: !!(c.established && c.lastSeen && (Date.now() - c.lastSeen < 5 * 60 * 1000) && !((c.lastFailAt || 0) > c.lastSeen)),
   msgs: c.msgs.slice(-200).map(publicMsg) });
 const fullState = () => ({
   type: 'state',
@@ -1360,13 +1363,15 @@ function startPortMapping() {
   let pm;
   try { pm = require('./portmap.js'); }
   catch { log('!! port-mapping is on but portmap.js is missing next to nodesignald.js'); return; }
+  if (explicitBind && !['0.0.0.0', '::'].includes(CFG.bind))
+    log(`!! port-mapping is on but --bind ${CFG.bind} is not the LAN address: forwarded connections will not arrive`);
   portmapCtl = pm.start({
     internalPort: CFG.peerPort, description: 'NodeSignal',
-    log: (s) => log('port mapping: ' + s),
+    log: (s) => log(s),                       // already prefixed upnp: / natpmp: / portmap:
     onChange: (st) => {
       portmapStatus = st;
       if (st.state === 'mapped') log(`port mapping: ${st.method} ${st.externalIp}:${st.externalPort} -> :${CFG.peerPort} (your IP is now public to anyone you contact)`);
-      else if (st.state === 'failed') log('port mapping failed: ' + st.error);
+      if (st.warning) log('port mapping warning: ' + st.warning);
       broadcastUi({ type: 'portmap', status: st });
     },
   });
