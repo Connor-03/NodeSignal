@@ -117,7 +117,8 @@ IP, a hostname, a domain, or a reverse proxy with no configuration.
 | `install.js` + `install-windows.bat` | Interactive Windows installer that verifies each answer. |
 | `install-node.sh` | Linux installer, writes a systemd unit. |
 | `start-node.bat` / `start-daemon.bat` | Manual Windows launchers. (`start-daemon.bat` still expects the retired demo file; fix when touched.) |
-| `site/` | Static project page for nodesignal.connoraherne.com. Served by Caddy from `/var/www/nodesignal`. Not served by the daemon. |
+| `tools/screenshots/` | Publishable screenshots of the console from a fake daemon (`fixture-ws.js`). Optional Playwright. |
+| `tests/` | `console.test.js` (plain node), `console.e2e.js` (optional Playwright), `mock-node.js`. |
 
 ### Two interfaces, deliberately separate
 
@@ -282,6 +283,51 @@ status table. Keep it current whenever security changes.
   behind NAT (8788 unreachable without Tailscale or Tor); finding which peers
   run NodeSignal at all; offline delivery (hold and retry instead of failing);
   setup friction (RPC credentials, ports, launch steps).
+
+### Website handoff (do this when NodeSignal is finished, not before)
+
+The maintainer's site **nodesignal.connoraherne.com** is built by a separate
+Claude instance on his home server (Caddy, static files from
+`/var/www/nodesignal`). Do **not** build the page in this repo. When the
+product is finished, hand that instance:
+
+1. **Screenshots.** Run `node tools/screenshots/shoot.js <outDir>` (needs
+   Playwright; renders `nodesignal.html` against `fixture-ws.js`, so every
+   address is a documentation range and every fingerprint is fake). Add
+   scenes to the fixture if new features need showing. Export WebP, keep the
+   set under about 300 KB, and never use a real node's data.
+2. **A handoff document** with: a one-line pitch, the "why" story, how it
+   works in 3 to 5 steps naming the real mechanisms (`getpeerinfo`
+   discovery, read-only `version`/`verack` on :8333, Noise-XX with X25519,
+   HKDF-SHA256 and ChaCha20-Poly1305 on :8788, TOFU key pinning), a features
+   list where every line is checked against the code, the honest limits, the
+   install steps and download links (GitHub Releases assets once the
+   installers exist), and a list of anything unverified.
+
+Rules the site instance enforces, so the handoff must already follow them:
+no em dashes; plain direct copy, no hype; never invent facts (no user counts,
+dates, partners); no tokens, private hostnames, IPs or peer addresses; the
+daemon's own web app is private and must not be linked; BIP-110 is a failed
+proposal, mention only as history.
+
+Maintainer's approved copy, to be kept word for word where used:
+
+> Inspired by my research into the Core vs Knots debate, I wanted an
+> effective communication system, carried by the Bitcoin P2P network, that
+> lets verified node operators talk to each other, display what they are
+> signaling for, and hold a proper discussion on relay and consensus. It uses
+> node peers for contact discovery, maps the connections, and opens its own
+> authenticated channel between daemons so two operators can chat with no
+> third party in between.
+
+Short version: "Encrypted messaging between node operators, carried by the
+P2P network they already run. No third party in the middle."
+
+**Flag this, do not silently fix it:** "carried by the (Bitcoin) P2P network"
+contradicts the README and section 1 of this file. Messages never travel over
+Bitcoin P2P; the node only provides discovery and identity. Propose wording
+such as "found through the P2P network they already run" and let the
+maintainer approve it. Related story link: https://bpi.connoraherne.com.
 
 ---
 
