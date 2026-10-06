@@ -60,7 +60,17 @@ function ws(token) {
     });
   });
 }
-async function up() { for (let i = 0; i < 60; i++) { try { if ((await req()).status === 200) return; } catch { } await sleep(100); } throw new Error('daemon did not start'); }
+// Up means our daemon answers /health. A slow CI runner gets 20 s; a daemon
+// that exits instead (a port it cannot bind, a crash) fails at once, with its
+// own output, rather than as an unexplained timeout.
+async function up() {
+  for (let i = 0; i < 200; i++) {
+    if (d.exitCode != null || d.signalCode) break;
+    try { if ((await req()).status === 200) return; } catch { }
+    await sleep(100);
+  }
+  throw new Error(`daemon did not start (exit ${d.exitCode ?? d.signalCode ?? 'none, no answer in 20 s'})\n${d.log}`);
+}
 
 let d;
 (async () => {
