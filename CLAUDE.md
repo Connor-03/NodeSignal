@@ -151,7 +151,7 @@ From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 | `nodeps.js` | Static file server + RFC 6455 WebSocket server, stdlib only. |
 | `nodesignal.html` | **Operator console.** Real data only. Goes on a node. |
 | `nodesignal-demo.html` | **Retired.** Removed from the tree in `2d479c6`; the maintainer considers it obsolete. Do not restore it. The demo-only rules below apply only if it ever returns. |
-| `packaging/` | One-download installers. `files.json` is THE list of program files (update it when adding a module). `build-sea.js` + `windows/sea-main.js` build `NodeSignal-Setup-windows-x64.exe` (Node SEA); `deb/` builds `nodesignal-linux-{amd64,arm64}.deb` with the official Node binary. Both require a Bitcoin node. |
+| `packaging/` | One-download installers. `files.json` is THE list of program files (update it when adding a module). `build-sea.js` + `windows/sea-main.js` build `NodeSignal-Setup-windows-x64.exe` (Node SEA; `windows/win-resources.js` and `windows/make-icon.js` give it its version resource and icon at build time); `deb/` builds `nodesignal-linux-{amd64,arm64}.deb` with the official Node binary. Both require a Bitcoin node. |
 | `setup-core.js` + `cli.js` | Shared node detection / RPC check / config / uacomment and rpcauth editing, and the `nodesignal` command (status, advertise, port-mapping, rpc-access, setup). |
 | `.github/workflows/` | `ci.yml` (all tests, deb install under systemd, Windows exe selftest) and `release.yml` (tag `v*` -> release assets with stable names + SHA256SUMS.txt). |
 | `install.js` + `install-windows.bat`, `install-node.sh` | From-source installers; also require a node. |
@@ -380,8 +380,16 @@ status table. Keep it current whenever security changes.
   sign-in launcher starts) is a parent that spawns the daemon as a child
   (`__daemon`) and respawns it on exit, backoff 1s doubling to 60s (reset after
   10 minutes up), giving up after 5 crashes within 10 minutes and logging the
-  reason. The selftest covers restart and give-up. Still open: the .exe has no
-  icon/version resource and is not code-signed.
+  reason. The selftest covers restart and give-up.
+- **Done (Oct 2026): .exe icon and version resource.** `build-sea.js` stamps
+  the copied node.exe before postject injects the blob (that order is
+  required): ProductName NodeSignal, the package.json version, CompanyName and
+  LegalCopyright from LICENSE, and the icon drawn by
+  `packaging/windows/make-icon.js` (stdlib only; `nodesignal.ico` is its
+  committed output, `tests/winexe.test.js` checks they match). The editor is
+  resedit, fetched by npm at build time and pinned exactly, like postject; it
+  is never shipped. CI checks `VersionInfo` and the icon on windows-latest.
+  Still open: the .exe is not code-signed.
 - Not yet run on real Windows or real arm64 hardware; CI covers the
   Windows selftest.
 

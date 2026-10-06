@@ -128,6 +128,31 @@ jobs:
           node-version: 22
       - name: Build
         run: node packaging/build-sea.js --version "${{ needs.version.outputs.version }}"
+      - name: Version resource and icon
+        shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          $exe = '.\dist\NodeSignal-Setup-windows-x64.exe'
+          $v = $env:EXPECTED_VERSION
+          $i = (Get-Item $exe).VersionInfo
+          $i | Format-List ProductName, ProductVersion, FileVersion, FileDescription, CompanyName, LegalCopyright, OriginalFilename, InternalName, Comments
+          $bad = 0
+          if ($i.ProductName -ne 'NodeSignal') { Write-Output "::error::ProductName is '$($i.ProductName)', expected 'NodeSignal'"; $bad = 1 }
+          if ($i.ProductVersion -ne $v) { Write-Output "::error::ProductVersion is '$($i.ProductVersion)', expected '$v'"; $bad = 1 }
+          if ($i.FileVersion -ne $v) { Write-Output "::error::FileVersion is '$($i.FileVersion)', expected '$v'"; $bad = 1 }
+          if ($i.OriginalFilename -ne 'NodeSignal-Setup-windows-x64.exe') { Write-Output "::error::OriginalFilename is '$($i.OriginalFilename)'"; $bad = 1 }
+          # the icon Explorer shows is ours (Core orange), not Node's (green)
+          Add-Type -AssemblyName System.Drawing
+          $bmp = [System.Drawing.Icon]::ExtractAssociatedIcon((Resolve-Path $exe).Path).ToBitmap()
+          $orange = 0
+          for ($x = 0; $x -lt $bmp.Width; $x++) { for ($y = 0; $y -lt $bmp.Height; $y++) {
+            $c = $bmp.GetPixel($x, $y)
+            if ($c.A -gt 200 -and [Math]::Abs($c.R - 0xf7) -lt 24 -and [Math]::Abs($c.G - 0x93) -lt 24 -and [Math]::Abs($c.B - 0x1a) -lt 24) { $orange++ }
+          } }
+          Write-Output "icon $($bmp.Width)x$($bmp.Height), $orange Core-orange pixels"
+          if ($orange -lt ($bmp.Width * $bmp.Height * 0.05)) { Write-Output "::error::the executable's icon is not the NodeSignal icon"; $bad = 1 }
+          exit $bad
       - name: Selftest against the mock node
         shell: pwsh
         run: |
