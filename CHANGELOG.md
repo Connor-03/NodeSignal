@@ -77,6 +77,11 @@ same machine, and still only calls three read-only RPC methods:
 
 ### Console
 
+- With more than 40 peers, the map draws the 40 you have exchanged the most
+  messages with (then contacts, then peers advertising NodeSignal, then the
+  closest), so labels stay readable. The open chat always stays on the map,
+  and the counts above it say how many are not drawn.
+
 - Redesigned console, including the mobile layout. The composer is always
   enabled: a message typed while the daemon is unreachable is held as
   "queued" and sent on reconnect.

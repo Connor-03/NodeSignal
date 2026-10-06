@@ -28,7 +28,11 @@ require breaking one, stop and ask.
 8. P2P identification on port 8333 fires automatically when a contact is
    added. The "identify" button is a manual re-run.
 9. The constellation radar's behaviour (layout, rings, pan/zoom, click to
-   chat) is frozen. Visual work around it must not change its code.
+   chat) is frozen. Visual work around it must not change its code. One
+   change was decided by the maintainer (Oct 2026): the map draws at most
+   40 nodes (`RADAR_MAX`), the ones with the most messages exchanged, then
+   contacts, then peers advertising NodeSignal, then the lowest latency; the
+   open chat always stays drawn, and the HUD says "N of M peers on the map".
 10. The web console is this machine's only (decided Oct 2026): it binds
    127.0.0.1 and nothing else (`--bind` applies to the peer port only),
    accepts Host `localhost:<web-port>` / `127.0.0.1:<web-port>` only
@@ -205,7 +209,8 @@ These were each decided explicitly. Do not regress them.
 - Colour = implementation. Final palette: Core orange, Knots deep green
   `#22a95a`, btcd cyan, libbitcoin violet, Bcoin pink.
 - Collision-relaxation layout. Verified at 40 peers with zero label
-  overlaps and nothing out of frame.
+  overlaps and nothing out of frame. Beyond 40, only the top 40 by messages
+  exchanged are drawn (decision 9); everyone stays in the counts and legend.
 - Drag to pan, wheel and pinch to zoom anchored on the cursor, double-click
   to zoom, refit button. Once the user moves the view, stop auto-refitting.
 - **Click any node to open its chat.** Pointer capture is taken only after a

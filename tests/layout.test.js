@@ -41,7 +41,7 @@ t('the layout code can be cut out of nodesignal.html by its markers', () => {
 });
 
 // A sandbox per run: the page's globals the layout reads, and a seeded PRNG.
-function layoutOf(seed, nodePeers, contacts) {
+function layoutOf(seed, nodePeers, contacts, openHost) {
   const ctx = vm.createContext({});
   vm.runInContext(`"use strict";
     let s = ${seed >>> 0} || 1;
@@ -50,8 +50,12 @@ function layoutOf(seed, nodePeers, contacts) {
     let idSeq = 1; const uid = () => 'n' + (idSeq++);
     let layoutDirty = true;
     ${SRC}
-    globalThis.run = (np, cs) => { rebuild(np, cs); const L = ensureLayout(); return { L, CX, CY, n: state.peers.length }; };`, ctx);
-  return ctx.run(nodePeers, contacts);
+    globalThis.run = (np, cs, openHost) => {
+      rebuild(np, cs);
+      if (openHost) { state.active = state.peers.find((p) => p.host === openHost).id; layoutDirty = true; }
+      const L = ensureLayout(); return { L, CX, CY, n: state.peers.length, RADAR_MAX };
+    };`, ctx);
+  return ctx.run(nodePeers, contacts, openHost);
 }
 
 /* ---- peers, in the shapes the daemon sends ---- */
@@ -148,6 +152,55 @@ for (const [scene, make] of Object.entries(CROWDS)) {
     if (noted.length) console.log(`       note: overlaps in ${noted.length} of ${SEEDS.length} layouts (known limit of the frozen radar)`);
   });
 }
+
+/* ---- more than 40: the map shows the 40 with the most messages exchanged ---- */
+const msgsOf = (n, host) => Array.from({ length: n }, (_, k) => ({ id: `${host}-${k}`, from: k % 2 ? 'me' : 'them', ts: 1e12 + k, text: 'hi' }));
+// 75 peers: 60 node peers (every ninth advertises NodeSignal) and 15 contacts,
+// 12 of them with messages, the busiest first
+const crowd = () => [
+  Array.from({ length: 60 }, (_, i) => nodePeer(i, typical(i))),
+  Array.from({ length: 15 }, (_, i) => Object.assign(contact(i, 'op-' + i, 40 + i * 37), { msgs: msgsOf(i < 12 ? 30 - 2 * i : 0, 'c' + i) })),
+];
+t('more than 40 peers: 40 on the map, ranked by messages exchanged, then contacts, then NodeSignal peers', () => {
+  if (!SRC) throw new Error('layout code not loaded');
+  for (const seed of SEEDS.slice(0, 4)) {
+    const [np, cs] = crowd();
+    const { L, n, RADAR_MAX } = layoutOf(seed, np, cs);
+    assert.strictEqual(RADAR_MAX, 40);
+    assert.strictEqual(n, 75, 'every peer is still in the model');
+    assert.strictEqual(L.nodes.length, 40, 'only 40 drawn');
+    const drawn = new Set(L.nodes.map((nd) => nd.p.host));
+    for (const c of cs) assert(drawn.has(c.host), `contact ${c.nick} (${c.msgs.length} messages) is on the map`);
+    const nsHosts = np.filter((p) => p.nodesignal).map((p) => p.addr.replace(/^\[|\]?:\d+$/g, ''));
+    for (const h of nsHosts) assert(drawn.has(h), `NodeSignal peer ${h} is on the map`);
+    // the 25 remaining places go to the lowest-latency plain node peers
+    const plain = np.filter((p) => !p.nodesignal).map((p) => ({ h: p.addr.replace(/^\[|\]?:\d+$/g, ''), l: p.latency }));
+    const cut = [...plain].sort((a, b) => a.l - b.l)[40 - cs.length - nsHosts.length - 1].l;
+    for (const p of plain) if (p.l < cut) assert(drawn.has(p.h), `fast peer ${p.h} (${p.l} ms) is on the map`);
+  }
+});
+t('more than 40 peers: the 40 drawn have zero overlaps and stay in frame', () => {
+  if (!SRC) throw new Error('layout code not loaded');
+  const bad = [];
+  for (const seed of SEEDS) {
+    const [np, cs] = crowd();
+    const { L, CX, CY } = layoutOf(seed, np, cs);
+    const p = check(L, CX, CY);
+    if (p.length) bad.push(`seed ${seed >>> 0}: ${p.slice(0, 3).join('; ')}`);
+  }
+  assert(!bad.length, bad.join('\n'));
+});
+t('more than 40 peers: the chat you have open stays on the map', () => {
+  if (!SRC) throw new Error('layout code not loaded');
+  const [np, cs] = crowd();
+  // the slowest plain node peer, which the ranking alone would leave out
+  const slow = np.filter((p) => !p.nodesignal).sort((a, b) => b.latency - a.latency)[0];
+  const host = slow.addr.replace(/^\[|\]?:\d+$/g, '');
+  assert(!layoutOf(5, ...crowd()).L.nodes.some((nd) => nd.p.host === host), 'left out when not open');
+  const { L } = layoutOf(5, np, cs, host);
+  assert.strictEqual(L.nodes.length, 40);
+  assert(L.nodes.some((nd) => nd.p.host === host), 'drawn while its chat is open');
+});
 
 t('latency rings keep their even radial spacing and ordering at 40 peers', () => {
   const [np] = SCENES['40 node peers, up to 1.2 s']();

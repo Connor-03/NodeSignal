@@ -849,10 +849,33 @@ function upsertContact(c){
 /* ===================== LAYOUT ===================== */
 const CX=470,CY=390;
 let LAYOUT=null,layoutSig='';
-const sigOf=()=>state.peers.map(p=>`${p.host}:${p.latency}:${p.nick}:${p.impl}:${p.kind}:${p.unmeasured}`).join('|');
+/* The map shows at most RADAR_MAX nodes (decided Oct 2026): beyond that the
+   layout cannot keep labels apart, and a node with 120 peers is unreadable
+   anyway. The ones shown are those you have exchanged the most messages with;
+   ties go to contacts, then peers advertising NodeSignal (you can message
+   them), then the lowest latency. The chat you have open always stays on the
+   map. Every contact and conversation is still in the Messages tab, and the
+   legend and counts include everyone. */
+const RADAR_MAX=40;
+function radarPeers(){
+  const all=state.peers;
+  if(all.length<=RADAR_MAX)return all;
+  const lat=p=>(p.unmeasured||p.latency==null)?Infinity:p.latency;
+  const ranked=[...all].sort((a,b)=>
+    (b.msgs.length-a.msgs.length)||
+    ((b.kind==='contact')-(a.kind==='contact'))||
+    ((!!b.ns)-(!!a.ns))||
+    (lat(a)-lat(b))||
+    (a.host<b.host?-1:a.host>b.host?1:0));
+  const shown=ranked.slice(0,RADAR_MAX);
+  const open=state.active&&all.find(p=>p.id===state.active);
+  if(open&&!shown.includes(open))shown[RADAR_MAX-1]=open;
+  return shown;
+}
+const sigOf=()=>radarPeers().map(p=>`${p.host}:${p.latency}:${p.nick}:${p.impl}:${p.kind}:${p.unmeasured}`).join('|');
 
 function computeLayout(){
-  const peers=state.peers,n=peers.length;
+  const peers=radarPeers(),n=peers.length;
   const grow=Math.min(1.85,1+Math.max(0,n-5)*0.055);
   const VBH0=900,RMIN0=160,RMAX0=470;
   const RMIN=RMIN0*grow,RMAX=RMAX0*grow,coreR=56*grow;
@@ -1009,8 +1032,12 @@ function updateHud(){
   const L=LAYOUT; if(!L||!view)return;
   const contacts=state.peers.filter(p=>p.kind==='contact').length;
   const unread=state.peers.reduce((s,p)=>s+p.unread,0);
+  const shown=L.nodes.length,total=state.peers.length;
+  const count=shown<total
+    ? `<b>${shown}</b> of <b>${total}</b> peers on the map <span title="drawn: the ${shown} you have exchanged the most messages with. Every contact and conversation is still in Messages.">(most messages first)</span>`
+    : `<b>${total}</b> peers`;
   document.getElementById('hud').innerHTML=
-    `<b>${state.peers.length}</b> peers · <b>${contacts}</b> contacts · <b>${unread}</b> unread · zoom <b>${(L.VBW/view.w).toFixed(2)}×</b>`;
+    `${count} · <b>${contacts}</b> contacts · <b>${unread}</b> unread · zoom <b>${(L.VBW/view.w).toFixed(2)}×</b>`;
 }
 
 /* ===================== RADAR ===================== */
