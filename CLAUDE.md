@@ -229,19 +229,21 @@ status table. Keep it current whenever security changes.
 
 ### Fix first: places where the code contradicts the vision
 
-1. **Remove the PIN UI.** The daemon ignores PINs between current daemons,
+1. **[DONE in the console, Oct 2026]** **Remove the PIN UI.** The daemon ignores PINs between current daemons,
    but the console still shows a "shared PIN" field in the add-contact
    dialog, a "set PIN" button, a "PIN-encrypted" pill, and locked messages
    reading "set the shared PIN to read it". This misdescribes the encryption.
    Replace with the real state: end-to-end Noise encryption, the peer's
    pinned fingerprint, and the mismatch banner. Same in `nodesignal-demo.html`
    for real (non-demo) contacts. Fake demo peers may keep their demo PIN.
-2. **Composer must queue, not drop.** Decided: the composer is always
+2. **[DONE, Oct 2026]** **Composer must queue, not drop.** Decided: the composer is always
    enabled, and when the daemon is disconnected the message is held and
    labeled honestly as "queued", then sent on reconnect. Currently
    `sendMsg()` toasts "daemon not connected" and discards it.
-3. **Add a real test suite.** There are no tests in the repo. Add a
-   `tests/` folder runnable with plain `node` (no test framework, keep zero
+3. **Add a real test suite.** Started: `tests/console.test.js` (static
+   checks, plain node), `tests/console.e2e.js` (two daemons + mock node,
+   optional Playwright, skips without it) and `tests/mock-node.js` (mock
+   RPC and :8333). Still to add, in the same `tests/` folder runnable with plain `node` (no test framework, keep zero
    deps) covering at least:
    - Noise handshake: mutual auth, matching keys, tamper rejection
    - two-daemon delivery and reply
@@ -294,6 +296,8 @@ status table. Keep it current whenever security changes.
 - Every shell command in docs must say where it runs (for example "Linux,
   on the node" or "Windows PowerShell").
 - `.bat` files must keep CRLF line endings.
+- Run `node tests/console.test.js` (and `tests/console.e2e.js` where
+  Playwright exists) after touching `nodesignal.html`.
 - Check syntax before committing:
   `node --check` on every `.js`, `bash -n install-node.sh`, and extract the
   `<script>` block from each HTML file and `node --check` it.
