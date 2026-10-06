@@ -1,9 +1,15 @@
 #!/usr/bin/env node
-// install.js — interactive NodeSignal setup
+// install.js: interactive NodeSignal setup, from a copy of the source.
 // ============================================================================
-// Asks only what it cannot work out for itself, verifies every answer against
-// the real system (does that cookie file exist? does bitcoind actually answer?
-// is that port free?), then writes the configuration and a launcher.
+// Most people should use the one-download installers instead (the Windows
+// .exe or the Linux .deb from GitHub Releases); see WindowsInstallGuide.txt
+// and LinuxInstallGuide.txt. This script is for running from a git checkout
+// with your own Node.js.
+//
+// NodeSignal runs beside a Bitcoin node (Core or Knots), so setup refuses to
+// continue on a machine without one. It asks only what it cannot work out,
+// verifies every answer against the real system (does bitcoind answer? is
+// that port free?), then writes the configuration and a launcher.
 //
 // Run it through install-windows.bat, or directly:  node install.js
 //
@@ -14,12 +20,11 @@
 'use strict';
 const fs = require('fs');
 const os = require('os');
-const net = require('net');
 const path = require('path');
 const http = require('http');
 const crypto = require('crypto');
-const readline = require('readline');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawn } = require('child_process');
+const core = require('./setup-core.js');
 
 const HERE = __dirname;
 const IS_WIN = process.platform === 'win32';
@@ -43,51 +48,17 @@ function header(n, total, title) {
 }
 
 /* ------------------------------------------------------------ prompts
-   Node's readline only yields the first line when stdin is a pipe, so an
-   installer built purely on rl.question() cannot be scripted or tested.
-   When stdin is not a TTY we read it all up front and serve answers from a
-   queue; interactive use is unchanged. That also makes unattended installs
-   possible:  node install.js < answers.txt   */
-const IS_TTY = !!process.stdin.isTTY;
-let rl = null;
-let queued = null;
-
-function loadPipedInput() {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (d) => (data += d));
-    process.stdin.on('end', () => resolve(data.split('\n')));
-    process.stdin.on('error', () => resolve([]));
-  });
-}
-function ask(q) {
-  if (IS_TTY) return new Promise((res) => rl.question(q, (a) => res(a.trim())));
-  process.stdout.write(q);
-  const line = queued.length ? queued.shift() : '';
-  process.stdout.write(line + '\n');
-  return Promise.resolve(String(line).trim());
-}
-const closeInput = () => { if (rl) rl.close(); };
-async function askDefault(q, dflt) {
-  const a = await ask(`  ${q} ${C.dim}[${dflt}]${C.r}: `);
-  return a === '' ? dflt : a;
-}
-async function askYesNo(q, dfltYes = true) {
-  for (let i = 0; i < 20; i++) {
-    const a = (await ask(`  ${q} ${C.dim}[${dfltYes ? 'Y/n' : 'y/N'}]${C.r}: `)).toLowerCase();
-    if (a === '') return dfltYes;
-    if (['y', 'yes'].includes(a)) return true;
-    if (['n', 'no'].includes(a)) return false;
-    warn('Please answer y or n.');
-  }
-  return dfltYes;
-}
+   setup-core's prompter reads a terminal or piped input (one answer per
+   line), so setup can be scripted:  node install.js < answers.txt */
+const P = core.createPrompter();
+const ask = (q) => P.ask(q);
+const askDefault = (q, d) => P.askDefault(q, d);
+const askYesNo = (q, d = true) => P.askYesNo(q, d);
 async function askChoice(q, options) {
   say(`  ${q}`);
   options.forEach((o, i) => say(`    ${C.cyn}${i + 1}${C.r}) ${o.label}${o.hint ? `  ${C.dim}${o.hint}${C.r}` : ''}`));
   for (let i = 0; i < 20; i++) {
-    const a = await ask(`  Choose 1-${options.length} ${C.dim}[1]${C.r}: `);
+    const a = await ask(`  Choose 1-${options.length} [1]: `);
     const n = a === '' ? 1 : parseInt(a, 10);
     if (n >= 1 && n <= options.length) return options[n - 1].value;
     warn(`Enter a number between 1 and ${options.length}.`);
@@ -96,7 +67,8 @@ async function askChoice(q, options) {
 }
 async function askHidden(q) {
   // Masked entry, but only when a real terminal is attached.
-  if (!IS_TTY) return ask(`  ${q}: `);
+  if (!P.tty) return ask(`  ${q}: `);
+  P.close();
   return new Promise((resolve) => {
     const stdin = process.stdin;
     const wasRaw = stdin.isRaw;
@@ -107,6 +79,7 @@ async function askHidden(q) {
       if (s === '\n' || s === '\r' || s === '\u0004') {
         try { stdin.setRawMode(wasRaw); } catch { }
         stdin.removeListener('data', onData);
+        stdin.pause();
         process.stdout.write('\n'); resolve(value);
       } else if (s === '\u0003') { process.stdout.write('\n'); process.exit(1); }
       else if (s === '\u0008' || s === '\u007f') {
@@ -117,102 +90,6 @@ async function askHidden(q) {
     try { stdin.setRawMode(true); } catch { }
     stdin.on('data', onData);
   });
-}
-
-/* ------------------------------------------------------------ system probes */
-function portFree(port, host = '0.0.0.0') {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once('error', () => resolve(false));
-    srv.once('listening', () => srv.close(() => resolve(true)));
-    srv.listen(port, host);
-  });
-}
-function bitcoinDataDirs() {
-  const out = [];
-  if (IS_WIN) {
-    const appdata = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
-    out.push(path.join(appdata, 'Bitcoin'));
-    out.push(path.join(os.homedir(), 'AppData', 'Local', 'Bitcoin'));
-  } else {
-    out.push(path.join(os.homedir(), '.bitcoin'));
-    out.push('/var/lib/bitcoind', '/var/lib/bitcoin', '/etc/bitcoin');
-  }
-  return out.filter((d) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } });
-}
-function parseConf(file) {
-  try {
-    const out = {}; let section = '';
-    for (let line of fs.readFileSync(file, 'utf8').split('\n')) {
-      line = line.trim();
-      if (!line || line.startsWith('#')) continue;
-      const sec = line.match(/^\[(\w+)\]$/);
-      if (sec) { section = sec[1].toLowerCase(); continue; }
-      if (section && section !== 'main') continue;
-      const i = line.indexOf('=');
-      if (i < 0) continue;
-      const k = line.slice(0, i).trim().toLowerCase();
-      if (!(k in out)) out[k] = line.slice(i + 1).trim();
-    }
-    return out;
-  } catch { return null; }
-}
-// Actually call the node. This is the difference between collecting text and
-// verifying a setup.
-function rpcTest(url, auth, method = 'getnetworkinfo', params = []) {
-  return new Promise((resolve) => {
-    let u;
-    try { u = new URL(url); } catch { return resolve({ ok: false, error: 'bad RPC URL' }); }
-    const body = JSON.stringify({ jsonrpc: '1.0', id: 'setup', method, params });
-    const req = http.request({
-      hostname: u.hostname, port: u.port || 8332, path: '/', method: 'POST',
-      headers: {
-        'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
-        Authorization: 'Basic ' + Buffer.from(auth).toString('base64'),
-      }, timeout: 6000,
-    }, (res) => {
-      let d = ''; res.on('data', (c) => (d += c));
-      res.on('end', () => {
-        if (res.statusCode === 401) return resolve({ ok: false, error: 'authentication rejected (wrong user/password or stale cookie)' });
-        try {
-          const j = JSON.parse(d);
-          if (j.error) return resolve({ ok: false, error: j.error.message });
-          resolve({ ok: true, result: j.result });
-        } catch { resolve({ ok: false, error: `unexpected reply (HTTP ${res.statusCode})` }); }
-      });
-    });
-    req.on('error', (e) => resolve({
-      ok: false,
-      error: e.code === 'ECONNREFUSED'
-        ? 'nothing listening — is bitcoind running with server=1?'
-        : (e.code || e.message),
-    }));
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timed out' }); });
-    req.end(body);
-  });
-}
-function tailscaleAddr() {
-  try {
-    const ifaces = os.networkInterfaces();
-    for (const name of Object.keys(ifaces)) {
-      for (const a of ifaces[name]) {
-        if (a.family !== 'IPv4' || a.internal) continue;
-        if (/tailscale|^ts\d/i.test(name)) return a.address;
-        const o = a.address.split('.').map(Number);
-        if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return a.address;
-      }
-    }
-  } catch { }
-  return null;
-}
-function lockDownFile(file) {
-  try {
-    if (IS_WIN) {
-      const user = process.env.USERNAME || '';
-      execFileSync('icacls', [file, '/inheritance:r', '/grant:r', `${user}:F`], { stdio: 'ignore' });
-    } else fs.chmodSync(file, 0o600);
-    return true;
-  } catch { return false; }
 }
 
 /* ------------------------------------------------------------ main */
@@ -230,34 +107,30 @@ async function main() {
   const major = parseInt(process.versions.node.split('.')[0], 10);
   if (major < 18) {
     bad(`Node.js ${process.versions.node} is too old. Install the LTS build from https://nodejs.org`);
-    process.exit(1);
+    return 1;
   }
   ok(`Node.js ${process.versions.node}`);
 
-  const needed = ['nodesignald.js', 'noise.js', 'nodeps.js'];
-  const missing = needed.filter((f) => !fs.existsSync(path.join(HERE, f)));
+  let list;
+  try { list = core.readFileList(HERE); }
+  catch (e) { bad(`Cannot read packaging/files.json (${e.message}). Run setup from a full copy of the repository.`); return 1; }
+  const missing = core.missingFiles(HERE, list.all);
   if (missing.length) {
     bad(`Missing from this folder: ${missing.join(', ')}`);
     info(`Folder: ${HERE}`);
-    info('Put every NodeSignal file in one folder and run setup again.');
-    process.exit(1);
+    info('Use a complete copy of the repository and run setup again.');
+    return 1;
   }
   ok('Program files present');
 
-  const hasConsole = fs.existsSync(path.join(HERE, 'nodesignal.html'));
-  const hasDemo = fs.existsSync(path.join(HERE, 'nodesignal-demo.html'));
-  if (!hasConsole && !hasDemo) {
-    bad('No interface file (nodesignal.html or nodesignal-demo.html) in this folder.');
-    process.exit(1);
-  }
   // A leftover node_modules from an older release is dead weight now.
   const nm = path.join(HERE, 'node_modules');
   if (fs.existsSync(nm)) {
-    warn('Found node_modules from an older version — NodeSignal no longer needs it.');
+    warn('Found node_modules from an older version. NodeSignal no longer needs it.');
     if (await askYesNo('Delete it?', true)) {
       try {
         fs.rmSync(nm, { recursive: true, force: true });
-        for (const f of ['package-lock.json']) fs.rmSync(path.join(HERE, f), { force: true });
+        fs.rmSync(path.join(HERE, 'package-lock.json'), { force: true });
         ok('Removed');
       } catch (e) { warn('Could not remove: ' + e.message); }
     }
@@ -265,139 +138,83 @@ async function main() {
 
   if (fs.existsSync(CONFIG_FILE)) {
     warn('An existing nodesignal-config.json was found.');
-    if (!(await askYesNo('Overwrite it?', false))) { say('\n  Setup cancelled. Nothing changed.\n'); closeInput(); return; }
+    if (!(await askYesNo('Overwrite it?', false))) { say('\n  Setup cancelled. Nothing changed.\n'); return 0; }
   }
 
   const cfg = {};
 
-  /* ---- Step 2: role ---- */
-  header(2, TOTAL, 'What is this machine?');
-  const dataDirs = bitcoinDataDirs();
-  if (dataDirs.length) info(`Detected a Bitcoin data directory: ${dataDirs[0]}`);
-  const role = await askChoice('Does this machine run a Bitcoin node?', [
-    {
-      value: 'node',
-      label: 'Yes — it runs Bitcoin Core or Knots',
-      hint: dataDirs.length ? '(detected)' : '',
-    },
-    { value: 'peer', label: 'No — set it up as a messaging peer only', hint: '(demo / laptop)' },
-  ]);
-  cfg['no-rpc'] = role === 'peer';
-
-  /* ---- Step 3: RPC ---- */
-  header(3, TOTAL, role === 'node' ? 'Connecting to your Bitcoin node' : 'Peer identity');
-  if (role === 'node') {
-    say(`  ${C.dim}NodeSignal only reads: getpeerinfo, getnetworkinfo, getblockchaininfo.${C.r}`);
-    say(`  ${C.dim}It never touches your wallet. Pruned nodes are fully supported.${C.r}`);
-    say('');
-
-    let rpcUrl = 'http://127.0.0.1:8332';
-    let auth = null, source = null;
-
-    // Try to find working credentials without asking.
-    for (const dir of dataDirs) {
-      const conf = parseConf(path.join(dir, 'bitcoin.conf'));
-      if (conf && conf.rpcport) rpcUrl = `http://127.0.0.1:${conf.rpcport}`;
-      if (conf && conf.rpcuser && conf.rpcpassword) {
-        const t = await rpcTest(rpcUrl, `${conf.rpcuser}:${conf.rpcpassword}`);
-        if (t.ok) { auth = `${conf.rpcuser}:${conf.rpcpassword}`; source = `bitcoin.conf in ${dir}`;
-          cfg['rpc-user'] = conf.rpcuser; cfg['rpc-pass'] = conf.rpcpassword; break; }
-      }
-      const cookiePath = (conf && conf.rpccookiefile) || path.join((conf && conf.datadir) || dir, '.cookie');
-      try {
-        const cookie = fs.readFileSync(cookiePath, 'utf8').trim();
-        const t = await rpcTest(rpcUrl, cookie);
-        if (t.ok) { auth = cookie; source = `cookie file ${cookiePath}`; cfg['rpc-cookie'] = cookiePath; break; }
-      } catch { }
-      if (conf && conf.rpcauth && !conf.rpcpassword) {
-        warn('bitcoin.conf uses rpcauth= (a hash) — the password cannot be read from it.');
-      }
-    }
-
-    if (auth) {
-      ok(`Connected automatically via ${source}`);
-    } else {
-      warn('Could not connect automatically. Enter credentials manually.');
-      info('These are in bitcoin.conf as rpcuser= / rpcpassword=, or use the cookie file.');
-      say('');
-      for (;;) {
-        rpcUrl = await askDefault('RPC address', rpcUrl);
-        const how = await askChoice('How should NodeSignal authenticate?', [
-          { value: 'userpass', label: 'Username and password' },
-          { value: 'cookie', label: 'Cookie file (.cookie)' },
-          { value: 'skip', label: 'Skip for now — configure later' },
-        ]);
-        if (how === 'skip') { warn('Skipped. The peer map stays empty until RPC is configured.'); break; }
-        if (how === 'userpass') {
-          const u = await ask('  RPC username: ');
-          const p = await askHidden('RPC password');
-          const t = await rpcTest(rpcUrl, `${u}:${p}`);
-          if (t.ok) { ok('Authenticated'); cfg['rpc-user'] = u; cfg['rpc-pass'] = p; auth = `${u}:${p}`; }
-          else bad(t.error);
-        } else {
-          const guess = dataDirs.length ? path.join(dataDirs[0], '.cookie') : '';
-          const cp = await askDefault('Path to .cookie', guess);
-          try {
-            const cookie = fs.readFileSync(cp, 'utf8').trim();
-            const t = await rpcTest(rpcUrl, cookie);
-            if (t.ok) { ok('Authenticated'); cfg['rpc-cookie'] = cp; auth = cookie; }
-            else bad(t.error);
-          } catch (e) { bad(`Cannot read ${cp} (${e.code || e.message})`); }
-        }
-        if (auth) break;
-        if (!(await askYesNo('Try again?', true))) { warn('Continuing without RPC.'); break; }
-      }
-    }
-    if (rpcUrl !== 'http://127.0.0.1:8332') cfg['rpc-url'] = rpcUrl;
-
-    if (auth) {
-      const ni = await rpcTest(rpcUrl, auth, 'getnetworkinfo');
-      const ch = await rpcTest(rpcUrl, auth, 'getblockchaininfo');
-      const pi = await rpcTest(rpcUrl, auth, 'getpeerinfo');
-      if (ni.ok) info(`Node: ${ni.result.subversion}`);
-      if (ch.ok) info(`Chain: ${ch.result.chain} · height ${Number(ch.result.blocks).toLocaleString()}${ch.result.pruned ? ' · pruned' : ''}`);
-      if (pi.ok) info(`Peers visible to NodeSignal: ${pi.result.length}`);
-      if (pi.ok && pi.result.length === 0) warn('Your node currently has no peers — the map will fill in as it connects.');
-    }
-  } else {
-    say(`  ${C.dim}With no Bitcoin node here, this machine can still message other${C.r}`);
-    say(`  ${C.dim}operators. It can also advertise a node identity so it appears on${C.r}`);
-    say(`  ${C.dim}their maps — useful for a demo, and flagged to peers as simulated.${C.r}`);
-    say('');
-    if (await askYesNo('Advertise a simulated node identity?', true)) {
-      cfg.impersonate = await askDefault('User agent to advertise',
-        '/Satoshi:29.2.0/Knots:20251110+bip110-v0.1/UASF-BIP110:0.1/');
-      const h = await askDefault('Block height to advertise', '959370');
-      cfg['impersonate-height'] = Number(h) || 0;
-      ok('Peers will see this machine as a classified node, marked simulated');
-    }
+  /* ---- Step 2: the Bitcoin node ---- */
+  header(2, TOTAL, 'Finding your Bitcoin node');
+  let det = await core.detectBitcoinNode();
+  if (!det.installed) {
+    bad('No Bitcoin node was found on this machine.');
+    info('NodeSignal runs beside Bitcoin Core or Bitcoin Knots. It looked for a running');
+    info('bitcoind or bitcoin-qt, a Bitcoin data directory and the bitcoind program.');
+    info('Install Bitcoin Core (https://bitcoincore.org/en/download/) or');
+    info('Bitcoin Knots (https://bitcoinknots.org/), start it once, then run setup again.');
+    info('Pruned nodes are fine. Nothing was changed.');
+    return 1;
   }
+  for (const h of det.how.slice(0, 4)) ok(`Found ${h}`);
+  say(`  ${C.dim}NodeSignal only reads: getpeerinfo, getnetworkinfo, getblockchaininfo.${C.r}`);
+  say(`  ${C.dim}It never touches your wallet. Pruned nodes are fully supported.${C.r}`);
+  say('');
 
-  /* ---- Step 4: identity ---- */
-  header(4, TOTAL, 'Naming this node');
-  cfg.nick = await askDefault('Display name shown to other operators', os.hostname());
+  let rpc = null;
+  for (;;) {
+    rpc = await core.checkNode(det, cfg);
+    if (rpc.ok) {
+      ok(`Connected via ${rpc.source}`);
+      info(`Node: ${rpc.subversion || 'unknown'}`);
+      info(`Chain: ${rpc.chain} · height ${Number(rpc.blocks).toLocaleString()}${rpc.pruned ? ' · pruned' : ''}`);
+      break;
+    }
+    warn(`Your node is installed but RPC is not answering right now: ${rpc.error}.`);
+    if (rpc.hint) info(rpc.hint);
+    for (const n of rpc.notes || []) info(n);
+    if ((rpc.code === 'auth' || rpc.code === 'no-auth') && det.running
+      && await askYesNo('Enter an RPC username and password instead?', false)) {
+      const u = await ask('  RPC username: ');
+      const p = await askHidden('RPC password');
+      cfg['rpc-user'] = u; cfg['rpc-pass'] = p;
+      continue;
+    }
+    info('NodeSignal can be set up anyway: it reconnects by itself every 30 seconds.');
+    if (!(await askYesNo('Check again?', true))) { delete cfg['rpc-user']; delete cfg['rpc-pass']; break; }
+    det = await core.detectBitcoinNode();
+  }
+  // Only point the daemon at the node when it lives where it would not look.
+  if (!cfg['rpc-user']) {
+    if (det.cookiePath && !core.daemonFindsCookie(det.cookiePath, os.homedir())) cfg['rpc-cookie'] = det.cookiePath;
+    if (det.confPath && !core.daemonFindsConf(det.confPath, os.homedir())) cfg['rpc-conf'] = det.confPath;
+  }
+  if (det.rpcUrlNeeded) cfg['rpc-url'] = det.rpcUrl;
 
-  /* ---- Step 5: networking ---- */
-  header(5, TOTAL, 'Networking');
-  const ts = tailscaleAddr();
+  /* ---- Step 3: identity ---- */
+  header(3, TOTAL, 'Naming this node');
+  cfg.nick = (await askDefault('Display name shown to other operators', os.hostname())).slice(0, 60);
+
+  /* ---- Step 4: networking ---- */
+  header(4, TOTAL, 'Networking');
+  const ts = core.tailscaleAddr();
   if (ts) ok(`Tailscale detected at ${ts}`);
   const netMode = await askChoice('How will other operators reach this machine?', [
-    ...(ts ? [{ value: 'tailscale', label: `Tailscale only`, hint: `(${ts} — private, recommended)` }] : []),
+    ...(ts ? [{ value: 'tailscale', label: 'Tailscale only', hint: `(${ts}, private, recommended)` }] : []),
     { value: 'tor', label: 'Tor hidden service', hint: '(most private; needs torrc setup)' },
-    { value: 'local', label: 'This machine only', hint: '(localhost — nobody else can reach it)' },
-    { value: 'clearnet', label: 'Open internet', hint: '(exposes your IP — read the security notes)' },
+    { value: 'local', label: 'This machine only', hint: '(localhost, nobody else can reach it)' },
+    { value: 'clearnet', label: 'Open internet', hint: '(exposes your IP; read the security notes)' },
   ]);
   if (netMode === 'tailscale') cfg.bind = ts;
   else if (netMode === 'local') cfg.bind = '127.0.0.1';
   else if (netMode === 'tor') {
     cfg.bind = '127.0.0.1';
     // Reaching another operator's .onion needs Tor's SOCKS proxy for outbound
-    // connections — DNS cannot resolve .onion, so a direct dial fails.
+    // connections: DNS cannot resolve .onion, so a direct dial fails.
     const px = await askDefault('Tor SOCKS proxy address', '127.0.0.1:9050');
     cfg['tor-proxy'] = px;
     const [ph, pp] = [px.slice(0, px.lastIndexOf(':')), Number(px.slice(px.lastIndexOf(':') + 1))];
-    if (await portFree(pp, ph === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1')) {
-      warn(`Nothing is listening on ${px} — start Tor before using NodeSignal.`);
+    if (await core.portFree(pp, ph === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1')) {
+      warn(`Nothing is listening on ${px}. Start Tor before using NodeSignal.`);
     } else ok(`Tor SOCKS proxy reachable at ${px}`);
     info('Tor reaches the daemon over localhost. Add to your torrc:');
     say(`      ${C.cyn}HiddenServiceDir /var/lib/tor/nodesignal/${C.r}`);
@@ -413,22 +230,22 @@ async function main() {
   let webPort = 8789, peerPort = 8788;
   for (;;) {
     webPort = Number(await askDefault('Web interface port', String(webPort)));
-    if (await portFree(webPort)) { ok(`Port ${webPort} is free`); break; }
+    if (await core.portFree(webPort)) { ok(`Port ${webPort} is free`); break; }
     bad(`Port ${webPort} is already in use.`);
     webPort = webPort + 1;
   }
   for (;;) {
     peerPort = Number(await askDefault('Peer messaging port', String(peerPort)));
     if (peerPort === webPort) { bad('Must differ from the web port.'); peerPort = webPort + 1; continue; }
-    if (await portFree(peerPort)) { ok(`Port ${peerPort} is free`); break; }
+    if (await core.portFree(peerPort)) { ok(`Port ${peerPort} is free`); break; }
     bad(`Port ${peerPort} is already in use.`);
     peerPort = peerPort + 1;
   }
   cfg['web-port'] = webPort;
   cfg['peer-port'] = peerPort;
 
-  /* ---- Step 6: access control ---- */
-  header(6, TOTAL, 'Web interface access');
+  /* ---- Step 5: access control ---- */
+  header(5, TOTAL, 'Web interface access');
   const openOk = netMode === 'local' || netMode === 'tailscale';
   say(`  ${C.dim}A token requires a login before the interface can be used.${C.r}`);
   if (!openOk) warn('Strongly recommended for Tor or clearnet.');
@@ -440,19 +257,42 @@ async function main() {
     cfg['web-token'] = choice === 'gen'
       ? crypto.randomBytes(24).toString('base64url')
       : await askHidden('Enter token');
-    if (choice === 'gen') { ok('Generated'); say(`      ${C.b}${cfg['web-token']}${C.r}`); info('Save this — you will need it to sign in.'); }
+    if (choice === 'gen') { ok('Generated'); say(`      ${C.b}${cfg['web-token']}${C.r}`); info('Save this. You will need it to sign in.'); }
   } else {
     info('No login required. Fine on a private tailnet or localhost.');
   }
+
+  /* ---- Step 6: optional extras, both off unless you say yes ---- */
+  header(6, TOTAL, 'Optional extras (both off by default)');
+  const confPath = det.confPath || (det.datadir ? path.join(det.datadir, 'bitcoin.conf') : null);
+  let advertise = false;
+  const ua = confPath ? core.uaCommentState(confPath) : { on: false };
+  if (ua.on) ok('Your node already advertises NodeSignal (uacomment=nodesignal).');
+  else if (confPath && !ua.unreadable) {
+    for (const l of core.OPT_IN_TEXT.advertise.slice(1)) info(l);
+    advertise = await askYesNo(core.OPT_IN_TEXT.advertise[0], false);
+  } else if (!confPath) info('No bitcoin.conf location found, so the user agent offer is skipped.');
+  say('');
+  for (const l of core.OPT_IN_TEXT.portMapping.slice(1)) info(l);
+  if (await askYesNo(core.OPT_IN_TEXT.portMapping[0], false)) cfg['port-mapping'] = true;
 
   /* ---- Step 7: write everything ---- */
   header(7, TOTAL, 'Writing configuration');
   cfg.data = path.join(os.homedir(), '.nodesignal');
 
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+  const locked = core.writeConfig(CONFIG_FILE, cfg);
   ok(`Config written: ${CONFIG_FILE}`);
-  if (lockDownFile(CONFIG_FILE)) ok('Permissions restricted to your user account');
-  else warn('Could not restrict file permissions — check them manually.');
+  if (locked) ok('Permissions restricted to your user account');
+  else warn('Could not restrict file permissions. Check them manually.');
+
+  if (advertise) {
+    try {
+      const r = core.setUaComment(confPath, true);
+      ok(`Added uacomment=nodesignal to ${confPath}`);
+      if (r.backup) info(`The original was saved as ${r.backup}`);
+      info('Restart your node yourself for peers to see it. NodeSignal never restarts it.');
+    } catch (e) { warn(`Could not edit bitcoin.conf: ${e.message}`); }
+  }
 
   const nodeExe = process.execPath;
   if (IS_WIN) {
@@ -507,7 +347,6 @@ async function main() {
   /* ---- verify by actually starting it ---- */
   say('');
   say(`  ${C.dim}Starting the daemon to verify the configuration…${C.r}`);
-  const { spawn } = require('child_process');
   const child = spawn(nodeExe, ['nodesignald.js', '--config', CONFIG_FILE], { cwd: HERE, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';
   child.stdout.on('data', (d) => (out += d.toString()));
@@ -517,10 +356,14 @@ async function main() {
     const started = Date.now();
     const poll = () => {
       const host = (cfg.bind && cfg.bind !== '0.0.0.0') ? cfg.bind : '127.0.0.1';
-      const req = http.get({ host, port: webPort, path: '/health', timeout: 2000,
-        headers: cfg['web-token'] ? { Authorization: 'Bearer ' + cfg['web-token'] } : {} }, (res) => {
+      const req = http.get({ host, port: webPort, path: '/health', timeout: 2000 }, (res) => {
         let d = ''; res.on('data', (c) => (d += c));
-        res.on('end', () => { try { resolve(JSON.parse(d)); } catch { resolve(null); } });
+        res.on('end', () => {
+          let j = null; try { j = JSON.parse(d); } catch { }
+          // give RPC a few seconds to connect before reporting
+          if (j && !j.rpcConnected && Date.now() - started < 9000) return setTimeout(poll, 700);
+          resolve(j);
+        });
       });
       req.on('error', () => { if (Date.now() - started > 12000) resolve(null); else setTimeout(poll, 500); });
       req.on('timeout', () => { req.destroy(); if (Date.now() - started > 12000) resolve(null); else setTimeout(poll, 500); });
@@ -537,10 +380,8 @@ async function main() {
     say('');
     ok(`Daemon starts cleanly as "${health.nick}"`);
     ok(`Encryption: ${health.secure ? 'Noise handshake, identity ' + String(health.fingerprint).slice(0, 16) + '…' : 'PIN fallback'}`);
-    if (role === 'node') {
-      if (health.rpcConnected) ok(`Bitcoin RPC connected — ${health.peerCount} peers will appear on the map`);
-      else warn('Bitcoin RPC is NOT connected — the peer map will be empty. See the notes above.');
-    }
+    if (health.rpcConnected) ok(`Bitcoin RPC connected: ${health.peerCount} peers will appear on the map`);
+    else warn('Bitcoin RPC is not connected yet. The daemon retries every 30 seconds; see the notes above.');
   } else {
     bad('The daemon did not answer its health check.');
     say(`${C.dim}${out.split('\n').slice(-14).join('\n')}${C.r}`);
@@ -553,17 +394,14 @@ async function main() {
   if (cfg['web-token']) say(`  ${C.b}Sign in with:${C.r}        ${C.dim}the token shown above${C.r}`);
   if (netMode === 'tor') say(`  ${C.b}Tor:${C.r}                 ${C.dim}finish the torrc steps, then share your .onion${C.r}`);
   say('');
-  say(`  ${C.dim}Settings live in nodesignal-config.json — edit and restart to change them.${C.r}`);
+  say(`  ${C.dim}Settings live in nodesignal-config.json. Edit and restart to change them,${C.r}`);
+  say(`  ${C.dim}or use: node cli.js advertise on|off, node cli.js port-mapping on|off${C.r}`);
   say('');
-  closeInput();
-  // Nothing further to do; exit rather than waiting on any stray handle.
-  setTimeout(() => process.exit(0), 50).unref();
+  return 0;
 }
 
-// Bootstrap the input layer before running.
-(async () => {
-  if (IS_TTY) rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  else queued = await loadPipedInput();
-  try { await main(); }
-  catch (e) { say(''); bad(e && e.message ? e.message : String(e)); closeInput(); process.exit(1); }
-})();
+main().then((code) => {
+  P.close();
+  // Nothing further to do; exit rather than waiting on any stray handle.
+  setTimeout(() => process.exit(code || 0), 50).unref();
+}, (e) => { say(''); bad(e && e.message ? e.message : String(e)); P.close(); process.exit(1); });
