@@ -74,7 +74,7 @@ Installing it opens **two new listening ports on the machine running your node**
 | Port | Purpose | Auth by default |
 |---|---|---|
 | 8788 | daemon-to-daemon messaging | **none** |
-| 8789 | web UI + WebSocket API | **none** (`--web-token` optional). Since v1.3: loopback only, Host/Origin checked, per-launch action token |
+| 8789 | web UI + WebSocket API | Since v1.3: loopback only, Host/Origin checked, per-launch action token, and on Linux a login token set at install (`nodesignal web-token`; optional on Windows) |
 
 The failure mode is not "someone reads my chats." It is **lateral movement**: a
 bug in the daemon puts an attacker on the same host as the node, likely as the
@@ -368,6 +368,21 @@ came from writing the missing test suites the same night.
 | 7 | The web server's static fallback served any file in the web root, which is the program folder: a from-source install's `nodesignal-config.json` (RPC password, web token), the launcher, and `state.json` when `--data` pointed there. Found by `tests/static.test.js` | High (local secret disclosure past 0600 permissions) | No static fallback: the daemon serves the console page, `/health` and the login routes only |
 | 8 | SOCKS5 replies were assumed to arrive in one read; a split reply corrupted the Noise stream and the message to the .onion contact never arrived. Found by `tests/tor.test.js` | Low (reliability) | Both replies are buffered until complete |
 | 9 | The console WebSocket accepted unmasked client frames, capped single frames but not fragmented messages (unbounded memory), and dropped its own close frame. Found by `tests/websocket.test.js` | Low (needs the loopback console) | Unmasked frames close the socket, the 8 MiB cap covers the whole message, the close frame is sent once |
+
+The first install on a real node (Oct 2026, upgrading a 1.2 from-source
+install, with Tailscale, a USB data disk and several other RPC users) found
+three more. Tests: item 10 in `tests/setup-core.test.js`, items 11 and 12 in
+`tests/hardening.test.js`.
+
+| # | Finding | Severity | Fix |
+|---|---|---|---|
+| 10 | With no login token, every account on the machine could use the console: the action token is written into the page, and any local process can fetch the page from 127.0.0.1. The real node also ran a game server under its own account | Medium (local: read history, send as the operator) | Linux setup creates a login token at install and on upgrade (`nodesignal web-token` shows, replaces or turns it off; off is kept across upgrades). Windows, a single-user desktop, stays open |
+| 11 | On a machine with Tailscale, the peer port listened only on the tailnet address, so a Tor hidden service (which forwards to 127.0.0.1) reached nothing | Low (reliability) | The peer port also listens on 127.0.0.1 in that case |
+| 12 | A 5 s RPC timeout, and a new poll every 30 s whether or not the last finished. A node on a USB disk stalls RPC while it connects a block | Low (reliability) | 30 s timeout, one poll at a time |
+
+Also from that install: setup did not carry a 1.2 install's history over
+(its settings lived on the unit's command line), which the release notes
+promised. Fixed, with a test.
 
 Read and left as they are, on purpose:
 
