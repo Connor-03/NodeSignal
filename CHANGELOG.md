@@ -25,6 +25,14 @@ same machine, and still only calls three read-only RPC methods:
   old handshake.
 - **Linux: your history moves to `/var/lib/nodesignal`.** The .deb copies an
   older install's `~/.nodesignal` there once and leaves the original alone.
+- **Linux: the console now asks for a login token.** Other accounts on the
+  machine can reach 127.0.0.1 too, so setup creates one. Show it with
+  `sudo nodesignal web-token` (on the node). `web-token off` removes it, and
+  upgrades keep that choice.
+- **With Tailscale, the peer port stays on your tailnet** (as before), plus
+  127.0.0.1 for a Tor hidden service. Operators found on clearnet cannot dial
+  in then, though you can still message them and they reply over your link.
+  `"bind": "0.0.0.0"` in the config takes clearnet peers too.
 
 ### Installing
 
@@ -53,7 +61,7 @@ same machine, and still only calls three read-only RPC methods:
 - The Windows .exe now carries its own icon and version details
   (ProductName NodeSignal, the release version) instead of Node's.
 - New `nodesignal` command: `status`, `advertise on|off`, `port-mapping on|off`,
-  `rpc-access show|add|remove`, `open`, `logs`.
+  `rpc-access show|add|remove`, `web-token [show|new|off]`, `open`, `logs`.
 
 ### Encryption
 
@@ -113,12 +121,23 @@ same machine, and still only calls three read-only RPC methods:
   - the console WebSocket refuses unmasked frames and caps fragmented
     messages;
   - `probe.js` and `probeTester.bat` are removed.
+- From the first install on a real node (`SECURITY-CRITIQUE.md` section 8,
+  items 10 to 12):
+  - Linux installs get a console login token (see above);
+  - with Tailscale, a Tor hidden service could not reach the peer port;
+  - a node on a slow disk caused "RPC timeout" while it connected a block:
+    the timeout is now 30 seconds, and polls no longer pile up;
+  - a 1.2 from-source install's history was not copied to
+    `/var/lib/nodesignal`;
+  - `nodesignal status` run without sudo now says why it cannot read the
+    config.
 
 ### Known limits
 
 - No outside review of the daemon yet. The test vectors prove `noise.js` only.
-- Not yet run by a person on real Windows, real arm64 hardware, a real router
-  or a real bitcoind; CI runs mocks for all of them.
+- Run on one real Linux node (amd64, beside several other programs that use
+  the node's RPC). Not yet on real Windows, arm64 hardware or a real
+  router; CI runs mocks for those.
 - Metadata (who talks to whom, when) is not hidden. Running NodeSignal links a
   social identity to a node IP; Tor is the mitigation.
 

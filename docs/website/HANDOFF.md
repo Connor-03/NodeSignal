@@ -168,7 +168,8 @@ Every line was checked in the code; the reference is where.
   over Tor needs a hidden service, set up by hand as `TorSetupGuide.txt`
   describes. (`nodesignald.js`: `socks5Connect`, `dial`)
 - Tailscale: when a Tailscale interface exists, the peer port listens only
-  there by default. (`nodesignald.js`: `tailscaleAddr`, `PEER_BIND`)
+  there (and on 127.0.0.1, for a Tor hidden service) by default.
+  (`nodesignald.js`: `tailscaleAddr`, `PEER_BIND`, `peerLoopback`)
 - Opt-in router port mapping (UPnP IGD or NAT-PMP), off by default.
   (`portmap.js`; `cli.js`: `port-mapping`)
 

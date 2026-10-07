@@ -38,14 +38,13 @@ DEST=/opt/nodesignal
 UNIT=/etc/systemd/system/nodesignal.service
 
 NICK=""
-TOKEN=0
 ADVERTISE=""
 PORTMAP=""
 ASK=1
 [ -t 0 ] || ASK=0
 for a in "$@"; do
   case "$a" in
-    --token) TOKEN=1 ;;
+    --token) ;;   # a login token is now always set
     --advertise) ADVERTISE=1 ;;
     --port-mapping) PORTMAP=1 ;;
     --yes) ASK=0 ;;
@@ -129,12 +128,6 @@ if [ "$ASK" = "1" ]; then
     node -e 'for (const l of require("./setup-core.js").OPT_IN_TEXT.portMapping.slice(1)) console.log("  " + l)'
     if ask_yn "Ask your router to open the NodeSignal peer port (UPnP / NAT-PMP)?"; then PORTMAP=1; fi
   fi
-  if [ "$TOKEN" = "0" ]; then
-    echo ""
-    echo "  A web login token is recommended unless the interface is only on"
-    echo "  localhost or a private tailnet."
-    if ask_yn "Require a web login token?"; then TOKEN=1; fi
-  fi
 fi
 echo ""
 
@@ -167,7 +160,7 @@ sed -e "s#^ExecStart=/opt/nodesignal/node #ExecStart=$NODE_BIN #" \
 
 SETUP=(setup)
 [ -n "$NICK" ] && SETUP+=(--nick "$NICK")
-[ "$TOKEN" = "1" ] && SETUP+=(--generate-token)
+# setup always gives the console a login token: sudo nodesignal web-token
 sudo "$NODE_BIN" "$DEST/cli.js" "${SETUP[@]}" ${MIGRATE[@]+"${MIGRATE[@]}"}
 
 sudo tee /usr/local/bin/nodesignal >/dev/null <<WRAP

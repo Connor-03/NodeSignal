@@ -342,7 +342,25 @@ t('cli setup on a fresh machine writes a new config', async () => {
   const out = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r, '--nick', 'fresh'], { encoding: 'utf8', timeout: 30000 });
   assert.strictEqual(out.status, 0, out.stdout + out.stderr);
   const cfg = JSON.parse(fs.readFileSync(path.join(r, 'etc/nodesignal/config.json'), 'utf8'));
-  assert.deepStrictEqual(Object.keys(cfg).sort(), ['data', 'nick', 'rpc-pass', 'rpc-url', 'rpc-user']);
+  assert.deepStrictEqual(Object.keys(cfg).sort(), ['data', 'nick', 'rpc-pass', 'rpc-url', 'rpc-user', 'web-token']);
+  // other accounts on a server reach 127.0.0.1 too, so the console gets a
+  // login token; apt logs install output, so it is never printed
+  assert(cfg['web-token'].length >= 32);
+  assert(!out.stdout.includes(cfg['web-token']), 'token never printed by setup');
+  assert(/sudo nodesignal web-token/.test(out.stdout), out.stdout);
+  const cli = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), ...a, '--config', path.join(r, 'etc/nodesignal/config.json')], { encoding: 'utf8', timeout: 30000 });
+  assert.strictEqual(cli('web-token').stdout.trim(), cfg['web-token'], 'web-token shows it');
+  const fresh2 = cli('web-token', 'new');
+  const tok2 = JSON.parse(fs.readFileSync(path.join(r, 'etc/nodesignal/config.json'), 'utf8'))['web-token'];
+  assert(tok2 && tok2 !== cfg['web-token'] && fresh2.stdout.includes(tok2), 'new replaces it');
+  cli('web-token', 'off');
+  const readTok = () => JSON.parse(fs.readFileSync(path.join(r, 'etc/nodesignal/config.json'), 'utf8'))['web-token'];
+  assert.strictEqual(readTok(), '', 'off empties it');
+  // an upgrade (setup again) keeps the operator's "off"
+  const again = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r], { encoding: 'utf8', timeout: 30000 });
+  assert.strictEqual(again.status, 0, again.stdout);
+  assert.strictEqual(readTok(), '', 'setup on an upgrade keeps it off');
+  assert(/no login token/i.test(cli('web-token').stdout));
   assert.strictEqual(cfg.nick, 'fresh');
   assert.strictEqual(cfg['rpc-url'], 'http://127.0.0.1:8332');
   assert(fs.statSync(path.join(r, 'var/lib/nodesignal')).isDirectory());

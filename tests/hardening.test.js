@@ -233,6 +233,61 @@ const stateFile = (d) => JSON.parse(fs.readFileSync(path.join(d, 'state.json'), 
     });
   }
 
+  if (process.platform !== 'linux') {
+    skip('a Tailscale-bound peer port still answers on 127.0.0.1', 'fakes a tailnet address on 127.0.0.2 (Linux only)');
+  } else {
+    /* 6. Root cause: with a Tailscale interface the peer port listened only
+       on the tailnet address, so a Tor hidden service, which forwards to
+       127.0.0.1:8788, reached nothing. Found on a real node running both. */
+    await t('a Tailscale-bound peer port still answers on 127.0.0.1, for Tor', async () => {
+      const pre = path.join(TMP, 'fake-tailscale.js');
+      fs.writeFileSync(pre, "const os = require('os'); const real = os.networkInterfaces;\n" +
+        "os.networkInterfaces = () => Object.assign({}, real(), { tailscale0: [{ address: '127.0.0.2', family: 'IPv4', internal: false }] });\n");
+      const d = path.join(TMP, 'tailnet');
+      const c = spawn(process.execPath, ['-r', pre, path.join(ROOT, 'nodesignald.js'), '--nick', 'ts', '--no-rpc',
+        '--web-port', String(WEB), '--peer-port', String(PEER), '--data', d, '--checkin-ms', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      c.log = ''; c.stdout.on('data', (x) => (c.log += x)); c.stderr.on('data', (x) => (c.log += x));
+      try {
+        await up();
+        assert.match(c.log, /peer bind\s+: Tailscale \(127\.0\.0\.2\)/, 'took the faked tailnet address');
+        const dial = (host) => new Promise((resolve) => {
+          const s = net.connect(PEER, host, () => { s.destroy(); resolve(true); }); s.on('error', () => resolve(false));
+        });
+        assert(await dial('127.0.0.2'), 'answers on the tailnet address');
+        assert(await dial('127.0.0.1'), 'answers on loopback, where Tor forwards');
+      } finally { await stop(c); }
+    });
+  }
+
+  /* 7. Root cause: a 5 s RPC timeout, and a new poll every 30 s whether or
+     not the last had finished. A node on a USB disk stalls RPC while it
+     connects a block, and showed "RPC timeout". Now 30 s, one poll at a time. */
+  await t('RPC: a slow node is waited for, and polls never overlap', async () => {
+    let calls = 0, open = 0, maxOpen = 0;
+    const slow = http.createServer((req, res) => {
+      calls++; open++; maxOpen = Math.max(maxOpen, open);
+      let b = ''; req.on('data', (x) => (b += x)); req.on('end', () => {
+        const { method } = JSON.parse(b);
+        const result = method === 'getpeerinfo' ? [] : method === 'getnetworkinfo' ? { subversion: '/Satoshi:28.0.0/', connections: 0 } : { blocks: 1, chain: 'main' };
+        setTimeout(() => { open--; res.end(JSON.stringify({ result, error: null, id: 'ns' })); }, 7000);
+      });
+    });
+    await new Promise((r) => slow.listen(21732, '127.0.0.1', r));
+    const d = path.join(TMP, 'slowrpc');
+    const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--nick', 'slow', '--bind', '127.0.0.1',
+      '--rpc-url', 'http://127.0.0.1:21732', '--rpc-user', 'u', '--rpc-pass', 'p',
+      '--web-port', String(WEB), '--peer-port', String(PEER), '--data', d, '--checkin-ms', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    c.log = ''; c.stdout.on('data', (x) => (c.log += x)); c.stderr.on('data', (x) => (c.log += x));
+    try {
+      await up();
+      let h;
+      for (let i = 0; i < 100; i++) { h = await health(); if (h.rpcConnected) break; await sleep(100); }
+      assert(h.rpcConnected, 'connected after a 7 s RPC reply: ' + JSON.stringify(h.rpcError || h));
+      assert.strictEqual(calls, 3, 'one poll, three calls');
+      assert(maxOpen <= 3, 'never more than one poll in flight');
+    } finally { await stop(c); slow.close(); }
+  });
+
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log(failed ? `\n${failed} failed, ${passed} passed` : `\nall passed (${passed}${skipped ? `, ${skipped} skipped` : ''})`);
   process.exit(failed ? 1 : 0);

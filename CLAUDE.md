@@ -284,12 +284,15 @@ status table. Keep it current whenever security changes.
   install.
 - Rate limiting per source block (/32 IPv4, /64 IPv6), which defeats IPv6
   address spraying. Connection cap.
-- Auto-binds to the Tailscale interface when present; otherwise the web UI
-  binds to localhost.
+- Auto-binds the peer port to the Tailscale interface when present (plus
+  127.0.0.1, where a Tor hidden service forwards); the web UI is always
+  127.0.0.1.
 - Tor: SOCKS5 for outbound `.onion` (DNS cannot resolve them), hidden service
   for inbound. Both halves are required.
 - Zero dependencies.
-- Optional web login token; HttpOnly SameSite=Strict session cookie also
+- Web login token: Linux setup creates one (`nodesignal web-token`;
+  `off` stores an empty token that upgrades keep), optional on Windows;
+  HttpOnly SameSite=Strict session cookie also
   authenticates the `/ws` upgrade. Never put the token in a query string.
 - Least RPC privilege (v1.3): own rpcauth user with an `rpcwhitelist` of the
   three methods, no cookie, dedicated `nodesignal` system user on Linux.

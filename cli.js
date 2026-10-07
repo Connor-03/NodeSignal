@@ -63,7 +63,8 @@ function restartHint() {
 /* ------------------------------------------------------------ status */
 async function cmdStatus(ctx) {
   const { core, cfg, cfgPath, cfgError } = ctx;
-  if (cfgError) say(`Config  : ${cfgPath} (${cfgError}; using defaults)`);
+  if (cfgError === 'permission denied') say(`Config  : ${cfgPath} (readable by root and nodesignal only; run "sudo nodesignal status" for every line)`);
+  else if (cfgError) say(`Config  : ${cfgPath} (${cfgError}; using defaults)`);
   else say(`Config  : ${cfgPath}`);
   const port = Number(cfg['web-port']) || 8789;
   const waitSec = Number(optValue(ctx.argv, 'wait')) || 0;
@@ -86,7 +87,7 @@ async function cmdStatus(ctx) {
   say(`Contacts: ${h.contacts}`);
   say(`Ports   : web ${h.webPort}, peer ${h.peerPort}${cfg['port-mapping'] ? ' (router port mapping requested)' : ''}`);
   if (h.fingerprint) say(`Identity: ${h.fingerprint}`);
-  say(`Login   : ${h.authRequired ? 'token required' : 'open (no token)'}`);
+  say(`Login   : ${h.authRequired ? 'token required (show it: ' + (IS_WIN ? 'nodesignal.exe' : 'sudo nodesignal') + ' web-token)' : 'open (no token): every account on this machine can use the console'}`);
   try {
     const det = await core.detectBitcoinNode();
     if (det.confPath) {
@@ -160,6 +161,34 @@ async function cmdPortMapping(ctx, onOff) {
     say('NodeSignal will ask your router (UPnP / NAT-PMP) to forward its peer port.');
     say('Your node\'s public IP becomes visible to the operators you message.');
   }
+  return restartDaemon(ctx);
+}
+/* ------------------------------------------------------------ web token */
+async function cmdWebToken(ctx, sub = 'show') {
+  const { core, cfgPath, cfgError } = ctx;
+  if (!['show', 'new', 'off'].includes(sub)) { say('usage: nodesignal web-token [show|new|off]'); return 2; }
+  if (cfgError) {
+    say(`Cannot read ${cfgPath}: ${cfgError}.`);
+    if (cfgError === 'permission denied') say('Try again with sudo.');
+    return 1;
+  }
+  const cfg = Object.assign({}, ctx.cfg);
+  if (sub === 'show') {
+    if (!cfg['web-token']) { say('No login token: the console is open to every account on this machine.'); say('Add one with: nodesignal web-token new'); return 0; }
+    say(cfg['web-token']);
+    return 0;
+  }
+  if (sub === 'new') cfg['web-token'] = require('crypto').randomBytes(24).toString('base64url');
+  else if (!cfg['web-token']) { cfg['web-token'] = ''; try { core.writeConfig(cfgPath, cfg); } catch { } say('There is no login token to remove.'); return 0; }
+  else cfg['web-token'] = '';   // empty, not deleted: setup on an upgrade keeps it off
+  try { core.writeConfig(cfgPath, cfg); }
+  catch (e) {
+    say(`Could not write ${cfgPath}: ${e.code || e.message}`);
+    if (e.code === 'EACCES' || e.code === 'EPERM') say('Try again with sudo.');
+    return 1;
+  }
+  if (sub === 'new') { say('New console login token (it replaces any old one; open browsers sign in again):'); say('  ' + cfg['web-token']); }
+  else say('Login token removed: every account on this machine can now use the console.');
   return restartDaemon(ctx);
 }
 async function restartDaemon(ctx) {
@@ -267,10 +296,14 @@ async function cmdSetup(ctx) {
   if (migrated) for (const [k, v] of Object.entries(migrated.config)) if (fresh || !(k in cfg)) cfg[k] = v;
   const nickArg = optValue(argv, 'nick');
   if (nickArg) cfg.nick = nickArg.slice(0, 60);
-  if (argv.includes('--generate-token') && !cfg['web-token']) {
+  // On a server, other accounts (a game server, a web server) can reach
+  // 127.0.0.1 too, so the console gets a login token. It is not printed:
+  // apt keeps its output in /var/log/apt/term.log. "web-token off" stores
+  // an empty token, and an upgrade keeps that choice.
+  let newToken = false;
+  if (!('web-token' in cfg) && !argv.includes('--no-token')) {
     cfg['web-token'] = require('crypto').randomBytes(24).toString('base64url');
-    say('Web login token (save it, you need it to sign in):');
-    say('  ' + cfg['web-token']);
+    newToken = true;
   }
   // the daemon cannot read bitcoin.conf any more, so it learns the RPC
   // address (rpcport, rpcconnect, test chains) from its own config
@@ -309,6 +342,7 @@ async function cmdSetup(ctx) {
   try { fs.chownSync(P(cfgPath), user.uid, user.gid); fs.chmodSync(P(cfgPath), 0o600); } catch { }
   try { fs.chmodSync(P(path.dirname(cfgPath)), 0o755); } catch { }
   say(`${fresh ? 'Wrote' : 'Updated'} ${cfgPath} (readable by ${user.name} only)`);
+  if (newToken) say('The console now asks for a login token, so other accounts on this machine cannot use it. Show it with: sudo nodesignal web-token');
 
   // a 1.3 pre-release drop-in ran the daemon as the node's owner; the unit
   // now says User=nodesignal itself
@@ -495,6 +529,9 @@ usage: nodesignal <command> [--config <file>]
                        bitcoin.conf; restart the node after add or remove
   open [--browser]     open NodeSignal (on Windows: its own window; --browser
                        for a normal browser tab) and print its address
+  web-token [show|new|off]
+                       the console's login token (Linux sets one at install,
+                       so other accounts on the machine cannot use it)
   logs                 show where the log is and how to follow it
   uninstall            remove NodeSignal (Windows; on Linux use apt)
   version              print the version%EXTRA%`;
@@ -522,6 +559,7 @@ async function main(argv = process.argv.slice(2), deps = {}) {
     case 'uninstall': return cmdUninstall(ctx);
     case 'setup': return cmdSetup(ctx);
     case 'rpc-access': return cmdRpcAccess(ctx, pos[1]);
+    case 'web-token': return cmdWebToken(ctx, pos[1]);
     case 'rpc-check': {
       const det = await core.detectBitcoinNode();
       const r = await printRpcCheck(core, det, cfg);

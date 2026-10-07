@@ -77,7 +77,11 @@ Does Tor require port forwarding?
 
 Can I use Tailscale?
     Yes. The daemon detects a Tailscale interface and binds its peer
-    port to it automatically, keeping itself off the public internet.
+    port to it automatically, keeping itself off the public internet
+    (and to 127.0.0.1, so a Tor hidden service still works). Operators
+    on clearnet then cannot dial in, but you can still message them and
+    they reply over your connection. "bind": "0.0.0.0" in the config
+    takes clearnet peers too.
 
 Can I open the console from another computer?
     Through an SSH tunnel: on that computer run

@@ -176,8 +176,9 @@ Page loads but is blank
     no browser cryptography and works over plain http.
 
 Asks for a token you do not have
-    The token is in nodesignal-config.json as "web-token". To remove the
-    requirement, delete that line and restart.
+    Linux package: sudo nodesignal web-token shows it (on the node).
+    From source, it is in nodesignal-config.json as "web-token". To
+    remove the requirement: nodesignal web-token off.
 
 Port already in use
     Another program has it. Change "web-port" or "peer-port" in

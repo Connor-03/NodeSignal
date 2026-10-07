@@ -2,7 +2,7 @@
 // nodesignald.js: the NodeSignal daemon + self-hosted web app
 // ============================================================================
 // Operator-to-operator chat for Bitcoin nodes. Runs beside bitcoind/Knots and
-// serves its own web interface, so you use it from any browser on your tailnet.
+// serves its own web interface on 127.0.0.1 (from elsewhere: an SSH tunnel).
 //
 //   :8789  HTTP   web app (GET /) + WebSocket API (/ws) + GET /health
 //   :8788  TCP    daemon <-> daemon encrypted messaging
@@ -29,7 +29,7 @@
 //     --web-port <n>       web app + WebSocket API         (default: 8789)
 //     --peer-port <n>      daemon-to-daemon messaging      (default: 8788)
 //     --web-token <secret> require login for the web UI    (default: open)
-//     --bind <addr>        listen address                  (default: Tailscale, else localhost)
+//     --bind <addr>        peer port address    (default: Tailscale + 127.0.0.1, else all)
 //     --web-root <dir>     where nodesignal.html lives     (default: this dir)
 //     --data <dir>         state directory                 (default: ~/.nodesignal)
 //     --rpc-url <url>      bitcoind/knots RPC              (default: http://127.0.0.1:8332)
@@ -43,8 +43,8 @@
 //                          (default 180000; 0 disables)
 //     --no-rpc             standalone: no Bitcoin node on this machine (testing)
 //
-// Intended for a private tailnet. No router port forwarding is required or
-// recommended; don't expose :8789 publicly without --web-token behind TLS.
+// The web console never leaves 127.0.0.1. Inbound peers need TCP 8788
+// reachable (clearnet), a tailnet, or a Tor hidden service.
 //
 // Dependencies: NONE. Requires only Node.js and the files shipped beside it:
 // noise.js (handshake), nodeps.js (http/websocket), store.js (at-rest
@@ -372,7 +372,7 @@ function rpcCall(method, params = []) {
     const req = http.request({
       hostname: u.hostname, port: u.port || 8332, path: '/', method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
-        'Authorization': 'Basic ' + Buffer.from(auth).toString('base64') }, timeout: 5000,
+        'Authorization': 'Basic ' + Buffer.from(auth).toString('base64') }, timeout: RPC_TIMEOUT_MS,
     }, (res) => {
       let d = ''; res.on('data', c => { if (d.length < 16 * 1024 * 1024) d += c; });
       res.on('end', () => {
@@ -389,7 +389,16 @@ function rpcCall(method, params = []) {
     req.end(body);
   });
 }
-async function pollRpc() {
+// bitcoind holds its main lock while it connects a block; on a slow disk
+// (a USB drive, a Raspberry Pi SD card) getpeerinfo can wait that long.
+const RPC_TIMEOUT_MS = 30000;
+let pollInFlight = null;
+function pollRpc() {
+  // a slow node must not pile polls up behind each other
+  if (!pollInFlight) pollInFlight = pollRpcOnce().finally(() => { pollInFlight = null; });
+  return pollInFlight;
+}
+async function pollRpcOnce() {
   if (CFG.noRpc) { rpc.error = 'disabled (--no-rpc)'; return; }
   try {
     const [ni, ch, pr] = await Promise.all([rpcCall('getnetworkinfo'), rpcCall('getblockchaininfo'), rpcCall('getpeerinfo')]);
@@ -1070,21 +1079,27 @@ function serveSecure(sock, addr) {
   });
 }
 
-const peerServer = net.createServer((sock) => {
+let peerActive = 0;
+function onPeerSocket(sock) {
   const host = normIp(sock.remoteAddress);
   // --- DDoS / disk-exhaustion defenses -----------------------------------
   //   1. hard cap on concurrent inbound connections
   //   2. per-source-block (IPv4 /32, IPv6 /64) rate limit on new connections
   //   3. NO persisted state until a handshake AND a hello prove a real peer
-  if (peerServer._active >= MAX_CONNS) { sock.destroy(); return; }
+  if (peerActive >= MAX_CONNS) { sock.destroy(); return; }
   if (!rateOk(host)) { sock.destroy(); return; }
-  peerServer._active = (peerServer._active || 0) + 1;
-  sock.once('close', () => { peerServer._active--; });
+  peerActive++;
+  sock.once('close', () => { peerActive--; });
   // Unfinished handshakes and idle sessions must not tie up a slot forever.
   sock.setTimeout(30000, () => sock.destroy());
   sock.on('error', () => { });
   serveSecure(sock, host);
-});
+}
+const peerServer = net.createServer(onPeerSocket);
+// Bound to the Tailscale address, the peer port would not answer on
+// 127.0.0.1, which is where a Tor hidden service forwards
+// (HiddenServicePort 8788 127.0.0.1:8788). Loopback exposes nothing more.
+const peerLoopback = PEER_BIND === TS_ADDR && !explicitBind ? net.createServer(onPeerSocket) : null;
 
 /* ---- retry queue and check-ins --------------------------------------------
    Every 10s: dial contacts that have a message due for retry. Every
@@ -1475,6 +1490,10 @@ server.on('error', (e) => { console.error('web port ' + CFG.webPort + ': ' + e.m
 // Messages that were mid-delivery when the daemon stopped go back in the queue.
 for (const c of Object.values(state.contacts)) for (const m of c.msgs) if (m.from === 'me' && m.status === 'sending') { m.status = 'pending'; m.nextTry = 0; }
 
+if (peerLoopback) {
+  peerLoopback.on('error', (e) => log(`!! peer port on 127.0.0.1:${CFG.peerPort}: ${e.message} (a Tor hidden service cannot reach NodeSignal)`));
+  peerLoopback.listen(CFG.peerPort, '127.0.0.1');
+}
 peerServer.listen(CFG.peerPort, PEER_BIND, () => {
   server.listen(CFG.webPort, WEB_BIND, () => {
     console.log('');
@@ -1484,9 +1503,13 @@ peerServer.listen(CFG.peerPort, PEER_BIND, () => {
     log(`Web app        : http://${WEB_BIND}:${CFG.webPort}`);
     log(`                 (this machine only; from elsewhere: ssh -L ${CFG.webPort}:127.0.0.1:${CFG.webPort} <this machine>)`);
     log(`WebSocket      : ws://${WEB_BIND}:${CFG.webPort}/ws`);
-    log(`Peer messaging : tcp://${PEER_BIND}:${CFG.peerPort}`);
+    log(`Peer messaging : tcp://${PEER_BIND}:${CFG.peerPort}${peerLoopback ? ` and tcp://127.0.0.1:${CFG.peerPort} (for Tor)` : ''}`);
     log(`Health         : http://${WEB_BIND}:${CFG.webPort}/health`);
-    if (TS_ADDR && !explicitBind && !CFG.portMapping) log(`peer bind      : Tailscale (${TS_ADDR}): private tailnet only, not clearnet`);
+    if (TS_ADDR && !explicitBind && !CFG.portMapping) {
+      log(`peer bind      : Tailscale (${TS_ADDR}): your tailnet and Tor only, not clearnet`);
+      log('                 (operators found on clearnet cannot dial in; you can still message them, and they reply over your link.');
+      log('                 To accept clearnet peers: "bind": "0.0.0.0" in the config, then open TCP ' + CFG.peerPort + ')');
+    }
     else if (!explicitBind && CFG.portMapping) log('peer bind      : all interfaces, for router port mapping (clearnet)');
     else if (!explicitBind) log('peer bind      : all interfaces (no Tailscale found)');
     else log(`peer bind      : ${CFG.bind} (explicit)`);
@@ -1494,7 +1517,7 @@ peerServer.listen(CFG.peerPort, PEER_BIND, () => {
     log(`identity fp    : ${myIdentity.fp}  (peers pin this on first contact)`);
     log(`handshake      : ${noise.PROTOCOL_NAME} (also answers v1.2 peers)`);
     log(`history        : ${vaultOn() ? 'sealed at rest, locked until you unlock it in the console' : 'stored unencrypted; set a passphrase in the console'}`);
-    log(`web auth       : ${AUTH_ON ? 'token required (login page)' : 'open: safe only on a private tailnet'}`);
+    log(`web auth       : ${AUTH_ON ? 'token required (login page)' : 'open: every account on this machine can use the console'}`);
     log(`web root       : ${CFG.webRoot}`);
     log(`state          : ${STATE_FILE}  (${Object.keys(state.contacts).length} contacts)`);
     log(CFG.noRpc ? 'node RPC       : disabled (--no-rpc)' : `node RPC       : ${CFG.rpcUrl}${CFG.rpcUser ? ` as "${CFG.rpcUser}"` : ''}`);

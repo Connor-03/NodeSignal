@@ -105,8 +105,9 @@ key, so it is locked down to this machine:
 
 From another computer, use an SSH tunnel that keeps the port number:
 ssh -L 8789:127.0.0.1:8789 <you>@<node>. Programs running as any user
-on the node itself can still reach the console; the optional web login
-token ("web-token") is the defence against them.
+on the node itself can still reach the console; the web login token
+("web-token", set by the Linux setup, optional on Windows) is the
+defence against them.
 
 
 -----------------------------------------------------------------------

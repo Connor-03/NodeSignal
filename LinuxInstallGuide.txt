@@ -167,12 +167,16 @@ Edit it with sudo, then restart the service. Keep the file readable by
 the nodesignal user only (the package sets that up): it holds
 NodeSignal's RPC password.
 
-To require a login token for the web interface, generate one. Linux, on
-the node:
+The web interface asks for a login token, which setup creates, because
+other accounts on the node (a game server, a web server) can reach
+127.0.0.1 too. Linux, on the node:
 
-    openssl rand -hex 32
+    sudo nodesignal web-token          show it
+    sudo nodesignal web-token new      replace it
+    sudo nodesignal web-token off      no login (only if you are the only
+                                       account on this machine)
 
-and add it as "web-token" in the config file, then restart.
+Upgrades keep your choice.
 
 
 -----------------------------------------------------------------------
@@ -244,8 +248,12 @@ NETWORKING
 -----------------------------------------------------------------------
 The web console always listens on 127.0.0.1 only. The peer port binds
 to your Tailscale address automatically if it finds one, which keeps it
-off the public internet; otherwise it listens on all interfaces. The
-boot log states which posture is active. "bind" in the config file sets
+off the public internet, and to 127.0.0.1 for a Tor hidden service;
+otherwise it listens on all interfaces. On a tailnet, operators found
+on clearnet cannot dial in, but you can still message them and they
+reply over your connection. To take clearnet peers too, set
+"bind": "0.0.0.0" in the config. The boot log states which posture is
+active. "bind" in the config file sets
 the peer port's address only.
 
 Ports:
@@ -288,10 +296,9 @@ Linux, on the node, as a normal user with sudo rights:
     cd NodeSignal
     ./install-node.sh MyNodeName
 
-Options: --token (require a web login token, generated and printed
-once), --advertise, --port-mapping, --yes (no questions). In a terminal
-it asks about the two optional extras and the token, all defaulting to
-No.
+Options: --advertise, --port-mapping, --yes (no questions). In a
+terminal it asks about the two optional extras, both defaulting to No.
+A web login token is always set: sudo nodesignal web-token shows it.
 
 It refuses to install without a Bitcoin node, copies the program files
 (listed in packaging/files.json) to /opt/nodesignal, writes
