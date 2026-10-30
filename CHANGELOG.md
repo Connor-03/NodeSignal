@@ -3,7 +3,7 @@
 Every release lists what changed for an operator, then what changed under the
 hood. Security changes are tracked in more depth in `SECURITY-CRITIQUE.md`.
 
-## 1.3.0 (not yet released)
+## 1.3.0 (2026-10-30)
 
 NodeSignal still requires a Bitcoin node (Bitcoin Core or Bitcoin Knots) on the
 same machine, and still only calls three read-only RPC methods:
