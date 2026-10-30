@@ -288,6 +288,77 @@ const stateFile = (d) => JSON.parse(fs.readFileSync(path.join(d, 'state.json'), 
     } finally { await stop(c); slow.close(); }
   });
 
+  if (!HAS_WS) {
+    skip('a message to an address that leads back to this daemon fails', 'needs Node 22+ (WebSocket)');
+    skip('a peer with no headers has an unknown height', 'needs Node 22+ (WebSocket)');
+  } else {
+    /* 8. Root cause: nothing compared the key a dialled peer presented with
+       our own. A peer that reached the node through Tor shows in getpeerinfo
+       as 127.0.0.1; clicking it dialled this daemon, which acked its own
+       message: "delivered", and the contact counted as established. Seen on
+       a real node's map. */
+    await t('a message to an address that leads back to this daemon fails, and never establishes', async () => {
+      const d = path.join(TMP, 'self'); fs.mkdirSync(d, { recursive: true });
+      const identity = noise.newIdentity(), fp = noise.loadIdentity(identity).fp;
+      // a contact left "established" by the old code
+      fs.writeFileSync(path.join(d, 'state.json'), JSON.stringify({ identity,
+        contacts: { '127.0.0.2': { host: '127.0.0.2', port: PEER, nick: '', msgs: [], unread: 0, lastSeen: 1, peerFp: fp, established: true } } }));
+      const c = start(d); await up();
+      try {
+        const u = await ui();
+        u.send({ type: 'hello' });
+        const st = await u.next((m) => m.type === 'state');
+        const old = st.contacts.find((x) => x.host === '127.0.0.2');
+        assert(old && !old.established && !old.peerFp, 'the old self-contact is no longer established: ' + JSON.stringify(old));
+        u.send({ type: 'chat.send', host: '127.0.0.1', port: PEER, text: 'hello me' });
+        const f = await u.next((m) => m.type === 'chat.status' && m.host === '127.0.0.1' && m.status !== 'sending', 10000);
+        assert.strictEqual(f.status, 'failed', JSON.stringify(f));
+        assert.match(f.error, /your own NodeSignal/);
+        await sleep(300);
+        const me = stateFile(d).contacts['127.0.0.1'];
+        assert(!me.established && !me.peerFp, 'not established, nothing pinned');
+        assert.strictEqual(me.msgs[0].status, 'failed');
+        u.close();
+      } finally { await stop(c); }
+    });
+
+    /* 9. Root cause: synced_headers is -1 until a peer has sent headers
+       (BTCPay's NBXplorer, light clients), and the daemon passed it on as
+       the peer's height. Seen on a real node's map as "height -1". */
+    await t('a peer with no headers has an unknown height; a sub-millisecond ping stays 0', async () => {
+      const mock = http.createServer((req, res) => {
+        let b = ''; req.on('data', (x) => (b += x)); req.on('end', () => {
+          const { method } = JSON.parse(b);
+          const result = method === 'getpeerinfo'
+            ? [{ addr: '198.51.100.7:8333', subver: '/NBXplorer:2.5/', pingtime: 0.0003, inbound: true, synced_headers: -1 },
+              { addr: '203.0.113.9:8333', subver: '/Satoshi:28.0.0/', pingtime: 0.042, inbound: false, synced_headers: 900000 }]
+            : method === 'getnetworkinfo' ? { subversion: '/Satoshi:28.0.0/', connections: 2 } : { blocks: 900000, chain: 'main' };
+          res.end(JSON.stringify({ result, error: null, id: 'ns' }));
+        });
+      });
+      await new Promise((r) => mock.listen(21731, '127.0.0.1', r));
+      const d = path.join(TMP, 'heights');
+      const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--nick', 'h', '--bind', '127.0.0.1',
+        '--rpc-url', 'http://127.0.0.1:21731', '--rpc-user', 'u', '--rpc-pass', 'p',
+        '--web-port', String(WEB), '--peer-port', String(PEER), '--data', d, '--checkin-ms', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
+      c.log = ''; c.stdout.on('data', (x) => (c.log += x)); c.stderr.on('data', (x) => (c.log += x));
+      try {
+        await up();
+        for (let i = 0; i < 50 && !(await health()).rpcConnected; i++) await sleep(100);
+        const u = await ui();
+        u.send({ type: 'hello' });
+        const st = await u.next((m) => m.type === 'state');
+        const nbx = st.node.peers.find((x) => x.addr.startsWith('198.51.100.7'));
+        const core = st.node.peers.find((x) => x.addr.startsWith('203.0.113.9'));
+        assert.strictEqual(nbx.height, null, 'unknown, not -1');
+        assert.strictEqual(nbx.latency, 0, 'a real measurement under half a millisecond');
+        assert.strictEqual(core.height, 900000);
+        assert.strictEqual(core.latency, 42);
+        u.close();
+      } finally { await stop(c); mock.close(); }
+    });
+  }
+
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log(failed ? `\n${failed} failed, ${passed} passed` : `\nall passed (${passed}${skipped ? `, ${skipped} skipped` : ''})`);
   process.exit(failed ? 1 : 0);

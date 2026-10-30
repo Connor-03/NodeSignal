@@ -866,7 +866,7 @@ const OPT_IN_TEXT = {
 };
 
 module.exports = {
-  VERSION_FALLBACK: '1.3.0',
+  VERSION_FALLBACK: '1.3.1',
   IS_WIN, UA_COMMENT, UA_MARKER, BACKUP_SUFFIX, OPT_IN_TEXT,
   RPC_USER, RPC_METHODS, RPC_BEGIN, RPC_END,
   generateRpcPassword, makeRpcAuth, rpcAuthMatches, rpcAccessState, setRpcAccess, nodeConfPath,
