@@ -191,6 +191,9 @@ Every line was checked in the code; the reference is where.
   sites and other host names. Use an SSH tunnel from another computer.
   (`nodesignald.js`: `WEB_BIND`, `hostOk`, `originOk`, `ACTION_TOKEN`;
   `tests/websecurity.test.js`)
+- Linux: the console asks for a login token, so other accounts on the same
+  machine cannot use it. `sudo nodesignal web-token` shows it. Windows needs
+  no login. (`cli.js`: `cmdWebToken`; `tests/setup-core.test.js`)
 - No central server and no accounts: daemons connect to each other directly.
   (`nodesignald.js`: `peerServer`, `connectTo`)
 - Zero runtime dependencies: Node.js standard library only. (`package.json`;
@@ -291,7 +294,8 @@ itself, on port 8789, and answers only on that machine (`localhost:8789`).
 From another computer, use an SSH tunnel. Linux or macOS terminal, or
 Windows PowerShell, on your other computer:
 `ssh -L 8789:127.0.0.1:8789 <your node>`, then browse to `localhost:8789`
-there.
+there. On Linux, sign in once with the token from `sudo nodesignal web-token`
+(Linux, on the node).
 
 Note for the site: do not make `localhost:8789` a link, and do not link the
 daemon's web app in any form. It is private to each operator's machine.
@@ -309,30 +313,27 @@ Prompt.
 
 State these honestly, or keep them off the site.
 
-- **No release has been published yet.** When this handoff was written the
-  repository had no GitHub Releases, so every
-  `releases/latest/download/...` link above returns 404 until the maintainer
-  pushes a `v*` tag. Check the links before the site goes live.
+- **1.3.0 is published** on GitHub Releases (2026-10-30), so the
+  `releases/latest/download/...` links above work. Remove any "first release
+  is coming" note from the site.
 - **Not run on real Windows.** CI builds the .exe and runs its selftest on a
   Windows runner against a mock node; no one has installed it on a real
   Windows PC with a real node.
 - **Not run on real arm64 hardware** (Raspberry Pi or other). The arm64 .deb
   is built in CI but not installed or run there.
-- **Not run against a real bitcoind or Knots node** in this work: the tests
-  use a mock node (`tests/mock-node.js`) that applies rpcauth and
+- **Run on one real Linux node** (amd64, beside several other programs that
+  use the node's RPC). Otherwise the tests use a mock node (`tests/mock-node.js`) that applies rpcauth and
   rpcwhitelist the way bitcoind does. Pruned-node support is by code
   reading (only three methods, none needs block history), not tested on a
   pruned node.
 - **Not run against real routers.** UPnP and NAT-PMP are tested against
   mocks (`tests/portmap.test.js`).
-- **Tor is not covered by the test suite.** Outbound `.onion` dialling
-  through SOCKS5 is in the code, but no test exercises it; inbound needs a
-  hidden service the operator sets up by hand.
+- **Tor is tested against a mock SOCKS5 proxy** (`tests/tor.test.js`), not
+  the real Tor network; inbound needs a hidden service the operator sets up
+  by hand.
 - **No outside security review** of the daemon or `noise.js`. Do not call it
   reviewed or audited anywhere.
-- **Not code-signed**, and the Windows .exe has no icon or version resource.
-- **Linux package Maintainer field** still has a placeholder GitHub id
-  (`packaging/deb/build-deb.sh`); the maintainer has to fill it in.
+- **Not code-signed.** Windows SmartScreen warns on first run.
 - **macOS is not a target.** There is no macOS installer; do not list it.
 
 ## Screenshots
