@@ -980,6 +980,9 @@ function computeLayout(){
   nodes.forEach(nd=>{nd.p._x=nd.x;nd.p._y=nd.y;});
   return {nodes,grow,VBW,VBH,RMIN,RMAX,coreR,nodeR,fs,showSub,latR,rings,scaleMax};
 }
+// the daemon rounds pingtime to whole milliseconds, so a peer on this machine
+// or LAN (under half a millisecond) arrives as 0, which reads like no value
+const msText=ms=>ms<1?'<1 ms':ms+' ms';
 function subLabel(p){
   if(p.kind==='contact'){
     const bits=[p.impl==='Unknown'?'contact':implShort(p)];
@@ -1271,9 +1274,9 @@ function showTip(p,g){
     ['role', p.kind==='contact'?'NodeSignal contact':'node peer'+(p.inbound?' (inbound)':'')],
     ['impl', p.impl==='Unknown'?'not identified':p.impl],
     ['version', p.version||'n/a'],
-    ['latency', (p.unmeasured||p.latency==null)?'unmeasured':p.latency+' ms'],
+    ['latency', (p.unmeasured||p.latency==null)?'unmeasured':msText(p.latency)],
+    ['height', p.height!=null?Number(p.height).toLocaleString():'unknown'],
   ];
-  if(p.height!=null)rows.push(['height',Number(p.height).toLocaleString()]);
   if(p.network)rows.push(['network',p.network]);
   if(p.kind==='contact'){
     if(p.peerFp)rows.push(['identity',p.peerFp.slice(0,16)+'…']);
@@ -1418,7 +1421,7 @@ function renderThread(){
   const pills=`<span class="pill ${ls.cls}"><span class="d"></span>${esc(ls.txt)}</span>`+
     (enc?`<span class="pill ${enc.cls}" title="${p.peerFp?esc('pinned identity '+p.peerFp):''}">${esc(enc.txt)}</span>`:'')+
     (p.ns?`<span class="pill ok" title="its user agent carries the nodesignal comment">◈ advertises NodeSignal</span>`:'')+
-    (p.unmeasured||p.latency==null?'':`<span class="pill">${esc(p.latency+' ms')}</span>`)+
+    (p.unmeasured||p.latency==null?'':`<span class="pill">${esc(msText(p.latency))}</span>`)+
     (hasPending?`<button class="actbtn" style="margin-left:auto" onclick="send({type:'chat.retry',host:'${esc(p.host)}'})&&toast('retrying now')">retry now</button>`:'');
 
   const head=`<div class="thread-head" style="--accent:${c}">

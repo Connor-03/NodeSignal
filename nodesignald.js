@@ -183,6 +183,11 @@ process.on('exit', () => { if (dirty) saveNow(); });
 // is written 0600.
 if (!state.identity) { state.identity = noise.newIdentity(); saveNow(); }
 const myIdentity = noise.loadIdentity(state.identity);
+// A contact that "replied" with our own key was this daemon talking to
+// itself (see SELF_ERROR): it never established anything.
+for (const c of Object.values(state.contacts || {})) {
+  if (c.peerFp === myIdentity.fp) { delete c.peerFp; c.established = false; saveNow(); }
+}
 
 /* ------------------------------------------------------------ at-rest vault
    With a passphrase set, message text is never written in the clear: it is
@@ -411,7 +416,8 @@ async function pollRpcOnce() {
       addr: p.addr, ua: p.subver, impl: implFromUA(p.subver || ''), version: verFromUA(p.subver || ''),
       declared: declaredFromUA(p.subver || ''),
       latency: p.pingtime != null ? Math.round(p.pingtime * 1000) : null,
-      inbound: !!p.inbound, height: p.synced_headers ?? null,
+      // synced_headers is -1 until the peer has sent headers (a light client, an indexer)
+      inbound: !!p.inbound, height: p.synced_headers >= 0 ? p.synced_headers : null,
       // runs NodeSignal, by its own user agent comment (self-declared, public)
       nodesignal: nodesignalFromUA(p.subver) }));
     rpc._loggedFail = false;
@@ -831,6 +837,10 @@ const sendFrame = (sock, buf) => {
 /* TOFU: the first time we see a host we pin its static-key fingerprint; a
    later mismatch is REJECTED and held as pendingFp until the operator
    deliberately accepts or dismisses it in the console. */
+// A peer that reached the node through Tor shows in getpeerinfo as
+// 127.0.0.1 (Tor hands it over locally), and dialling that address reaches
+// this daemon. Until this check, the message then counted as delivered.
+const SELF_ERROR = 'this address leads back to your own NodeSignal. A peer that connected to your node through Tor shows as 127.0.0.1, which hides its real address, so it cannot be messaged from the map';
 function tofuCheck(c, fp) {
   if (!c || !c.peerFp || c.peerFp === fp) return true;
   if (!c.pendingFp || c.pendingFp.got !== fp) {
@@ -1016,6 +1026,14 @@ function connectTo(c, why) {
     dialing.delete(c.host);
     if (link) return;
     const reason = err.code === 'ECONNREFUSED' ? `refused: nothing listening on ${c.host}:${port}` : (err.message || String(err));
+    // Retrying cannot help: the address leads back to this daemon.
+    if (err.self) {
+      for (const m of c.msgs) if (deliverable(m)) failMsg(c, m, reason);
+      log(`deliver to ${c.host}: ${reason}`);
+      c.lastFailAt = Date.now();
+      broadcastUi({ type: 'contact', contact: uiContact(c) });
+      return;
+    }
     // A check-in that finds nobody home is not news; a send is.
     const now = Date.now();
     for (const m of c.msgs) if (deliverable(m) && (m.status === 'sending' || (m.nextTry || 0) <= now)) deferMsg(c, m, reason);
@@ -1036,6 +1054,10 @@ function attemptDial(c, port, proto, cb) {
       let res, session;
       if (proto === 3) { res = noise.v3.initFinish(hs, frame); session = res.session; }
       else { res = noise.legacy.initFinish(hs, frame); session = noise.legacy.makeSession(res.tx, res.rx); }
+      if (res.peerFp === myIdentity.fp) {
+        s.destroy();
+        const e = new Error(SELF_ERROR); e.self = true; return settle(e);
+      }
       if (!tofuCheck(c, res.peerFp)) {
         s.destroy();
         const e = new Error('identity mismatch: this address presented a different key than the one pinned. Review it in the console.');
@@ -1072,6 +1094,7 @@ function serveSecure(sock, addr) {
     }
     const res = proto === 3 ? hs.finish(frame) : hs._finish(frame);
     const session = proto === 3 ? res.session : noise.legacy.makeSession(res.tx, res.rx);
+    if (res.peerFp === myIdentity.fp) { sock.destroy(); return; }   // ourselves
     const c = contactFor(addr, res.peerFp);
     if (c && !tofuCheck(c, res.peerFp)) { sock.destroy(); return; }
     link = openLink(sock, { initiator: false, addr, peerFp: res.peerFp, proto, session });

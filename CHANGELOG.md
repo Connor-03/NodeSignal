@@ -3,6 +3,34 @@
 Every release lists what changed for an operator, then what changed under the
 hood. Security changes are tracked in more depth in `SECURITY-CRITIQUE.md`.
 
+## 1.3.1 (not yet released)
+
+### Windows installer
+
+- The setup window is in colour now: the NodeSignal logo, numbered steps, a
+  tick per finished step, a spinner while NodeSignal starts, and a green
+  summary panel. Anything you have to do yourself (restart Bitcoin Core or
+  Knots so it reads NodeSignal's login, or add the lines by hand) comes last,
+  in a yellow double-framed panel that flashes a few times, just above
+  "Press Enter". Errors (no node found, started as administrator) get a red
+  panel. Without a terminal, or with NO_COLOR set, the output is plain text
+  with the same words.
+
+### Fixes
+
+- A peer that connected to your node through Tor shows on the map as
+  127.0.0.1, because Tor hands the connection over locally. Messaging it
+  reached your own NodeSignal, which acknowledged its own message: it showed
+  as delivered and the contact as established. A handshake with your own key
+  is now refused, the message fails with that explanation, and a contact
+  wrongly marked established this way is reset.
+- A peer that has sent no block headers (BTCPay's NBXplorer, light clients)
+  showed height -1. It now shows unknown.
+- A ping under half a millisecond (a peer on the same machine or LAN) showed
+  as "0 ms" in the peer card and the chat header, which read like a missing
+  value. It now says "<1 ms". Unmeasured pings were already shown as
+  unmeasured and drawn at the map's outer edge.
+
 ## 1.3.0 (2026-10-30)
 
 NodeSignal still requires a Bitcoin node (Bitcoin Core or Bitcoin Knots) on the
