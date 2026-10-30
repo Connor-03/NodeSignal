@@ -418,6 +418,8 @@ async function pollRpcOnce() {
       latency: p.pingtime != null ? Math.round(p.pingtime * 1000) : null,
       // synced_headers is -1 until the peer has sent headers (a light client, an indexer)
       inbound: !!p.inbound, height: p.synced_headers >= 0 ? p.synced_headers : null,
+      // ipv4, ipv6, onion, i2p, cjdns or not_publicly_routable (Core 22+, Knots)
+      net: typeof p.network === 'string' ? cleanStr(p.network, 24) : null,
       // runs NodeSignal, by its own user agent comment (self-declared, public)
       nodesignal: nodesignalFromUA(p.subver) }));
     rpc._loggedFail = false;
