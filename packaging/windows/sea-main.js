@@ -27,7 +27,8 @@
 // loaded from disk with module.createRequire. The same file also runs on
 // Linux (paths switch on the platform) so the SEA mechanics can be tested
 // there; Windows-only steps are small functions guarded by IS_WIN.
-// Console output is plain ASCII so it reads correctly in any code page.
+// The installer's console is coloured on a terminal (core.termStyle: Windows
+// 10 and 11 consoles, symbols from WGL4) and plain ASCII anywhere else.
 // ============================================================================
 'use strict';
 const fs = require('fs');
@@ -620,13 +621,117 @@ async function choosePorts(cfg, P, interactive) {
   }
   return { web, peer };
 }
+/* ------------------------------------------------------------ installer look
+   The installer's console: a gradient logo, numbered sections, a tick per
+   step, a spinner while NodeSignal starts, and a framed panel for anything
+   the operator has to act on. Plain ASCII without a terminal (the selftest,
+   CI, a redirect), with the same words. */
+const ui = core.termStyle(process.stdout);
+const animate = () => ui.on && !!process.stdout.isTTY;
+// 5-pixel letters, drawn two pixels per character cell with half blocks
+const GLYPHS = {
+  N: ['#..#', '##.#', '#.##', '#..#', '#..#'], O: ['.##.', '#..#', '#..#', '#..#', '.##.'],
+  D: ['###.', '#..#', '#..#', '#..#', '###.'], E: ['####', '#...', '###.', '#...', '####'],
+  S: ['.###', '#...', '.##.', '...#', '###.'], I: ['###', '.#.', '.#.', '.#.', '###'],
+  G: ['.###', '#...', '#.##', '#..#', '.###'], A: ['.##.', '#..#', '####', '#..#', '#..#'],
+  L: ['#...', '#...', '#...', '#...', '####'],
+};
+function logoRows(word) {
+  const px = [0, 1, 2, 3, 4].map((r) => [...word].map((ch) => GLYPHS[ch][r]).join('.'));
+  const at = (r, c) => r < px.length && px[r][c] === '#';
+  const rows = [];
+  for (let r = 0; r < 5; r += 2) {
+    let line = '';
+    for (let c = 0; c < px[0].length; c++) {
+      const top = at(r, c), bot = at(r + 1, c);
+      line += top && bot ? '\u2588' : top ? '\u2580' : bot ? '\u2584' : ' ';
+    }
+    rows.push(line);
+  }
+  return rows;
+}
+async function banner(subtitle) {
+  if (!ui.on) {
+    say('');
+    say(`  NodeSignal ${VERSION} ${subtitle}`);
+    say('  Encrypted chat between Bitcoin node operators, running beside your node.');
+    say('  ------------------------------------------------------------------------');
+    say('');
+    return;
+  }
+  const node = logoRows('NODE'), signal = logoRows('SIGNAL');
+  say('');
+  for (let i = 0; i < 3; i++) {
+    say('  ' + ui.fg('orange', node[i], true) + ' ' + ui.gradient(signal[i], ['pink', 'violet', 'cyan']));
+    if (animate()) await sleep(70);
+  }
+  say('');
+  say('  ' + ui.bold(`v${VERSION}`) + ui.fg('gray', `  ${subtitle}  `) + ui.fg('gray', '\u2502') +
+    ui.fg('white', '  encrypted chat between Bitcoin node operators'));
+  const impls = [['orange', 'Core'], ['green', 'Knots'], ['cyan', 'btcd'], ['violet', 'libbitcoin'], ['pink', 'Bcoin']];
+  say('  ' + impls.map(([c, n]) => ui.fg(c, ui.sym.dot) + ' ' + ui.fg('gray', n)).join('   '));
+}
+function section(n, title) {
+  say('');
+  if (!ui.on) { say(`  ${title}`); return; }
+  const head = ` ${n} `;
+  say('  ' + ui.bg('orange', head) + ' ' + ui.bold(title) + ' ' + ui.fg('gray', ui.sym.rule.repeat(Math.max(4, 66 - title.length))));
+}
+// A finished step. "Label: detail" gets the label bright and the detail dim.
+function ok(text, detail) {
+  if (!ui.on) { say(`  - ${detail ? text + ': ' + detail : text}`); return; }
+  say(`  ${ui.fg('green', ui.sym.ok, true)} ${text}${detail ? '  ' + ui.fg('gray', detail) : ''}`);
+}
+function warn(text) {
+  if (!ui.on) { say(`  - ${text}`); return; }
+  say(`  ${ui.fg('yellow', ui.sym.warn, true)} ${ui.fg('yellow', text)}`);
+}
+function note(text) { say(ui.on ? '    ' + ui.fg('gray', text) : '    ' + text); }
+// A spinner for a wait the event loop is free during. Without a terminal it
+// prints the line once.
+function spinner(text) {
+  if (!animate()) { say(`  ${ui.on ? ui.fg('cyan', ui.sym.step) : '-'} ${text}`); return { stop() { } }; }
+  const t0 = Date.now(), cells = 6;
+  let i = 0;
+  const draw = () => {
+    const pos = i++ % (cells * 2 - 2), at = pos < cells ? pos : cells * 2 - 2 - pos;
+    const bar = [...Array(cells)].map((_, k) => (k === at ? ui.fg('orange', '\u25a0', true) : ui.fg('gray', '\u25a1'))).join('');
+    process.stdout.write(`\r  ${bar} ${text} ${ui.fg('gray', Math.round((Date.now() - t0) / 1000) + 's')}\x1b[K`);
+  };
+  draw();
+  const timer = setInterval(draw, 110);
+  return { stop() { clearInterval(timer); process.stdout.write('\r\x1b[K'); } };
+}
+// A framed panel; an "action" panel pulses a few times so it is not missed.
+async function panel(kind, title, lines) {
+  const color = { action: 'yellow', error: 'red', done: 'green', info: 'cyan' }[kind];
+  const icon = ui.on ? { action: '\u25b2 ', error: '\u00d7 ', done: '\u221a ', info: '\u25ba ' }[kind] : '';
+  const cols = process.stdout.columns || 80;
+  const width = Math.max(40, Math.min(76, cols - 4));
+  const draw = (c) => ui.box(c, icon + title, lines, width, kind === 'action' || kind === 'error');
+  const rows = draw(color);
+  say('');
+  for (const r of rows) say(r);
+  if (kind === 'action' && animate() && cols >= 44) {
+    for (let k = 0; k < 6; k++) {
+      await sleep(220);
+      process.stdout.write(`\x1b[${rows.length}A`);
+      for (const r of draw(k % 2 ? color : 'orange')) process.stdout.write('\r' + r + '\x1b[K\n');
+    }
+  }
+}
+
 /* performInstall: the steps shared by the interactive installer and selftest.
    answers = { nick, portMapping, config: {...keys for a new install},
                rpc: {...RPC keys that always win} }
    opts = { userLevel: register Startup/Desktop/Apps entry/firewall,
             startupDir: where the launcher goes, P: prompter, interactive } */
 async function performInstall(L, answers, opts) {
-  const step = (s) => say(`  - ${s}`);
+  const step = (s) => {
+    if (/^Warning|did not start|will NOT start|not added/.test(s)) return warn(s);
+    const m = /^([^:]{2,40}): (.+)$/.exec(s);
+    return m ? ok(m[1], m[2]) : ok(s);
+  };
   fs.mkdirSync(L.root, { recursive: true });
   let existing = {};
   try { existing = core.readConfig(L.config); } catch { }
@@ -681,32 +786,32 @@ async function performInstall(L, answers, opts) {
   }
 
   startDetached(L, launcher);
-  step('Starting NodeSignal...');
+  let spin = spinner('Starting NodeSignal...');
   let health = await core.waitForHealth(ports.web, { timeoutMs: launcher ? 15000 : 25000, wantRpc: true, rpcGraceMs: 10000 });
+  spin.stop();
   const launcherWorked = !!(launcher && health);
   if (!health && launcher) {
     // wscript.exe can be disabled by policy; then sign-in start will not work either
     step('The hidden launcher did not start NodeSignal (is Windows Script Host disabled?).');
     step('Starting it directly now; it will NOT start by itself at sign-in until that is fixed.');
     startDetached(L, null);
+    spin = spinner('Starting NodeSignal directly...');
     health = await core.waitForHealth(ports.web, { timeoutMs: 25000, wantRpc: true, rpcGraceMs: 10000 });
+    spin.stop();
   }
+  if (health) ok('NodeSignal started', `answering on port ${ports.web}`);
   return { cfg, ports, url, health, launcher, launcherWorked };
 }
 
-function refuseNoNode() {
-  say('');
-  say('  NodeSignal needs a Bitcoin node on this computer, and none was found.');
-  say('');
-  say('  It looked for a running bitcoind or bitcoin-qt, the Bitcoin data folder');
-  say('  (%APPDATA%\\Bitcoin, or the custom folder Bitcoin Core remembers), and');
-  say('  Bitcoin Core in Program Files.');
-  say('');
-  say('  Install Bitcoin Core (https://bitcoincore.org/en/download/) or');
-  say('  Bitcoin Knots (https://bitcoinknots.org/), let it start once, then run');
-  say('  this installer again. Pruned nodes are fine.');
-  say('');
-  say('  Nothing was installed.');
+async function refuseNoNode() {
+  await panel('error', 'No Bitcoin node found on this computer', [
+    'NodeSignal runs beside a Bitcoin node, and none was found.',
+    'It looked for a running bitcoind or bitcoin-qt, the Bitcoin data folder (%APPDATA%\\Bitcoin, or the custom folder Bitcoin Core remembers), and Bitcoin Core in Program Files.',
+    '',
+    'Install Bitcoin Core (https://bitcoincore.org/en/download/) or Bitcoin Knots (https://bitcoinknots.org/), let it start once, then run this installer again. Pruned nodes are fine.',
+    '',
+    'Nothing was installed.',
+  ]);
 }
 // An elevated (administrator) process: "net session" only succeeds then.
 // Root counts too, for the Linux build of this file.
@@ -716,27 +821,28 @@ function runsElevated() {
 }
 async function cmdInstall(L) {
   const P = core.createPrompter();
-  say('');
-  say(`  NodeSignal ${VERSION} setup`);
-  say('  Encrypted chat between Bitcoin node operators, running beside your node.');
-  say('  ------------------------------------------------------------------------');
-  say('');
+  await banner('setup');
   if (runsElevated()) {
-    say('  This installer was started as administrator. NodeSignal never runs with');
-    say('  admin rights and does not need them: it installs for your account only.');
-    say('  Start it again with a normal double-click (not "Run as administrator").');
+    await panel('error', 'Started as administrator', [
+      'NodeSignal never runs with admin rights and does not need them: it installs for your account only.',
+      'Close this window and start the installer again with a normal double-click (not "Run as administrator").',
+      '',
+      'Nothing was installed.',
+    ]);
     say('');
-    say('  Nothing was installed.');
     await P.pause(); P.close();
     return 1;
   }
-  say('  Looking for your Bitcoin node...');
+
+  section(1, 'Your Bitcoin node');
+  const look = spinner('Looking for your Bitcoin node...');
   let det = await core.detectBitcoinNode();
-  if (!det.installed) { refuseNoNode(); await P.pause(); P.close(); return 1; }
-  for (const h of det.how.slice(0, 4)) say(`    found: ${h}`);
+  look.stop();
+  if (!det.installed) { await refuseNoNode(); say(''); await P.pause(); P.close(); return 1; }
+  for (const h of det.how.slice(0, 4)) ok('Found', h);
 
   let existing = {};
-  try { existing = core.readConfig(L.config); say(`    upgrading the existing install in ${L.root}`); } catch { }
+  try { existing = core.readConfig(L.config); ok('Upgrading the install in', L.root); } catch { }
 
   const confPath = core.nodeConfPath(det);
   // An upgrade whose RPC login already works needs no bitcoin.conf change.
@@ -744,86 +850,93 @@ async function cmdInstall(L) {
     && core.rpcAuthMatches(core.rpcAccessState(confPath).rpcauth, core.RPC_USER, existing['rpc-pass']);
   if (loginReady) {
     const r = await core.checkNode(det, existing);
-    if (r.ok) say(`  Connected: ${r.subversion || 'Bitcoin node'}, ${r.chain} chain, height ${r.blocks}${r.pruned ? ', pruned' : ''}`);
-    else say(`  Your node is not answering RPC right now (${r.error}). NodeSignal connects by itself once it does.`);
+    if (r.ok) ok('Connected', `${r.subversion || 'Bitcoin node'}, ${r.chain} chain, height ${r.blocks}${r.pruned ? ', pruned' : ''}`);
+    else warn(`Your node is not answering RPC right now (${r.error}). NodeSignal connects by itself once it does.`);
   } else {
     say('');
-    say('  NodeSignal logs in to your node as its own RPC user, "nodesignal", limited to');
-    say('  three read-only methods (getblockchaininfo, getnetworkinfo, getpeerinfo).');
-    say(`  Setup adds two or three lines for it to ${confPath || 'bitcoin.conf'}; the password stays`);
-    say('  in NodeSignal\'s settings, locked to your account. The cookie file is never used.');
+    for (const l of ui.wrap(`NodeSignal logs in to your node as its own RPC user, "nodesignal", limited to three read-only methods (getblockchaininfo, getnetworkinfo, getpeerinfo). Setup adds two or three lines for it to ${confPath || 'bitcoin.conf'}; the password stays in NodeSignal's settings, locked to your account. The cookie file is never used.`, 74)) note(l);
   }
 
-  say('');
+  section(2, 'Your name on the network');
   const nick = (await P.askDefault('Display name other operators will see', existing.nick || os.hostname())).slice(0, 60);
 
+  section(3, 'Optional, off unless you say yes');
   let advertise = false;
   const ua = confPath ? core.uaCommentState(confPath) : { on: false };
-  say('');
-  if (ua.on) say('  Your node already advertises NodeSignal (uacomment=nodesignal). Undo: nodesignal.exe advertise off');
+  if (ua.on) ok('Your node already advertises NodeSignal', 'uacomment=nodesignal. Undo: nodesignal.exe advertise off');
   else if (confPath && !ua.unreadable) {
-    for (const l of core.OPT_IN_TEXT.advertise.slice(1)) say('  ' + l);
+    say('');
+    for (const l of core.OPT_IN_TEXT.advertise.slice(1)) note(l);
     advertise = await P.askYesNo(core.OPT_IN_TEXT.advertise[0], false);
   }
 
-  say('');
   let portMapping = !!existing['port-mapping'];
-  if (portMapping) say('  Router port mapping is on. Undo: nodesignal.exe port-mapping off');
+  if (portMapping) ok('Router port mapping is on', 'Undo: nodesignal.exe port-mapping off');
   else {
-    for (const l of core.OPT_IN_TEXT.portMapping.slice(1)) say('  ' + l);
+    say('');
+    for (const l of core.OPT_IN_TEXT.portMapping.slice(1)) note(l);
     portMapping = await P.askYesNo(core.OPT_IN_TEXT.portMapping[0], false);
   }
 
   // NodeSignal's own RPC login: the password for its config, the hash for bitcoin.conf
   const rpcCfg = { 'rpc-user': existing['rpc-user'], 'rpc-pass': existing['rpc-pass'] };
-  let access = null;
-  say('');
-  say('  Installing...');
+  let access = null, accessError = null;
+  section(4, 'Installing');
   if (confPath) {
     try { access = core.installRpcAccess({ cfg: rpcCfg, cfgPath: L.config, confPath }); }
-    catch (e) { say(`  - Could not add NodeSignal's RPC login to bitcoin.conf: ${e.message}`); }
+    catch (e) { accessError = e.message; warn(`Could not add NodeSignal's RPC login to bitcoin.conf: ${e.message}`); }
   }
   core.ensureRpcLogin(rpcCfg);
   rpcCfg['rpc-url'] = det.rpcUrl;                    // the daemon does not read bitcoin.conf
   if (access && access.result.changed) {
-    say(`  - Added NodeSignal's RPC login to ${confPath}${access.result.backup ? ` (original saved as ${path.basename(access.result.backup)})` : ''}`);
-  } else if (!access) {
-    say('    Add these lines to bitcoin.conf by hand, then restart your node:');
-    say('      ' + core.makeRpcAuth(core.RPC_USER, rpcCfg['rpc-pass']));
-    say(`      rpcwhitelist=${core.RPC_USER}:${core.RPC_METHODS.join(',')}`);
-    say('      rpcwhitelistdefault=0   (only if bitcoin.conf has no rpcwhitelist lines of its own)');
+    ok('NodeSignal\'s RPC login added to', confPath);
+    if (access.result.backup) note(`original saved as ${path.basename(access.result.backup)}`);
   }
   const res = await performInstall(L, { nick, portMapping, rpc: rpcCfg }, { userLevel: true, P, interactive: true });
 
+  let advertised = false;
   if (advertise) {
     try {
       const r = core.setUaComment(confPath, true);
-      say(`  - Added uacomment=nodesignal to ${confPath}${r.backup ? ` (original saved as ${path.basename(r.backup)})` : ''}`);
-      say('    Restart Bitcoin Core or Knots yourself for peers to see it.');
-    } catch (e) { say(`  - Could not edit bitcoin.conf: ${e.message}`); }
+      advertised = true;
+      ok('Added uacomment=nodesignal to', confPath);
+      if (r.backup) note(`original saved as ${path.basename(r.backup)}`);
+    } catch (e) { warn(`Could not edit bitcoin.conf: ${e.message}`); }
   }
 
-  say('');
   const h = res.health;
   const needsRestart = !!(access && access.result.changed);
   if (h) {
-    say(`  NodeSignal is running as "${h.nick}".`);
-    if (h.rpcConnected) say(`  Bitcoin node connected: ${h.peerCount} peers on the map.`);
-    else if (needsRestart) for (const l of core.RPC_RESTART_TEXT.win32) say('  ' + l);
-    else say('  Bitcoin node not connected yet. NodeSignal keeps trying every 30 seconds.');
+    await panel('done', `NodeSignal is running as "${h.nick}"`, [
+      h.rpcConnected ? `Bitcoin node connected: ${h.peerCount} peers on the map.`
+        : needsRestart ? 'Waiting for your Bitcoin node (see below).'
+          : 'Bitcoin node not connected yet. NodeSignal keeps trying every 30 seconds.',
+      '',
+      'Open it any time from the NodeSignal shortcut (Desktop or Start menu). It opens in its own window; closing the window does not stop NodeSignal.',
+      `Address:       ${res.url}`,
+      `Command line:  "${L.exe}" status`,
+      'It starts by itself when you sign in. Uninstall from Settings > Apps.',
+      'If Windows Firewall asks about NodeSignal, allowing private networks is enough unless you turned on port mapping.',
+    ]);
     openApp(res.url);
   } else {
-    say('  NodeSignal did not answer its health check. The log says why:');
-    say(`    ${L.log}`);
+    await panel('error', 'NodeSignal did not answer its health check', ['The log says why:', L.log]);
   }
-  say('');
-  say('  Open it any time from the NodeSignal shortcut (Desktop or Start menu). It opens');
-  say('  in its own window; closing the window does not stop NodeSignal.');
-  say(`  Address:           ${res.url}`);
-  say(`  Command line:      "${L.exe}" status`);
-  say('  It starts by itself when you sign in. Uninstall from Settings > Apps.');
-  say('  If Windows Firewall asks about NodeSignal, allowing private networks is enough');
-  say('  unless you turned on port mapping.');
+
+  // Last, just above "Press Enter": what the operator has to do themselves.
+  if (!access) {
+    await panel('action', 'ACTION NEEDED: add NodeSignal\'s login to bitcoin.conf', [
+      (accessError ? 'NodeSignal could not edit bitcoin.conf. ' : 'No bitcoin.conf was found. ') +
+        'Add the three lines below to it by hand (the last one only if bitcoin.conf has no rpcwhitelist lines of its own), then close Bitcoin Core or Knots and start it again.',
+    ]);
+    // unframed, so they copy cleanly
+    for (const l of [core.makeRpcAuth(core.RPC_USER, rpcCfg['rpc-pass']), `rpcwhitelist=${core.RPC_USER}:${core.RPC_METHODS.join(',')}`, 'rpcwhitelistdefault=0'])
+      say('    ' + (ui.on ? ui.fg('yellow', l, true) : l));
+  } else if ((needsRestart && !(h && h.rpcConnected)) || advertised) {
+    const todo = [...core.RPC_RESTART_TEXT.win32];
+    if (advertised) todo.push('Peers see "nodesignal" in your node\'s user agent after that restart.');
+    await panel('action', 'ACTION NEEDED: restart your Bitcoin node', todo);
+  }
   say('');
   await P.pause();
   P.close();
@@ -834,8 +947,9 @@ async function cmdInstall(L) {
 async function cmdUninstall(L, args) {
   const P = core.createPrompter();
   const purge = args.includes('--purge');
-  say('');
-  say('  Uninstalling NodeSignal');
+  await banner('uninstall');
+  section(1, 'Uninstalling NodeSignal');
+  let restartNode = false;
   let cfg = {};
   try { cfg = core.readConfig(L.config); } catch { }
   await stopRunning(L);
@@ -849,48 +963,50 @@ async function cmdUninstall(L, args) {
       if (purge || (P.tty && await P.askYesNo(`Remove NodeSignal's RPC login (rpcauth, rpcwhitelist) from ${rpcConf}?`, true))) {
         core.setRpcAccess(rpcConf, null);
         try { fs.unlinkSync(core.rpcRecordPath(L.config)); } catch { }
-        say(`  - Removed NodeSignal's RPC login from ${rpcConf}. Restart your node for it to take effect.`);
-      } else say(`  - Kept NodeSignal's RPC login in ${rpcConf} (reinstalling reuses it). Remove: uninstall --purge`);
+        ok('Removed NodeSignal\'s RPC login from', rpcConf); restartNode = true;
+      } else ok('Kept NodeSignal\'s RPC login in', `${rpcConf} (reinstalling reuses it). Remove: uninstall --purge`);
     }
     if (confPath && core.uaCommentState(confPath).on) {
-      say(`  Your bitcoin.conf still has uacomment=nodesignal (${confPath}).`);
+      note(`Your bitcoin.conf still has uacomment=nodesignal (${confPath}).`);
       if (P.tty && await P.askYesNo('Remove it?', true)) {
         core.setUaComment(confPath, false);
-        say('  - Removed. Restart your node for peers to stop seeing it.');
-      } else say('  - Left in place. Remove the line by hand if you want.');
+        ok('Removed uacomment=nodesignal'); restartNode = true;
+      } else ok('Left uacomment=nodesignal in place', 'remove the line by hand if you want');
     }
-  } catch (e) { say(`  - Could not check bitcoin.conf: ${e.message}`); }
+  } catch (e) { warn(`Could not check bitcoin.conf: ${e.message}`); }
 
   if (IS_WIN) {
     const f = winFolders();
     for (const file of [path.join(f.startup, 'NodeSignal.vbs'), path.join(f.desktop, 'NodeSignal.lnk'),
       path.join(f.programs, 'NodeSignal.lnk'), ...OLD_SHORTCUTS(f)]) {
-      try { fs.unlinkSync(file); say(`  - Removed ${file}`); } catch { }
+      try { fs.unlinkSync(file); ok('Removed', file); } catch { }
     }
     removeUninstallEntry();
     if (cfg['port-mapping']) {
       const port = Number(cfg['peer-port']) || 8788;
-      if (!deleteFirewallRule(port)) say(`  - If you added the firewall rule, remove it in an admin PowerShell: netsh advfirewall firewall delete rule name="${firewallRuleName(port)}"`);
+      if (!deleteFirewallRule(port)) warn(`If you added the firewall rule, remove it in an admin PowerShell: netsh advfirewall firewall delete rule name="${firewallRuleName(port)}"`);
     }
   }
   fs.rmSync(L.app, { recursive: true, force: true });
   try { fs.unlinkSync(path.join(L.root, 'NodeSignal-open.vbs')); } catch { }
-  say(`  - Removed ${L.app}`);
+  ok('Removed', L.app);
 
   // Purge never deletes the identity key or history, on Windows as on Linux.
   if (purge) {
     const dataDir = cfg.data || path.join(os.homedir(), '.nodesignal');
     for (const f of [L.config, core.rpcRecordPath(L.config), L.log, L.log + '.1', L.pid, daemonPidPath(L)]) { try { fs.unlinkSync(f); } catch { } }
-    say('  - Removed settings and logs.');
-    say(`  - Kept your identity key and history in ${dataDir}. Delete that folder yourself if you want.`);
+    ok('Removed settings and logs');
+    ok('Kept your identity key and history in', `${dataDir} (delete that folder yourself if you want)`);
   } else {
-    say(`  - Kept your settings (${L.config}) and history (${cfg.data || path.join(os.homedir(), '.nodesignal')}).`);
-    say('    Reinstalling picks them up again. Delete everything with: uninstall --purge');
+    ok('Kept your settings', L.config);
+    ok('Kept your history', cfg.data || path.join(os.homedir(), '.nodesignal'));
+    note('Reinstalling picks them up again. Delete everything with: uninstall --purge');
   }
 
   if (core.samePath(process.execPath, L.exe)) scheduleSelfDelete(L.exe, L.root);
   else { try { fs.unlinkSync(L.exe); } catch { } try { fs.rmdirSync(L.root); } catch { } }
-  say('  NodeSignal is uninstalled.');
+  await panel('done', 'NodeSignal is uninstalled', ['Your identity key and history are kept unless you delete them yourself.']);
+  if (restartNode) await panel('action', 'ACTION NEEDED: restart your Bitcoin node', ['Close Bitcoin Core or Knots and start it again so it drops the lines NodeSignal removed from bitcoin.conf.']);
   say('');
   await P.pause();
   P.close();

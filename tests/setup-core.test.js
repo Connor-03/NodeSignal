@@ -268,6 +268,40 @@ t('the mock node applies rpcauth and rpcwhitelist like bitcoind, after a restart
   } finally { srv.close(); }
 });
 
+t('termStyle: colour on a terminal only; NO_COLOR wins; FORCE_COLOR=3 is 24-bit', () => {
+  const tty = { isTTY: true, getColorDepth: () => 4 }, pipe = { isTTY: false };
+  assert.strictEqual(core.termStyle(pipe, {}).on, false, 'a pipe or log gets no colour');
+  assert.strictEqual(core.termStyle(tty, {}).on, true);
+  assert.strictEqual(core.termStyle(tty, { NO_COLOR: '1' }).on, false);
+  assert.strictEqual(core.termStyle(tty, { NO_COLOR: '1', FORCE_COLOR: '1' }).on, false, 'NO_COLOR wins');
+  assert.strictEqual(core.termStyle(pipe, { FORCE_COLOR: '1' }).on, true);
+  assert.strictEqual(core.termStyle(tty, {}).rich, false, '16 colours unless the console reports 24-bit');
+  assert.strictEqual(core.termStyle({ isTTY: true, getColorDepth: () => 24 }, {}).rich, true);
+  assert.strictEqual(core.termStyle(pipe, { FORCE_COLOR: '3' }).rich, true);
+  const c16 = core.termStyle(tty, {});
+  assert.strictEqual(c16.fg('orange', 'x'), '\x1b[33mx\x1b[0m', 'basic colours on an older console');
+});
+
+t('termStyle: plain mode is ASCII with no escapes; colour mode uses only WGL4 symbols', () => {
+  const plain = core.termStyle({ isTTY: false }, {});
+  const out = [plain.fg('red', 'a', true), plain.bg('yellow', 'b'), plain.gradient('NODE', ['pink', 'cyan']),
+    ...plain.box('yellow', 'ACTION NEEDED', ['Close Bitcoin Core or Knots and start it again so it reads the new rpcauth line.'], 50, true),
+    ...Object.values(plain.sym)].join('\n');
+  assert(/^[\x20-\x7e\n]*$/.test(out), 'plain output: ' + JSON.stringify(out));
+  // Consolas and the other console fonts carry WGL4; anything outside it can
+  // show as an empty box on a Windows console
+  const WGL4 = new Set([0xd7, 0x221a, 0x2500, 0x2502, 0x250c, 0x2510, 0x2514, 0x2518, 0x2550, 0x2551, 0x2554, 0x2557,
+    0x255a, 0x255d, 0x2580, 0x2584, 0x2588, 0x25a0, 0x25a1, 0x25b2, 0x25ba, 0x25cf]);
+  for (const f of ['setup-core.js', 'packaging/windows/sea-main.js']) {
+    const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+    assert(/^[\x00-\x7f]*$/.test(src), f + ' stays ASCII: symbols are written as \\u escapes');
+    for (const m of src.matchAll(/\\u([0-9a-fA-F]{4})/g)) assert(WGL4.has(parseInt(m[1], 16)), `${f}: \\u${m[1]} is not in WGL4`);
+  }
+  const col = core.termStyle({ isTTY: true, getColorDepth: () => 24 }, {});
+  const rows = col.box('green', 'Done', ['a line long enough that it has to wrap inside the panel, twice over at this width'], 40);
+  assert(rows.every((r) => col.width(r) === 42), 'every panel row is the same width: ' + rows.map((r) => col.width(r)));
+});
+
 t('cli setup (the .deb postinst step): nodesignal user, rpcauth, never the cookie', async () => {
   const { r } = fakeRoot('deb', { conf: 'server=1\nrpcport=18555\n' });
   const confFile = path.join(r, 'home/alice/.bitcoin/bitcoin.conf');

@@ -5,6 +5,17 @@ hood. Security changes are tracked in more depth in `SECURITY-CRITIQUE.md`.
 
 ## 1.3.1 (not yet released)
 
+### Windows installer
+
+- The setup window is in colour now: the NodeSignal logo, numbered steps, a
+  tick per finished step, a spinner while NodeSignal starts, and a green
+  summary panel. Anything you have to do yourself (restart Bitcoin Core or
+  Knots so it reads NodeSignal's login, or add the lines by hand) comes last,
+  in a yellow double-framed panel that flashes a few times, just above
+  "Press Enter". Errors (no node found, started as administrator) get a red
+  panel. Without a terminal, or with NO_COLOR set, the output is plain text
+  with the same words.
+
 ### Fixes
 
 - A peer that connected to your node through Tor shows on the map as

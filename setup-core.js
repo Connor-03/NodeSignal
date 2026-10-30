@@ -803,8 +803,108 @@ function defaultConfigPath(platform = process.platform, env = process.env) {
 /* ------------------------------------------------------------ prompts
    Works on a terminal and with piped input (one answer per line), so every
    installer can be scripted:  node install.js < answers.txt               */
+/* ------------------------------------------------------------ terminal look
+   Colour for the installers' console. On a terminal only: never in a pipe,
+   a log or CI. NO_COLOR turns it off, FORCE_COLOR on. Windows 10 and 11
+   consoles understand these codes (Node passes them through, or translates
+   them on an older console). 24-bit colour where the console reports it
+   (Windows Terminal, recent conhost), else the nearest of the 16 basic
+   colours. With colour on, every symbol is from WGL4, the set Consolas and
+   the other console fonts carry; with it off, the output is plain ASCII. */
+const PALETTE = {
+  //       24-bit          16 colours
+  orange: ['247;147;26', '33'],    // the map's colours: Bitcoin Core
+  green: ['34;169;90', '32'],      // Knots
+  cyan: ['77;210;255', '96'],      // btcd
+  violet: ['180;140;255', '95'],   // libbitcoin
+  pink: ['255;122;184', '35'],     // Bcoin
+  yellow: ['255;214;10', '93'],
+  red: ['255;85;85', '91'],
+  gray: ['138;147;166', '90'],
+  white: ['236;240;245', '97'],
+};
+const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]/g;
+function termStyle(stream = process.stdout, env = process.env) {
+  const on = env.NO_COLOR ? false : (env.FORCE_COLOR && env.FORCE_COLOR !== '0') ? true : !!(stream && stream.isTTY);
+  let depth = 4;
+  try { if (on && stream && typeof stream.getColorDepth === 'function') depth = stream.getColorDepth(env); } catch { }
+  if (on && env.FORCE_COLOR === '3') depth = 24;   // Node's convention: 3 means 24-bit
+  const rich = on && depth >= 24;
+  const sgr = (code, s) => (on ? `\x1b[${code}m${s}\x1b[0m` : String(s));
+  const fgCode = (name) => (rich ? '38;2;' + PALETTE[name][0] : PALETTE[name][1]);
+  const t = {
+    on, rich,
+    // a colour by name, optionally bold
+    fg: (name, s, bold) => sgr((bold ? '1;' : '') + fgCode(name), s),
+    // dark text on a colour: labels and title bars
+    bg: (name, s) => sgr(rich ? `1;48;2;${PALETTE[name][0]};38;2;14;16;22` : `1;${Number(PALETTE[name][1]) + 10};30`, s),
+    bold: (s) => sgr('1', s),
+    // one colour per character, blended between the stops (24-bit), or
+    // stepping through them (16 colours)
+    gradient(text, stops) {
+      if (!on) return text;
+      const chars = [...text], n = Math.max(1, chars.length - 1);
+      return chars.map((ch, i) => {
+        if (ch === ' ') return ch;
+        const f = (i / n) * (stops.length - 1), k = Math.min(stops.length - 2, Math.floor(f));
+        if (!rich) return sgr('1;' + PALETTE[stops[Math.round(f)]][1], ch);
+        const a = PALETTE[stops[k]][0].split(';').map(Number), b = PALETTE[stops[k + 1]][0].split(';').map(Number);
+        const mix = a.map((v, j) => Math.round(v + (b[j] - v) * (f - k)));
+        return sgr('1;38;2;' + mix.join(';'), ch);
+      }).join('');
+    },
+    strip: (s) => String(s).replace(ANSI_RE, ''),
+    width: (s) => [...String(s).replace(ANSI_RE, '')].length,
+    sym: on
+      ? { ok: '\u221a', warn: '!', bad: '\u00d7', step: '\u25ba', dot: '\u25cf', ask: '?', rule: '\u2500' }
+      : { ok: '-', warn: '-', bad: '-', step: '-', dot: '*', ask: '', rule: '-' },
+  };
+  // word wrap to a width, keeping words whole (a path longer than the width
+  // gets a line of its own)
+  t.wrap = (text, width) => {
+    const out = [];
+    for (const para of String(text).split('\n')) {
+      let line = '';
+      for (const word of para.split(' ')) {
+        if (line && t.width(line) + 1 + t.width(word) > width) { out.push(line); line = word; }
+        else line = line ? line + ' ' + word : word;
+      }
+      out.push(line);
+    }
+    return out;
+  };
+  // A framed panel: a title bar in the colour, then the lines; double rules
+  // for the ones that must not be missed. Plain ASCII with colour off.
+  t.box = (color, title, lines, width = 72, double = false) => {
+    const inner = width - 4;
+    const body = [];
+    for (const l of lines) for (const w of t.wrap(l, inner)) body.push(w);
+    if (!on) {
+      const rule = '  ' + '-'.repeat(width);
+      return [rule, '  ' + title, ...body.map((l) => '  ' + l), rule];
+    }
+    const edge = (s) => t.fg(color, s, true);
+    const pad = (s) => s + ' '.repeat(Math.max(0, inner - t.width(s)));
+    const [tl, tr, bl, br, h, v] = double
+      ? ['\u2554', '\u2557', '\u255a', '\u255d', '\u2550', '\u2551']
+      : ['\u250c', '\u2510', '\u2514', '\u2518', '\u2500', '\u2502'];
+    return [
+      '  ' + edge(tl + h.repeat(width - 2) + tr),
+      '  ' + edge(v) + t.bg(color, ' ' + pad(title) + ' ') + edge(v),
+      ...body.map((l) => '  ' + edge(v) + ' ' + pad(l) + ' ' + edge(v)),
+      '  ' + edge(bl + h.repeat(width - 2) + br),
+    ];
+  };
+  return t;
+}
+
 function createPrompter({ input = process.stdin, output = process.stdout } = {}) {
   const tty = !!input.isTTY;
+  const st = termStyle(output);
+  // the question bright, the default and choices dimmed, a marker in front
+  const q2 = (q, hint) => st.on
+    ? `  ${st.fg('cyan', st.sym.ask, true)} ${st.bold(q)} ${st.fg('gray', '[' + hint + ']')}${st.fg('cyan', ' \u25ba ', true)}`
+    : `  ${q} [${hint}]: `;
   let rl = null, queued = null, loading = null;
   const loadPiped = () => loading || (loading = new Promise((resolve) => {
     let data = '';
@@ -825,22 +925,22 @@ function createPrompter({ input = process.stdin, output = process.stdout } = {})
     return String(line).trim();
   }
   async function askDefault(q, dflt) {
-    const a = await ask(`  ${q} [${dflt}]: `);
+    const a = await ask(q2(q, dflt));
     return a === '' ? dflt : a;
   }
   async function askYesNo(q, dfltYes = false) {
     for (let i = 0; i < 20; i++) {
-      const a = (await ask(`  ${q} [${dfltYes ? 'Y/n' : 'y/N'}]: `)).toLowerCase();
+      const a = (await ask(q2(q, dfltYes ? 'Y/n' : 'y/N'))).toLowerCase();
       if (a === '') return dfltYes;
       if (a === 'y' || a === 'yes') return true;
       if (a === 'n' || a === 'no') return false;
-      output.write('  Please answer y or n.\n');
+      output.write(st.fg('yellow', '  Please answer y or n.') + '\n');
     }
     return dfltYes;
   }
   async function pause(msg = '  Press Enter to close this window.') {
     if (!tty) return;
-    await ask(msg);
+    await ask(st.fg('gray', msg));
   }
   function close() { if (rl) { rl.close(); rl = null; } }
   return { ask, askDefault, askYesNo, pause, close, tty };
@@ -878,7 +978,7 @@ module.exports = {
   detectBitcoinNode, daemonDataDirs, samePath, chainOf,
   findRpcAuth, rpcCall, rpcCheck, checkNode, rpcHint,
   portFree, tailscaleAddr, httpGetJson, waitForHealth, webUrl,
-  defaultConfigPath, createPrompter,
+  defaultConfigPath, createPrompter, termStyle,
 };
 
 /* ------------------------------------------------------------ direct use */
