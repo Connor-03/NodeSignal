@@ -1233,6 +1233,58 @@ function httpGetJson(url, timeout = 3000) {
     req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
   });
 }
+/* Who answers on 127.0.0.1:<port>? Any local account can listen there while
+   NodeSignal is stopped, so root must not take what /health says there (the
+   onion address "advertise on" publishes) from a program of another account.
+   Linux: the uid of every listening TCP socket that would take a connection
+   to 127.0.0.1:port (bound to 127.0.0.1 or to any address, IPv4 or IPv6),
+   from /proc/net/tcp and tcp6. /proc prints each 32-bit word of an address
+   as the machine stores it, so on a little-endian machine 127.0.0.1 reads
+   0100007F. root: a fake filesystem (tests). Returns { uids } or { error }. */
+function loopbackListeners(port, { root = '', endian = os.endianness() } = {}) {
+  const uids = new Set();
+  let read = 0;
+  for (const f of ['tcp', 'tcp6']) {
+    let text;
+    try { text = fs.readFileSync(path.join(root || '/', 'proc', 'net', f), 'utf8'); read++; } catch { continue; }
+    for (const line of text.split('\n').slice(1)) {
+      const c = line.trim().split(/\s+/);
+      if (c.length < 8 || c[3] !== '0A') continue;                 // 0A: LISTEN
+      const m = /^([0-9A-Fa-f]{8}|[0-9A-Fa-f]{32}):([0-9A-Fa-f]{4})$/.exec(c[1]);
+      if (!m || parseInt(m[2], 16) !== Number(port) || !/^\d+$/.test(c[7])) continue;
+      if (takesLoopbackV4(procAddrBytes(m[1], endian))) uids.add(Number(c[7]));
+    }
+  }
+  return read ? { uids: [...uids] } : { error: 'cannot read /proc/net/tcp' };
+}
+function procAddrBytes(hex, endian) {
+  const out = [];
+  for (let w = 0; w < hex.length; w += 8) {
+    const word = [0, 2, 4, 6].map((i) => parseInt(hex.slice(w + i, w + i + 2), 16));
+    out.push(...(endian === 'LE' ? word.reverse() : word));
+  }
+  return out;
+}
+// 127.0.0.1 or 0.0.0.0; IPv6 :: (dual stack), ::ffff:127.0.0.1 or ::ffff:0.0.0.0
+function takesLoopbackV4(b) {
+  const v4 = (q) => (q[0] === 127 && q[1] === 0 && q[2] === 0 && q[3] === 1) || q.every((x) => x === 0);
+  if (b.length === 4) return v4(b);
+  if (b.slice(0, 10).some((x) => x !== 0)) return false;
+  if (b[10] === 0 && b[11] === 0) return b.slice(12).every((x) => x === 0);
+  return b[10] === 0xff && b[11] === 0xff && v4(b.slice(12));
+}
+/* webListenerCheck(port, trustedUids): { ok: true } when every socket that
+   takes 127.0.0.1:port belongs to one of trustedUids, else { ok: false, why },
+   with other: true when one belongs to another account. */
+function webListenerCheck(port, trustedUids, opts = {}) {
+  const r = loopbackListeners(port, opts);
+  if (r.error) return { ok: false, why: r.error };
+  if (!r.uids.length) return { ok: false, why: 'no listening socket found for it' };
+  const other = r.uids.find((u) => !trustedUids.includes(u));
+  if (other === undefined) return { ok: true };
+  const u = userByUid(other, opts.root || '');
+  return { ok: false, other: true, why: `it belongs to ${u ? u.name : 'uid ' + other}` };
+}
 // Poll /health until it answers (and, with wantRpc, until RPC is connected).
 async function waitForHealth(port, { timeoutMs = 20000, wantRpc = false, rpcGraceMs = 8000 } = {}) {
   const start = Date.now();
@@ -1471,6 +1523,7 @@ module.exports = {
   copyStateTree,
   linuxProcesses,
   isLoopbackHost,
+  loopbackListeners, webListenerCheck,
 };
 
 /* ------------------------------------------------------------ direct use */

@@ -892,6 +892,104 @@ t('as root, a bitcoin.conf link planted where another account can write never le
   assert(core.setUaComment(plain, true).changed);
 });
 
+/* ---------------------------------------------------------- /health and root's CLI
+   Root cause (Oct 2026 final review): "sudo nodesignal advertise on" took
+   the onion address it publishes from whatever answered on
+   127.0.0.1:<web-port>, and "status" printed what it said as it came. A local
+   account holding that port while NodeSignal was stopped could publish its
+   own onion in the node's user agent and write escape sequences to root's
+   terminal. */
+const PROC_HEAD = '  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n';
+const procRow = (n, local, st, uid) => `   ${n}: ${local} 00000000:0000 ${st} 00000000:00000000 00:00000000 00000000 ${String(uid).padStart(5)}        0 ${1000 + n} 1 0000000000000000 100 0 0 10 0\n`;
+const LE = os.endianness() === 'LE';
+const LO4 = LE ? '0100007F' : '7F000001';
+// a control character (other than a newline), DEL, C1 or a right-to-left override
+const hasControl = (s) => [...s].some((c) => { const n = c.codePointAt(0); return (n < 32 && n !== 10) || (n >= 0x7f && n <= 0x9f) || n === 0x202e; });
+const ESC = String.fromCharCode(27), BEL = String.fromCharCode(7), CSI = String.fromCharCode(0x9b), RLO = String.fromCharCode(0x202e);
+const EVIL_ONION = 'a'.repeat(56) + '.onion';
+const EVIL_HEALTH = { status: 'ok', onion: EVIL_ONION, nick: 'x' + ESC + ']0;TITLE' + BEL, version: '/NodeSignal:1.4/' + CSI + '2J',
+  fingerprint: 'f'.repeat(32), uptime: 1, contacts: ESC + '[2J3', rpcConnected: true, peerCount: RLO + '8', rpcSource: 'x' + ESC + '[1A', webPort: 8789, peerPort: 8788 };
+// cli.js with the service hooks stubbed and /health answering health
+function cliHealth(args, health, env = {}) {
+  const code = `const core = Object.assign({}, require(${JSON.stringify(path.join(ROOT, 'setup-core.js'))}), { httpGetJson: async () => ({ ok: true, status: 200, json: JSON.parse(process.env.NS_HEALTH) }) });
+require(${JSON.stringify(path.join(ROOT, 'cli.js'))}).main(JSON.parse(process.env.NS_ARGS), { core, hooks: { restart: async () => 0, stop: async () => {}, start: async () => {} } }).then((c) => process.exit(c || 0));`;
+  return spawnSync(process.execPath, ['-e', code], { encoding: 'utf8', timeout: 60000, env: Object.assign({}, process.env, env, { NS_ARGS: JSON.stringify(args), NS_HEALTH: JSON.stringify(health) }) });
+}
+
+t('loopbackListeners reads who listens on 127.0.0.1:<port> from /proc/net/tcp and tcp6', () => {
+  const r = path.join(tmp, 'proc-net');
+  const be = (hex) => (LE ? hex : hex.match(/.{8}/g).map((w) => w.match(/../g).reverse().join('')).join(''));
+  // 8789 is 0x2255; an established socket, another port and 127.0.0.2 do not count
+  write(path.join(r, 'proc/net/tcp'), PROC_HEAD + procRow(0, LO4 + ':2255', '0A', 999) + procRow(1, LO4 + ':2256', '0A', 4244)
+    + procRow(2, LO4 + ':2255', '01', 4244) + procRow(3, be('0200007F') + ':2255', '0A', 4245) + procRow(4, '00000000:2260', '0A', 4248));
+  write(path.join(r, 'proc/net/tcp6'), PROC_HEAD + procRow(0, '0'.repeat(32) + ':2257', '0A', 4244)
+    + procRow(1, be('0000000000000000FFFF00000100007F') + ':2258', '0A', 4246) + procRow(2, be('00000000000000000000000001000000') + ':2259', '0A', 4247));
+  const at = (port) => core.loopbackListeners(port, { root: r }).uids;
+  assert.deepStrictEqual(at(8789), [999]);
+  assert.deepStrictEqual(at(0x2260), [4248], '0.0.0.0 takes 127.0.0.1');
+  assert.deepStrictEqual(at(0x2257), [4244], ':: (dual stack) takes 127.0.0.1');
+  assert.deepStrictEqual(at(0x2258), [4246], '::ffff:127.0.0.1');
+  assert.deepStrictEqual(at(0x2259), [], '::1 does not');
+  assert.deepStrictEqual(core.webListenerCheck(8789, [999], { root: r }), { ok: true });
+  const bad = core.webListenerCheck(8789, [998], { root: r });
+  assert(!bad.ok && bad.other && /it belongs to uid 999/.test(bad.why), JSON.stringify(bad));
+  assert.match(core.webListenerCheck(1, [999], { root: r }).why, /no listening socket/);
+  assert.match(core.webListenerCheck(8789, [999], { root: path.join(tmp, 'no-proc') }).why, /cannot read/);
+});
+
+t('status prints /health without control characters; advertise takes no onion from another account\'s listener (final review poc7)', () => {
+  const base = path.join(tmp, 'health'), pr = path.join(base, 'root');
+  const cfg = path.join(base, 'config.json'), conf = path.join(base, 'bitcoin.conf');
+  write(cfg, JSON.stringify({ 'web-port': 8789 }));
+  write(conf, 'server=1\n');
+  let out = cliHealth(['status', '--config', cfg], EVIL_HEALTH);
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /running \/NodeSignal:1\.4\/2J as "x\]0;TITLE"/);
+  assert(!hasControl(out.stdout), 'control characters reached the terminal: ' + JSON.stringify(out.stdout));
+  out = cliHealth(['onion', 'show', '--config', cfg], Object.assign({}, EVIL_HEALTH, { onion: 'x' + ESC + '[2J' }));
+  assert(!hasControl(out.stdout), JSON.stringify(out.stdout));
+  // the listener on the web port belongs to another account: no onion
+  const cfgUid = fs.statSync(cfg).uid;
+  write(path.join(pr, 'proc/net/tcp'), PROC_HEAD + procRow(0, LO4 + ':2255', '0A', cfgUid + 4000));
+  out = cliHealth(['advertise', 'on', '--bitcoin-conf', conf, '--config', cfg], EVIL_HEALTH, { NODESIGNAL_TEST_ROOT: pr });
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /Something other than NodeSignal answers on 127\.0\.0\.1:8789 \(it belongs to uid \d+\), so the onion address it gave was not used/);
+  assert.match(fs.readFileSync(conf, 'utf8'), /^uacomment=nodesignal$/m);
+  assert(!fs.readFileSync(conf, 'utf8').includes('a'.repeat(56)));
+  // NodeSignal's own (the config file's owner): the onion goes in
+  write(path.join(pr, 'proc/net/tcp'), PROC_HEAD + procRow(0, LO4 + ':2255', '0A', cfgUid));
+  out = cliHealth(['advertise', 'on', '--bitcoin-conf', conf, '--config', cfg], EVIL_HEALTH, { NODESIGNAL_TEST_ROOT: pr });
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.match(fs.readFileSync(conf, 'utf8'), new RegExp('^uacomment=nodesignal:' + 'a'.repeat(56) + '$', 'm'));
+});
+
+t('as root, advertise and status against another account\'s program on the web port (final review poc7, real sockets)', async () => {
+  if (!asRoot) return 'skip needs root (to run a program as another account)';
+  if (process.platform !== 'linux' || !fs.existsSync('/proc/net/tcp')) return 'skip needs /proc/net/tcp';
+  const base = path.join(tmp, 'health-real');
+  const cfg = path.join(base, 'config.json'), conf = path.join(base, 'bitcoin.conf');
+  write(conf, 'server=1\n');
+  // another account's program on 127.0.0.1 (port 0: any free one)
+  const code = 'const s = require("http").createServer((q, r) => r.end(process.env.NS_HEALTH)).listen(0, "127.0.0.1", () => process.stdout.write(String(s.address().port)));';
+  const child = require('child_process').spawn(process.execPath, ['-e', code], { uid: OTHER_UID, gid: OTHER_UID, cwd: '/', stdio: ['ignore', 'pipe', 'inherit'],
+    env: Object.assign({}, process.env, { NS_HEALTH: JSON.stringify(EVIL_HEALTH) }) });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      child.stdout.once('data', (d) => resolve(Number(String(d).trim())));
+      child.once('exit', (c) => reject(new Error('the listener exited: ' + c)));
+      setTimeout(() => reject(new Error('the listener did not start')), 10000);
+    });
+    write(cfg, JSON.stringify({ 'web-port': port }));
+    const cli = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), ...a, '--config', cfg], { encoding: 'utf8', timeout: 30000 });
+    let out = cli('advertise', 'on', '--bitcoin-conf', conf);
+    assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+    assert.match(out.stdout, /Something other than NodeSignal answers on 127\.0\.0\.1:\d+ \(it belongs to uid 4244\)/);
+    assert.match(fs.readFileSync(conf, 'utf8'), /^uacomment=nodesignal$/m);
+    out = cli('status');
+    assert(/running/.test(out.stdout) && !hasControl(out.stdout), JSON.stringify(out.stdout));
+  } finally { child.kill(); }
+});
+
 (async () => {
   for (const [name, fn] of tests) {
     try {

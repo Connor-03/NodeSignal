@@ -72,6 +72,16 @@ function printable(v, max = 200) {
   if (v === undefined || v === null) return '';
   return String(v).replace(UNPRINTABLE, '').slice(0, max);
 }
+// The accounts allowed to answer /health: NodeSignal's config file's owner
+// (the nodesignal account for the .deb, the operator for a from-source
+// install) and the nodesignal account.
+function nodesignalUids(ctx, root = '') {
+  const out = [];
+  try { out.push(fs.statSync(ctx.cfgPath).uid); } catch { }
+  const u = ctx.core.readPasswd(root).find((x) => x.name === 'nodesignal');
+  if (u) out.push(u.uid);
+  return out;
+}
 
 /* ------------------------------------------------------------ status */
 async function cmdStatus(ctx) {
@@ -93,13 +103,13 @@ async function cmdStatus(ctx) {
     else say('          Check: systemctl status nodesignal    Log: journalctl -u nodesignal -n 50');
     return 1;
   }
-  const h = r.json;
-  say(`Daemon  : running ${h.version || ''} as "${h.nick}", up ${fmtUptime(h.uptime)}`);
+  const h = r.json, p = (k) => printable(h[k]);
+  say(`Daemon  : running ${p('version')} as "${p('nick')}", up ${fmtUptime(h.uptime)}`);
   say(`Web UI  : ${core.webUrl(cfg)}`);
-  say(`Bitcoin : ${h.rpcConnected ? `connected, ${h.peerCount} peers` : 'NOT connected (the daemon retries every 30 seconds)'}${h.rpcSource ? `  [${h.rpcSource}]` : ''}`);
-  say(`Contacts: ${h.contacts}`);
-  say(`Ports   : web ${h.webPort}, peer ${h.peerPort}${cfg['port-mapping'] ? ' (router port mapping requested)' : ''}`);
-  if (h.fingerprint) say(`Identity: ${h.fingerprint}`);
+  say(`Bitcoin : ${h.rpcConnected ? `connected, ${p('peerCount')} peers` : 'NOT connected (the daemon retries every 30 seconds)'}${h.rpcSource ? `  [${p('rpcSource')}]` : ''}`);
+  say(`Contacts: ${p('contacts')}`);
+  say(`Ports   : web ${p('webPort')}, peer ${p('peerPort')}${cfg['port-mapping'] ? ' (router port mapping requested)' : ''}`);
+  if (h.fingerprint) say(`Identity: ${p('fingerprint')}`);
   say(`Login   : ${h.authRequired ? 'token required (show it: ' + (IS_WIN ? 'nodesignal.exe' : 'sudo nodesignal') + ' web-token)' : 'open (no token): every account on this machine can use the console'}`);
   try {
     const det = await core.detectBitcoinNode();
@@ -131,11 +141,25 @@ async function cmdAdvertise(ctx, onOff) {
     return 1;
   }
   // With an onion address (1.4), the comment carries it, so any operator
-  // whose node peers with yours can reach your NodeSignal over Tor.
+  // whose node peers with yours can reach your NodeSignal over Tor. It is
+  // taken from /health only when what answers there is NodeSignal's (Linux:
+  // the listening socket belongs to its account, checked before and after
+  // asking), never from another account's program sitting on the port.
   let value = 'nodesignal';
   if (onOff === 'on') {
-    const h = await core.httpGetJson(`http://127.0.0.1:${Number(ctx.cfg['web-port']) || 8789}/health`, 3000);
-    if (h.ok && h.json && h.json.onion) value = core.uaCommentFor(h.json.onion);
+    const port = Number(ctx.cfg['web-port']) || 8789;
+    const root = optValue(ctx.argv, 'root') || process.env.NODESIGNAL_TEST_ROOT || '';
+    const check = () => (process.platform === 'linux' ? core.webListenerCheck(port, nodesignalUids(ctx, root), { root }) : { ok: true });
+    const before = check();
+    const h = await core.httpGetJson(`http://127.0.0.1:${port}/health`, 3000);
+    if (h.ok && h.json && h.json.onion) {
+      const after = before.ok ? check() : before;
+      if (after.ok) value = core.uaCommentFor(h.json.onion);
+      else {
+        say(after.other ? `Something other than NodeSignal answers on 127.0.0.1:${port} (${after.why}), so the onion address it gave was not used.`
+          : `Could not tell whether NodeSignal is what answers on 127.0.0.1:${port} (${after.why}), so the onion address it gave was not used.`);
+      }
+    }
   }
   let r;
   try { r = core.setUaComment(confPath, onOff === 'on', { owner: det.owner, value }); }
@@ -234,8 +258,8 @@ async function cmdOnion(ctx, sub = 'show') {
   if (!['show', 'on', 'off'].includes(sub)) { say('usage: nodesignal onion [show|on|off]'); return 2; }
   if (sub === 'show') {
     const h = await core.httpGetJson(`http://127.0.0.1:${Number(ctx.cfg['web-port']) || 8789}/health`, 3000);
-    const mode = ctx.cfg.onion || 'auto';
-    say(`Onion  : ${h.ok && h.json && h.json.onion ? h.json.onion : 'none yet'}  (mode: ${mode})`);
+    const mode = printable(ctx.cfg.onion || 'auto');
+    say(`Onion  : ${h.ok && h.json && h.json.onion ? printable(h.json.onion) : 'none yet'}  (mode: ${mode})`);
     if (mode === 'auto' && !(h.ok && h.json && h.json.onion)) {
       say('         NodeSignal asks Tor\'s control port for its own onion address. Is Tor installed and running?');
       say(IS_WIN ? '         On Windows: run the Tor Expert Bundle with ControlPort 9051 and CookieAuthentication 1.'
@@ -265,7 +289,7 @@ async function cmdSameOnion(ctx) {
   say('other operators see that you really run that node. Optional and manual;');
   say('it gives your node a new onion address.');
   say('');
-  say(j.sameOnion ? 'Status: your node and NodeSignal share an onion address.' : 'Status: not set up' + (j.onion ? ` (NodeSignal's own onion is ${j.onion}).` : '.'));
+  say(j.sameOnion ? 'Status: your node and NodeSignal share an onion address.' : 'Status: not set up' + (j.onion ? ` (NodeSignal's own onion is ${printable(j.onion)}).` : '.'));
   say('');
   say('1. Add a hidden service for both to torrc (Linux, on the node: /etc/tor/torrc):');
   say('     HiddenServiceDir /var/lib/tor/bitcoin-nodesignal/');
