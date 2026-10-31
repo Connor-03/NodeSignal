@@ -1,6 +1,23 @@
 NodeSignal: Tor Setup Guide
 =======================================================================
 
+Since 1.4 most of this guide happens by itself. With Tor installed and
+running on the same machine, NodeSignal asks Tor's control port for its own
+onion address, the way bitcoind's -listenonion does. Nothing to edit, no
+port forwarding. Linux, on the node:
+
+    sudo apt install tor
+    sudo systemctl restart nodesignal
+    nodesignal onion            (shows the address)
+
+On Debian and Ubuntu, setup adds the nodesignal user to the debian-tor
+group so it can use Tor's control socket. That lets it control the local
+Tor; "sudo nodesignal onion off" declines it. Windows: run the Tor Expert
+Bundle with "ControlPort 9051" and "CookieAuthentication 1" in its torrc.
+The manual hidden service below still works (set "onion": "external" and
+"onion-address" in NodeSignal's config), and is how you serve your node
+and NodeSignal on one onion: see "nodesignal same-onion".
+
 Tor is the most private way to run NodeSignal. It needs no port
 forwarding, and it does not publish the link between your identity and
 your node's IP address, which is the single biggest privacy weakness

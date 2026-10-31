@@ -27,6 +27,12 @@ peers that send unknown data. NodeSignal is honest about the split:
 - Find other operators: peers that advertise NodeSignal in their user agent
   are marked on the map (opt-in for your own node)
 - Bitcoin Core and Bitcoin Knots, including pruned nodes
+- No port forwarding: with Tor installed, NodeSignal makes its own onion
+  address through Tor's control port (1.4)
+- A feed of signed posts passed between contacts, topic rooms, contact links
+  with QR codes that pin the key, opt-in introductions, and mailboxes that
+  hold sealed mail for operators who cannot be reached (1.4)
+- Passphrase-sealed identity backup; signed in-app updates (1.4)
 - Tor, Tailscale, IPv4 and IPv6; opt-in router port mapping (UPnP / NAT-PMP)
 - **Zero runtime dependencies**: Node.js standard library only
 - Self-hosted web interface, one-download installers for Windows and Linux

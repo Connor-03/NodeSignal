@@ -49,6 +49,12 @@
 | User-agent advertising (`uacomment=nodesignal`) | **[NEW, opt-in]**: tells every peer of your node that you run NodeSignal. Makes enumeration trivial for anyone connected to you; off by default |
 | Router port mapping (UPnP / NAT-PMP) | **[NEW, opt-in]**: opens the peer port to the internet and publishes your IP to every contact; off by default, never needed on Tailscale or Tor |
 | No independent review | **[OPEN]**: the vector tests prove `noise.js` computes the Noise spec correctly; they say nothing about the daemon around it. Nobody outside the project has audited it yet |
+| Inbound Tor peers indistinguishable (all from 127.0.0.1) | **[FIXED in v1.4]**: told apart by key and the onion their hello names; the second Tor peer is no longer refused as a "key change" of the first (`tests/network.test.js`) |
+| Reaching operators behind NAT needed port forwarding | **[FIXED in v1.4]**: NodeSignal's own onion service through Tor's control port; costs control of the local Tor (section 9) |
+| Tor control access (debian-tor group) | **[NEW in v1.4]**: needed to create the onion; it lets the daemon's user reconfigure the local Tor. `onion off` declines it (section 9) |
+| Public posts and rooms | **[NEW in v1.4]**: signed and bounded, but public to everyone they reach and as Sybil-prone as any key-based identity (section 9) |
+| Mailbox metadata | **[NEW in v1.4, opt-in]**: a mailbox cannot read mail but sees who writes to whom, when and how much (section 9) |
+| Update supply chain | **[NEW in v1.4]**: in-app installs need a release manifest signed with a key shipped in the app; root re-checks everything; no downgrades. A key kept as a GitHub Actions secret means a compromised GitHub account can sign (section 9) |
 
 ---
 
@@ -398,3 +404,25 @@ Read and left as they are, on purpose:
   land on the removed record until it closes. They are not saved. Cosmetic.
 
 This review cannot replace an outside one: it shares the author's blind spots.
+
+## 9. v1.4: new surfaces, and what bounds them
+
+1.4 adds a feed, rooms, mailboxes, introductions, NodeSignal's own onion
+service, identity backups and in-app updates. Each is listed with what it
+exposes and what keeps it in check. Tests named in brackets.
+
+| # | Surface | What an attacker gets | What bounds it |
+|---|---|---|---|
+| 1 | Tor control port | The daemon's user can reconfigure the local Tor (on Debian, any member of debian-tor can) | Setup adds the group only when Tor is installed, and says so; `nodesignal onion off` declines it. The onion key is kept in state.json (0600) beside the identity key [torcontrol] |
+| 2 | Inbound over Tor | Every onion peer arrives from 127.0.0.1 | Contacts from loopback are matched by key only; a new key from loopback is a new contact, not a key change; the 127.0.0.1 rate-limit bucket is eight times larger, MAX_CONNS still caps it [network] |
+| 3 | Posts | Anyone you or your contacts talk to can send signed posts | Ed25519 signature over a canonical body, unknown fields refused, 1000 characters, 30 posts per author per day, 200 per author, 2000 in total (own posts never dropped), 30-day window, at most two hops; a stranger may pass on only its own posts. Public by design [social, network] |
+| 4 | Rooms | Anyone with a room link can join and read from then on | Room ids bind creator, name and nonce; membership entries and messages are signed; non-members' messages refused; 20 rooms, 100 members, 1000 messages each [social, network] |
+| 5 | Names | A post or room message names a nick and fingerprint it chose | Shown as "your contact" only when the signing key matches the one that contact announced over its own authenticated link; otherwise "name not verified" with the key id |
+| 6 | Mailboxes | The mailbox sees recipient and sender fingerprints, sizes and times | Opt-in on both sides; sealed with X25519 + ChaCha20-Poly1305, the sender authenticated to the recipient by static-static DH; 16 KiB per item, 200 per recipient, 256 recipients, 32 MiB, 7 days; register, fetch and ack answer only the fingerprint proven in the handshake; deposit ids are random. No forward secrecy for held mail [mailbox, network] |
+| 7 | Introductions | Your opted-in contacts' addresses and keys reach your other opted-in contacts | Both sides must opt in, only established contacts who opted in themselves are shared, 100 per answer, 300 kept [network] |
+| 8 | Contact and room links | Whoever has the link learns the address in it | The key in a contact link is pinned before the first connection, so a wrong key is held for review instead of trusted [network] |
+| 9 | Identity backup | The file plus the passphrase is your identity | scrypt (N=2^17) + ChaCha20-Poly1305; import refuses KDF parameters that would exhaust memory; no message history in it [backup] |
+| 10 | Update check | GitHub (or a Tor exit) learns that a NodeSignal copy checks daily | Through Tor when available, jittered; `nodesignal updates off` |
+| 11 | Update install | A malicious package would run as root on the node | Only a manifest signed by a key in release-keys.json; the daemon (no root) downloads and checks, then root copies the files with O_NOFOLLOW into a root-only directory and checks signature, version (strictly newer), size, SHA-256 and the package name itself before calling apt. Release keys can be rotated. Open: the signing key is a GitHub Actions secret, so a compromised GitHub account can sign; an Actions environment with required reviewers, or signing offline, narrows that [updater, update-apply] |
+| 12 | Same onion | The badge could be faked if the proof were weak | Only set after we dialled the onion ourselves and it answered with the pinned key, and the same onion is a Bitcoin node (a peer of our node, or it answered the :8333 handshake) |
+

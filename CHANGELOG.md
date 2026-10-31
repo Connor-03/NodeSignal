@@ -3,7 +3,92 @@
 Every release lists what changed for an operator, then what changed under the
 hood. Security changes are tracked in more depth in `SECURITY-CRITIQUE.md`.
 
-## 1.3.1 (not yet released)
+## 1.4.0 (not yet released)
+
+NodeSignal 1.4 turns operator-to-operator chat into a small social network
+that the operators' own daemons carry: posts, topic rooms, introductions, and
+reaching each other through Tor with no port forwarding. It still needs a
+Bitcoin node on the same machine and still calls only the three read-only
+RPC methods.
+
+### Before you upgrade
+
+- **This is the last update you install by hand.** From 1.4 on, NodeSignal
+  tells you in the console when a newer version is out and can install it
+  for you, but only a release signed with the NodeSignal release key built
+  into your copy (see Updates below). 1.3 has no updater, so 1.4 itself is
+  installed the usual way.
+- **Linux: NodeSignal joins the debian-tor group when Tor is installed**, so
+  it can ask Tor for its own onion address. That lets it control the local
+  Tor. Turn the onion off with `sudo nodesignal onion off` (Linux, on the
+  node) if you do not want that.
+- **Peers see a new signing key** in your hello, used for posts and rooms.
+  Your identity key and fingerprint do not change.
+
+### Reaching other operators, with no port forwarding
+
+- NodeSignal gives itself an onion address through Tor's control port, the
+  way bitcoind's `-listenonion` does: install Tor (`sudo apt install tor` on
+  Linux) and it just happens, behind any router, with no torrc editing and no
+  forwarded port. The address stays the same across restarts.
+  `nodesignal onion` shows it.
+- A contact is reached at its address first and its onion second.
+- `nodesignal advertise on` now puts your onion in your node's user agent
+  (`uacomment=nodesignal:<onion>`). Any operator whose node peers with yours
+  can then message you over Tor, and the map does that by itself.
+- Mailboxes: a contact can offer to hold sealed mail for operators who cannot
+  be reached (no Tor, no forwarded port, or switched off). Messages waiting
+  there show as "held at <mailbox>", and the sender sees "delivered" once you
+  collect them. The mailbox cannot read them, but it does see who writes to
+  whom, when and how much. Off unless you offer one, and you choose which
+  contact's mailbox you use.
+- Several operators reaching you through Tor at once used to look like one
+  peer at 127.0.0.1 changing its key, and all but the first were refused.
+  They are now told apart by key and by the onion they name.
+
+### Posts, rooms, introductions
+
+- **Feed**: short posts signed with your key, pushed to your contacts and
+  passed on at most one hop further, by contacts who follow you. No server
+  keeps them and nobody on the way can change them. Your established
+  contacts are followed automatically; follow or unfollow anyone. A post from
+  someone you have not talked to shows its signing key and "name not
+  verified".
+- **Rooms**: topic rooms shared by their members' daemons. Start one, invite
+  people with a `nodesignal-room:` link, read the history when you join.
+  Every message is signed by its author.
+- **Contact links**: share `nodesignal:<address>?port=...&fp=...&nick=...` or
+  its QR code (the share button). Whoever adds it has your key pinned before
+  the first connection, so nobody else can answer in your place.
+- **Introductions** (opt-in on both sides): contacts who turned them on swap
+  their other opted-in contacts, with address and key, so adding one pins the
+  right key.
+- **Same onion**: when a contact's NodeSignal answers on the onion address of
+  a Bitcoin node, the console says that operator runs that node. Only the
+  holder of the onion key can serve both. `nodesignal same-onion` explains
+  how to set it up for your own node.
+
+### Identity backup
+
+- Back up your identity and contacts to a passphrase-sealed file from the
+  console's status panel, or `nodesignal backup <file>`. Restore it with
+  `nodesignal restore <file>`, which keeps the history already on the
+  machine. Message history is not in the backup.
+
+### Updates
+
+- Once a day NodeSignal asks GitHub Releases whether a newer version exists
+  (through Tor when it has an onion address) and shows it in the console with
+  its notes. It installs nothing by itself.
+- "Install" works only for a release whose manifest is signed with a release
+  key listed in `release-keys.json`, the list your copy shipped with. On
+  Linux the daemon (no root) downloads and checks the package, and a small
+  root service checks the signature, version, size and SHA-256 again itself
+  before installing; older versions are refused. On Windows the new .exe
+  replaces the program and restarts NodeSignal. A copy installed from source
+  is told about new versions only.
+- `nodesignal update` checks by hand; `sudo nodesignal update install`
+  installs on Linux; `nodesignal updates off` turns the daily check off.
 
 ### Windows installer
 
@@ -42,6 +127,21 @@ hood. Security changes are tracked in more depth in `SECURITY-CRITIQUE.md`.
   "add as contact" button. This uses the `network` field bitcoind reports
   for each peer (Bitcoin Core 22 and later, and Knots); an older node's
   inbound 127.0.0.1 peer is labelled "local or Tor".
+
+### Known limits
+
+- Still no outside review of the daemon. 1.4 adds several new pieces
+  (posts, rooms, mailboxes, the Tor control client, the updater); the
+  self-review is in `SECURITY-CRITIQUE.md` section 9.
+- Posts and room messages are public to everyone they reach, and a signing
+  key says nothing about who holds it. One person can run many nodes and
+  many keys.
+- Anyone with a room link can join that room and read it from then on.
+- A mailbox learns who writes to whom and when.
+- In-app installs need a release signed with the NodeSignal release key. If
+  the copy you installed lists no key, it announces new versions only.
+- Not yet run on real Windows, real arm64 hardware or a real Tor; CI runs
+  mocks for all three.
 
 ## 1.3.0 (2026-10-30)
 

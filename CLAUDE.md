@@ -165,6 +165,12 @@ From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 | `noise.js` | Noise_XX_25519_ChaChaPoly_SHA256 (v3, standard, test-vector checked) plus the v1.2 handshake as `noise.legacy` for one release. |
 | `store.js` | History at rest: scrypt passphrase vault + X25519 sealed boxes per message. |
 | `portmap.js` | Opt-in UPnP IGD / NAT-PMP port mapping. |
+| `torcontrol.js` | (1.4) Tor control client: SAFECOOKIE/COOKIE/password auth and ADD_ONION, so the daemon makes its own onion service. |
+| `social.js` | (1.4) Ed25519 signing key, signed posts, rooms, room members and messages, canonical JSON, the bounded store kept in `social.json`. |
+| `mailbox.js` | (1.4) Sealed store-and-forward: X25519 + ChaCha20-Poly1305 blobs with the sender authenticated by static DH, and the bounded mailbox store (`mailbox.json`). |
+| `backup.js` | (1.4) Passphrase-sealed identity backups (scrypt + ChaCha20-Poly1305), and building and merging their payload (shared by daemon and CLI). |
+| `qr.js` | (1.4) QR encoder (checked against python-qrcode and ZXing) and SVG output, for contact links. |
+| `updater.js` + `release-keys.json` | (1.4) Update check against GitHub Releases, signed release manifests (Ed25519), verified downloads. `release-keys.json` lists the keys a copy trusts; `tools/release-key.js` and `tools/release-manifest.js` make and sign them. |
 | `nodeps.js` | Static file server + RFC 6455 WebSocket server, stdlib only. |
 | `nodesignal.html` | **Operator console.** Real data only. Goes on a node. |
 | `nodesignal-demo.html` | **Retired.** Removed from the tree in `2d479c6`; the maintainer considers it obsolete. Do not restore it. The demo-only rules below apply only if it ever returns. |
@@ -195,11 +201,25 @@ From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 command line), `--rpc-conf`, `--tor-proxy`, `--tor-all`,
 `--impersonate`, `--impersonate-height`, `--max-conns`, `--rl-burst`,
 `--rl-refill-ms`, `--port-mapping` (opt-in), `--checkin-ms` (default 180000,
-0 disables), `--retry-scale` (tests only).
+0 disables), `--retry-scale` (tests only). 1.4: `--onion auto|off|external`
+(default auto), `--onion-address` (with external), `--tor-control`
+(host:port or a socket path), `--tor-control-pass` (config only),
+`--public-host`, `--no-update-check` (config `"update-check": false`),
+`--update-repo`, `--mailbox` and `--discoverable` (defaults; the console's
+settings in state.json win). Tests pass `--onion off --no-update-check`.
 
 Peer protocol (v3): length-prefixed frames, Noise XX handshake (msg1 32
 bytes; a 44-byte msg1 is the v1.2 handshake), then JSON frames `hello`,
-`msg` {id, ts, text}, `ack` {id}, `ping`/`pong`. Either side of a link may
+`msg` {id, ts, text}, `ack` {id}, `ping`/`pong`. 1.4 adds to `hello`:
+`caps` (`social1`, `rooms1`, `mbox1`, `who1`), `sk` (Ed25519 signing key),
+`onion`, `pub` (public-host), `mbox` (offers a mailbox), `mbx` (its own
+mailboxes), `disc` (introductions on). New frames, sent only to peers whose
+caps list them (older daemons ignore unknown frames): `feed-req`/`posts`,
+`room-req`/`room-state`/`room-items`/`room-err`, `who-req`/`who`,
+`mb-reg`/`mb-reg-ok`/`mb-reg-err`, `mb-put`/`mb-put-ok`/`mb-put-err`,
+`mb-get`/`mb-items`/`mb-ack`. Once both hellos are exchanged, `afterHello`
+syncs whatever both sides support; the console's refresh (`sync.now`) runs
+it again on demand. Either side of a link may
 send `msg`; the dialling side hangs up when idle. Outgoing message status:
 `sending` -> `delivered`, or `pending` (retrying, with `error` and
 `nextTry`) -> `failed` (gave up or cancelled). The console adds its own
@@ -303,6 +323,14 @@ status table. Keep it current whenever security changes.
   authenticates the `/ws` upgrade. Never put the token in a query string.
 - Least RPC privilege (v1.3): own rpcauth user with an `rpcwhitelist` of the
   three methods, no cookie, dedicated `nodesignal` system user on Linux.
+- Reachability (v1.4): NodeSignal's own onion service through Tor's control
+  port (setup adds `nodesignal` to debian-tor only when Tor is installed);
+  peers from 127.0.0.1 are matched by key, never by address.
+- Updates (v1.4): installs only a release manifest signed by a key in
+  `release-keys.json`; on Linux the root unit `nodesignal-update.path` runs
+  `nodesignal update-apply`, which re-checks signature, version (strictly
+  newer), size, SHA-256 and package name on root-only copies. The daemon
+  never gets root. `SECURITY-CRITIQUE.md` section 9 lists every 1.4 surface.
 - Web front door (v1.3): loopback-only bind, Host and Origin checks,
   per-launch action token on every state-changing op, `no-store` and
   frame-blocking headers on the console page. A console socket error can
@@ -405,6 +433,22 @@ status table. Keep it current whenever security changes.
   behind NAT (8788 unreachable without Tailscale or Tor); finding which peers
   run NodeSignal at all; offline delivery (hold and retry instead of failing);
   setup friction (RPC credentials, ports, launch steps).
+
+### 1.4 (decided with the maintainer, Oct 2026: "do all")
+
+Toward a node-run social network, all built: NodeSignal's own onion (no
+port forwarding), the onion in `uacomment=nodesignal:<onion>`, mailboxes,
+contact links with QR codes, signed posts (two hops), topic rooms,
+same-onion proof, introductions, identity backup, signed in-app updates.
+Still open:
+- **The release signing key.** `release-keys.json` ships empty, so copies
+  only announce updates until the maintainer runs `tools/release-key.js new`
+  (RELEASING.md step 0). It must be in the release that should be updatable
+  from.
+- Mailbox deposits reveal the sender's key to the mailbox; a throwaway
+  identity for deposits would hide it.
+- Several Tor peers still share one map dot (127.0.0.1); they are separate
+  contacts.
 
 ### Open questions for the maintainer (from the v1.3 installer work)
 

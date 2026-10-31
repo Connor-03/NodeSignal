@@ -153,6 +153,13 @@ All of these run on Linux, on the node:
 
     nodesignal status                       is it running, is the node connected?
     nodesignal logs                         how to read the log
+    nodesignal onion                        NodeSignal's own Tor onion address (1.4)
+    nodesignal update                       is a newer version out? (1.4)
+    sudo nodesignal update install          install it (only signed releases)
+    sudo nodesignal updates off             stop the daily update check
+    sudo nodesignal backup <file>           passphrase-sealed identity backup
+    sudo nodesignal restore <file>          put a backup's identity on this machine
+    nodesignal same-onion                   serve your node and NodeSignal on one onion
     journalctl -u nodesignal -f             live log
     sudo systemctl restart nodesignal       restart
     sudo systemctl stop nodesignal          stop

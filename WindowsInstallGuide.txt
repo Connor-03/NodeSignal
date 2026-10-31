@@ -129,6 +129,24 @@ Change either later. Windows PowerShell or Command Prompt:
 
 (on|off for both.)
 
+Updates (1.4): NodeSignal checks GitHub Releases once a day and shows a
+newer version in the console's status panel. "Install" there replaces the
+program and restarts NodeSignal, but only for a release signed with the
+NodeSignal release key built into your copy. Turn the check off, Windows
+PowerShell:
+
+    & "$env:LOCALAPPDATA\NodeSignal\nodesignal.exe" updates off
+
+Identity backup (1.4): the status panel's "Back up" button downloads a
+passphrase-sealed file with your keys and contacts. Restore it, Windows
+PowerShell:
+
+    & "$env:LOCALAPPDATA\NodeSignal\nodesignal.exe" restore <file>
+
+Tor (1.4): with the Tor Expert Bundle running (ControlPort 9051 and
+CookieAuthentication 1 in its torrc), NodeSignal makes its own onion
+address and needs no port forwarding.
+
 
 -----------------------------------------------------------------------
 4. Use it
