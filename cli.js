@@ -326,9 +326,15 @@ async function cmdUpdates(ctx, onOff) {
 }
 
 /* ------------------------------------------------------------ backup / restore */
+// Without sudo the .deb's config and everything inside /var/lib/nodesignal
+// are unreadable (0600 and 0700, the nodesignal account's), so the folder
+// itself, or the config being the .deb's, decides; never whether state.json
+// can be seen in it.
 function stateDir(ctx) {
   if (ctx.cfg.data) return ctx.cfg.data;
-  return IS_WIN ? path.join(os.homedir(), '.nodesignal') : (fs.existsSync('/var/lib/nodesignal/state.json') ? '/var/lib/nodesignal' : path.join(os.homedir(), '.nodesignal'));
+  if (IS_WIN) return path.join(os.homedir(), '.nodesignal');
+  if (fs.existsSync(STATE_DIR) || path.resolve(ctx.cfgPath || '') === DEB_CONFIG) return STATE_DIR;
+  return path.join(os.homedir(), '.nodesignal');
 }
 // A passphrase, never echoed (typed on a terminal, or one line of piped
 // input). Never taken from the command line.
@@ -731,6 +737,7 @@ async function cmdUninstall(ctx) {
         must be restarted to read them, and we say so instead of doing it
    --root <dir> runs it against a fake filesystem for tests. */
 const STATE_DIR = '/var/lib/nodesignal';
+const DEB_CONFIG = '/etc/nodesignal/config.json';
 const OLD_DROP_IN = '/etc/systemd/system/nodesignal.service.d/10-user.conf';
 async function cmdSetup(ctx) {
   const { core, argv } = ctx;
@@ -738,7 +745,7 @@ async function cmdSetup(ctx) {
   const P = (p) => (root ? path.join(root, p) : p);
   if (!root && !isRoot()) { say('nodesignal setup must run as root: sudo nodesignal setup'); return 1; }
 
-  const cfgPath = optValue(argv, 'config') || '/etc/nodesignal/config.json';
+  const cfgPath = optValue(argv, 'config') || DEB_CONFIG;
   const det = await core.detectBitcoinNode({ root });
 
   if (det.installed) say(`Bitcoin node found: ${det.how.filter((h) => !/^ignored /.test(h)).slice(0, 3).join('; ')}`);

@@ -990,6 +990,16 @@ t('as root, advertise and status against another account\'s program on the web p
   } finally { child.kill(); }
 });
 
+/* Root cause (Oct 2026 final review): without sudo the .deb's config and
+   /var/lib/nodesignal/state.json cannot be read, and the state folder was
+   chosen by whether state.json could be seen, so "nodesignal agent-brief"
+   named ~/.nodesignal. */
+t('agent-brief names /var/lib/nodesignal for the .deb\'s config even when it cannot read it', () => {
+  const out = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'agent-brief', '--config', '/etc/nodesignal/config.json'], { encoding: 'utf8', timeout: 30000 });
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /^- state directory: \/var\/lib\/nodesignal /m);
+});
+
 (async () => {
   for (const [name, fn] of tests) {
     try {
