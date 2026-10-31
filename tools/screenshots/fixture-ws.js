@@ -3,7 +3,7 @@
 // scene with ?mode= : ok (default) | locked (history passphrase not yet typed)
 // | norpc | slow (connecting) | down (never
 // connects) | drop (connects, then loses the daemon; set window.__allow=true
-// to let it reconnect) | hostile (every string a peer, a node or a release
+// to let it reconnect) | update (a made-up newer release is on offer) | hostile (every string a peer, a node or a release
 // note could choose ends in quotes and markup that would count a hit in
 // window.__xss if it ever ran; tests/console-hostile.e2e.js uses it). Add &calm=1 to leave out osprey's pending key change
 // (and so the red security banner) in scenes that are about something else.
@@ -63,7 +63,10 @@ let STATE=()=>({type:'state',daemon:{nick:'Alpha',ua:'/NodeSignal:1.4/',peerPort
     share:'nodesignal:'+ONION+'?port=8788&fp=54f42d4a9a31820cb0e17f3a62d9c855&nick=Alpha',
     signKey:ME_SK,signId:'7f5f561b8faca2a7',discoverable:true,mailbox:true,mailboxStats:{recipients:1,items:2,bytes:9000},
     myMailboxes:[],sameOnion:false,nodeOnions:[],
-    update:{state:'available',current:'1.4.0',version:'1.4.1',verified:true,installable:true,checkedAt:m(60),
+    // a made-up newer release, only in ?mode=update (and hostile, for its
+    // release notes): other scenes must not
+    // suggest that a release exists that does not
+    update:MODE!=='update'&&MODE!=='hostile'?{state:'current',current:'1.4.0',checkedAt:m(60)}:{state:'available',current:'1.4.0',version:'1.4.1',verified:true,installable:true,checkedAt:m(60),
       notes:'Fixes from operators running 1.4.0.\n- Rooms keep their order after a restart.\n- Clearer mailbox status in the console.'}},
   node:MODE==='norpc'?{self:null,peers:[],error:'connect ECONNREFUSED 127.0.0.1:8332'}:{self,peers},
   contacts:MODE==='norpc'?[]:[kiwi,ember,quiet,osprey],
