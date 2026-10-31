@@ -861,6 +861,37 @@ t('detectBitcoinNode and setup never take an rpcconnect host that is not this ma
   }
 });
 
+/* ---------------------------------------------------------- a link planted as bitcoin.conf
+   Root cause (Oct 2026 final review): editConf checked the folders above the
+   real file only. A link the node's account put in its own folder, named
+   bitcoin.conf and pointing at a root-owned file in root-only folders,
+   passed that check, so root edited a file of that account's choosing. */
+t('as root, a bitcoin.conf link planted where another account can write never leads root to a root-owned file (final review poc1)', () => {
+  if (!asRoot) return 'skip needs root (CI runs this suite as a normal user)';
+  const base = path.join(tmp, 'plant'), home = path.join(base, 'nodehome'), dir = path.join(home, '.bitcoin'), safe = path.join(base, 'rootonly');
+  fs.mkdirSync(dir, { recursive: true }); fs.mkdirSync(safe, { mode: 0o700 });
+  const victim = path.join(safe, 'system.conf');
+  fs.writeFileSync(victim, 'server=1\n', { mode: 0o644 });
+  const link = path.join(dir, 'bitcoin.conf');
+  fs.symlinkSync(victim, link);
+  fs.chownSync(home, NODE_UID, NODE_UID); fs.chownSync(dir, NODE_UID, NODE_UID); fs.lchownSync(link, NODE_UID, NODE_UID);
+  for (const edit of [() => core.setRpcAccess(link, 'pw'), () => core.setUaComment(link, true), () => core.setRpcAccess(link, null)]) {
+    assert.throws(edit, /refusing to edit .* as root: it leads to a file only root may change, through .*\.bitcoin, which an account other than root can change \(it belongs to uid 4243\)\. Add the lines by hand/);
+  }
+  assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'server=1\n');
+  assert(!fs.existsSync(victim + core.BACKUP_SUFFIX));
+  assert.strictEqual(fs.statSync(victim).uid, 0);
+  // a link root made in a root-only folder (an operator's /etc/bitcoin) still works, as does a plain root-owned file
+  const etc = path.join(base, 'etc-bitcoin');
+  fs.mkdirSync(etc, { mode: 0o755 });
+  fs.symlinkSync(victim, path.join(etc, 'bitcoin.conf'));
+  assert(core.setRpcAccess(path.join(etc, 'bitcoin.conf'), 'pw').changed);
+  assert(core.rpcAccessState(victim).on);
+  const plain = path.join(safe, 'plain.conf');
+  fs.writeFileSync(plain, 'server=1\n');
+  assert(core.setUaComment(plain, true).changed);
+});
+
 (async () => {
   for (const [name, fn] of tests) {
     try {

@@ -313,12 +313,23 @@ function copyStateTree(src, dst, { maxBytes = COPY_MAX_BYTES } = {}) {
   return { files, dirs, skipped };
 }
 
+// dir, or the nearest folder above it that exists (a link counts as existing)
+function nearestEntry(dir) {
+  let d = path.resolve(dir);
+  for (;;) {
+    try { fs.lstatSync(d); return d; } catch (e) { if (e.code !== 'ENOENT') return d; }
+    const up = path.dirname(d);
+    if (up === d) return d;
+    d = up;
+  }
+}
 /* Where an edit of bitcoin.conf really lands. A symlinked bitcoin.conf is
    followed to the real file (operators do that on purpose); the edit then
    runs as that file's owner (a new file: as the owner of the folder it goes
    in), so a link planted by another account cannot aim root at a file of its
    choosing. A root-owned file is edited as root only when no other account
-   can change a folder above it. */
+   can change a folder above it, neither above the real file nor on the path
+   as given (where a link to it could have been planted). */
 function confTarget(confPath) {
   const abs = path.resolve(confPath);
   let real = null, st = null;
@@ -370,6 +381,10 @@ function editConf(confPath, compute, opts = {}) {
   if (root && tgt.uid === 0) {
     const bad = unsafeFolder(tgt.folder);
     if (bad) throw new Error(`refusing to edit ${confPath} as root: ${bad.dir} can be changed by an account other than root (${bad.why}). Add the lines by hand.`);
+    // The path as given, before any link is followed: a link that another
+    // account could have put there must not lead root to a root-owned file.
+    const bad2 = unsafeFolder(nearestEntry(path.dirname(path.resolve(confPath))));
+    if (bad2) throw new Error(`refusing to edit ${confPath} as root: it leads to a file only root may change, through ${bad2.dir}, which an account other than root can change (${bad2.why}). Add the lines by hand.`);
   }
   const id = root && tgt.uid !== 0 ? ownerIdentity(tgt.uid, tgt.gid) : null;
   return asOwner(id, () => {
