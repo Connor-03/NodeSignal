@@ -2288,9 +2288,14 @@ function torCandidates() {
     const i = t.lastIndexOf(':');
     return [{ host: (i > 0 ? t.slice(0, i) : '127.0.0.1').replace(/^\[|\]$/g, ''), port: Number(i >= 0 ? t.slice(i + 1) : t) || 9051 }];
   }
-  const list = [{ host: '127.0.0.1', port: 9051 }, { host: '127.0.0.1', port: 9151 }];
-  if (process.platform !== 'win32') list.unshift({ path: '/run/tor/control' });
-  return list;
+  // Linux: only Tor's control socket. /run/tor belongs to root and Tor's own
+  // account, so nobody else can stand in for Tor there. A TCP control port can
+  // be opened by any local account while Tor is down, and an impostor would be
+  // handed the onion key (its cookie "proof" names a file it wrote itself), so
+  // TCP is used only when the operator names it with --tor-control. Windows
+  // has no control socket, so it keeps the Tor Expert Bundle's TCP ports.
+  if (process.platform !== 'win32') return [{ path: '/run/tor/control' }];
+  return [{ host: '127.0.0.1', port: 9051 }, { host: '127.0.0.1', port: 9151 }];
 }
 function startOnion() {
   if (CFG.onion !== 'auto') return;
