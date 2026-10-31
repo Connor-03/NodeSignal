@@ -38,7 +38,7 @@ function suite(prefix) {
   function daemon(name, { host = '127.0.0.1', peer, web, rpc = null, data = name, extra = [], nodeArgs = [] }) {
     const args = [...nodeArgs, path.join(ROOT, 'nodesignald.js'), ...extra, '--nick', name, '--bind', host,
       '--peer-port', String(peer), '--web-port', String(web), '--data', path.join(TMP, data),
-      '--retry-scale', '0.01', '--checkin-ms', '0', '--rl-burst', '1000'];
+      '--retry-scale', '0.01', '--checkin-ms', '0', '--rl-burst', '1000', '--onion', 'off', '--no-update-check'];
     if (rpc) args.push('--rpc-url', 'http://127.0.0.1:' + rpc, '--rpc-user', 'u', '--rpc-pass', 'p'); else args.push('--no-rpc');
     const c = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     c.name = name; c.log = ''; c.stdout.on('data', (d) => (c.log += d)); c.stderr.on('data', (d) => (c.log += d));

@@ -102,19 +102,28 @@ function analyzeConf(buf) {
   if (bad) return { ok: false, error: `line ${bad.idx + 1} is not "key=value", a [section] or a comment` };
   return { ok: true, text, lines, eol: text.includes('\r\n') ? '\r\n' : '\n' };
 }
-const isOurUaLine = (l) => l.kind === 'kv' && /^\s*uacomment\s*=\s*nodesignal\s*(#.*)?$/i.test(l.body);
+// uacomment=nodesignal, or uacomment=nodesignal:<onion> (1.4: where to reach
+// this operator's NodeSignal over Tor, readable by every peer)
+const OUR_UA_RE = /^\s*uacomment\s*=\s*(nodesignal(?::[a-z2-7]{56})?)\s*(#.*)?$/i;
+const isOurUaLine = (l) => l.kind === 'kv' && OUR_UA_RE.test(l.body);
+const uaValueOf = (l) => (OUR_UA_RE.exec(l.body) || [])[1] || null;
+// The comment value for an onion address (with or without ".onion").
+function uaCommentFor(onion) {
+  const id = String(onion || '').replace(/\.onion$/, '');
+  return /^[a-z2-7]{56}$/.test(id) ? `${UA_COMMENT}:${id}` : UA_COMMENT;
+}
 function uaCommentState(confPath) {
   let buf;
   try { buf = fs.readFileSync(confPath); }
   catch (e) { return e.code === 'ENOENT' ? { exists: false, on: false } : { exists: true, on: false, unreadable: e.code || e.message }; }
   const a = analyzeConf(buf);
   if (!a.ok) return { exists: true, on: false, unreadable: a.error };
-  let topLevel = true, on = false, inSection = false;
+  let topLevel = true, on = false, inSection = false, value = null;
   for (const l of a.lines) {
     if (l.kind === 'section') topLevel = false;
-    if (isOurUaLine(l)) { if (topLevel) on = true; else inSection = true; }
+    if (isOurUaLine(l)) { if (topLevel) { on = true; value = uaValueOf(l); } else inSection = true; }
   }
-  return { exists: true, on, inSection };
+  return { exists: true, on, inSection, value };
 }
 
 /* setUaComment: add or remove a top-level `uacomment=nodesignal` line.
@@ -124,6 +133,7 @@ function uaCommentState(confPath) {
    - never restarts bitcoind; the caller tells the operator to do it
    opts.owner = { uid, gid } sets ownership of a newly created file (Linux, root). */
 function setUaComment(confPath, on, opts = {}) {
+  const value = opts.value || UA_COMMENT;
   let buf = null;
   try { buf = fs.readFileSync(confPath); }
   catch (e) { if (e.code !== 'ENOENT') throw new Error(`cannot read ${confPath} (${e.code || e.message})`); }
@@ -132,7 +142,7 @@ function setUaComment(confPath, on, opts = {}) {
     if (!on) return { changed: false, created: false, path: confPath, on: false };
     const eol = IS_WIN ? '\r\n' : '\n';
     fs.mkdirSync(path.dirname(confPath), { recursive: true });
-    fs.writeFileSync(confPath, UA_MARKER + eol + 'uacomment=' + UA_COMMENT + eol, { mode: 0o600, flag: 'wx' });
+    fs.writeFileSync(confPath, UA_MARKER + eol + 'uacomment=' + value + eol, { mode: 0o600, flag: 'wx' });
     chownIfRoot(confPath, opts.owner);
     return { changed: true, created: true, path: confPath, on: true };
   }
@@ -147,10 +157,16 @@ function setUaComment(confPath, on, opts = {}) {
 
   let out;
   if (on) {
-    if (present) return { changed: false, path: confPath, on: true, inSection };
-    const block = UA_MARKER + a.eol + 'uacomment=' + UA_COMMENT + a.eol;
+    const mine = top.find(isOurUaLine);
+    if (mine && uaValueOf(mine) === value) return { changed: false, path: confPath, on: true, inSection };
+    if (mine) {
+      // the same line with a new value (an onion added or changed)
+      const nl = mine.raw.endsWith('\r\n') ? '\r\n' : mine.raw.endsWith('\n') ? '\n' : '';
+      out = a.lines.map((l) => (l === mine ? 'uacomment=' + value + nl : l.raw)).join('');
+    }
+    const block = UA_MARKER + a.eol + 'uacomment=' + value + a.eol;
     const raws = a.lines.map((l) => l.raw);
-    if (firstSection < 0) {
+    if (mine) { /* replaced above */ } else if (firstSection < 0) {
       let tail = raws.join('');
       if (tail.length && !tail.endsWith('\n')) tail += a.eol;
       out = tail + block;
@@ -966,7 +982,7 @@ const OPT_IN_TEXT = {
 };
 
 module.exports = {
-  VERSION_FALLBACK: '1.3.1',
+  VERSION_FALLBACK: '1.4.0',
   IS_WIN, UA_COMMENT, UA_MARKER, BACKUP_SUFFIX, OPT_IN_TEXT,
   RPC_USER, RPC_METHODS, RPC_BEGIN, RPC_END,
   generateRpcPassword, makeRpcAuth, rpcAuthMatches, rpcAccessState, setRpcAccess, nodeConfPath,
@@ -978,7 +994,7 @@ module.exports = {
   detectBitcoinNode, daemonDataDirs, samePath, chainOf,
   findRpcAuth, rpcCall, rpcCheck, checkNode, rpcHint,
   portFree, tailscaleAddr, httpGetJson, waitForHealth, webUrl,
-  defaultConfigPath, createPrompter, termStyle,
+  defaultConfigPath, createPrompter, termStyle, uaCommentFor,
 };
 
 /* ------------------------------------------------------------ direct use */

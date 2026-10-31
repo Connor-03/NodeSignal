@@ -18,7 +18,7 @@ const t = async (name, fn) => {
 
 function start(extra = []) {
   // --bind 0.0.0.0 on purpose: it must widen the PEER port only, never the console.
-  const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--nick', 'websec', '--no-rpc', '--bind', '0.0.0.0',
+  const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--onion', 'off', '--no-update-check', '--nick', 'websec', '--no-rpc', '--bind', '0.0.0.0',
     '--web-port', String(WEB), '--peer-port', String(PEER), '--data', path.join(TMP, 'd'), '--checkin-ms', '0', ...extra],
   { stdio: ['ignore', 'pipe', 'pipe'] });
   c.log = ''; c.stdout.on('data', (d) => (c.log += d)); c.stderr.on('data', (d) => (c.log += d));

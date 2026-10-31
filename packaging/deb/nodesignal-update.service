@@ -1,0 +1,16 @@
+# Installs a NodeSignal update that the console requested, as root.
+# "nodesignal update-apply" trusts nothing the daemon wrote: it copies the
+# package and the signed release manifest into a directory only root can
+# write, checks the Ed25519 signature against the release keys shipped in
+# /opt/nodesignal (owned by root), the SHA-256 and size, that the version is
+# newer than the one installed and that the package is nodesignal for this
+# machine, and only then installs it. Started by nodesignal-update.path.
+[Unit]
+Description=NodeSignal: install a verified update
+Documentation=https://github.com/Connor-03/NodeSignal
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/nodesignal/node /opt/nodesignal/cli.js update-apply
+TimeoutStartSec=600

@@ -101,6 +101,8 @@ WRAP
 chmod 0755 "$PKG/usr/bin/nodesignal"
 
 install -m 0644 "$HERE/nodesignal.service" "$PKG/lib/systemd/system/nodesignal.service"
+install -m 0644 "$HERE/nodesignal-update.path" "$PKG/lib/systemd/system/nodesignal-update.path"
+install -m 0644 "$HERE/nodesignal-update.service" "$PKG/lib/systemd/system/nodesignal-update.service"
 {
   echo "NodeSignal"
   echo "Source: https://github.com/Connor-03/NodeSignal"

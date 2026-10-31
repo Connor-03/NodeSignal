@@ -117,21 +117,29 @@ async function cmdAdvertise(ctx, onOff) {
     say('Point at the file: nodesignal advertise ' + onOff + ' --bitcoin-conf /path/to/bitcoin.conf');
     return 1;
   }
+  // With an onion address (1.4), the comment carries it, so any operator
+  // whose node peers with yours can reach your NodeSignal over Tor.
+  let value = 'nodesignal';
+  if (onOff === 'on') {
+    const h = await core.httpGetJson(`http://127.0.0.1:${Number(ctx.cfg['web-port']) || 8789}/health`, 3000);
+    if (h.ok && h.json && h.json.onion) value = core.uaCommentFor(h.json.onion);
+  }
   let r;
-  try { r = core.setUaComment(confPath, onOff === 'on', { owner: det.owner }); }
+  try { r = core.setUaComment(confPath, onOff === 'on', { owner: det.owner, value }); }
   catch (e) {
     say(e.message);
     if (e.code === 'EACCES' || /EACCES|permission/i.test(e.message)) say(IS_WIN ? '' : 'Try again with sudo.');
     return 1;
   }
-  if (!r.changed) say(`Nothing to change: uacomment=nodesignal is already ${onOff} in ${confPath}.`);
+  if (!r.changed) say(`Nothing to change: uacomment=${onOff === 'on' ? value : 'nodesignal'} is already ${onOff} in ${confPath}.`);
   else {
-    say(`${onOff === 'on' ? 'Added' : 'Removed'} uacomment=nodesignal ${onOff === 'on' ? 'to' : 'from'} ${confPath}${r.created ? ' (new file)' : ''}.`);
+    say(`${onOff === 'on' ? 'Added' : 'Removed'} uacomment=${onOff === 'on' ? value : 'nodesignal'} ${onOff === 'on' ? 'to' : 'from'} ${confPath}${r.created ? ' (new file)' : ''}.`);
     if (r.backup) say(`The original was saved once as ${r.backup}.`);
     say('');
     say('Restart your Bitcoin node for this to take effect. NodeSignal does not do it for you.');
     say(IS_WIN ? 'Close Bitcoin Core or Knots and start it again.' : 'For example: sudo systemctl restart bitcoind');
-    if (onOff === 'on') say('Every peer your node connects to will see "nodesignal" in its user agent.');
+    if (onOff === 'on') say(`Every peer your node connects to will see "${value}" in its user agent${value !== 'nodesignal' ? ', including your NodeSignal onion address' : ''}.`);
+    if (onOff === 'on' && value === 'nodesignal') say('NodeSignal has no onion address yet (is Tor running?). Run this again once it does, to add it.');
   }
   if (r.inSection) say(`Note: a uacomment=nodesignal line inside a [section] of ${confPath} was left as it is.`);
   return 0;
@@ -205,6 +213,277 @@ async function restartDaemon(ctx) {
   return 0;
 }
 function hasSystemd() { return fs.existsSync('/run/systemd/system'); }
+
+/* ------------------------------------------------------------ onion (Tor) */
+async function cmdOnion(ctx, sub = 'show') {
+  const { core, cfgPath, cfgError } = ctx;
+  if (!['show', 'on', 'off'].includes(sub)) { say('usage: nodesignal onion [show|on|off]'); return 2; }
+  if (sub === 'show') {
+    const h = await core.httpGetJson(`http://127.0.0.1:${Number(ctx.cfg['web-port']) || 8789}/health`, 3000);
+    const mode = ctx.cfg.onion || 'auto';
+    say(`Onion  : ${h.ok && h.json && h.json.onion ? h.json.onion : 'none yet'}  (mode: ${mode})`);
+    if (mode === 'auto' && !(h.ok && h.json && h.json.onion)) {
+      say('         NodeSignal asks Tor\'s control port for its own onion address. Is Tor installed and running?');
+      say(IS_WIN ? '         On Windows: run the Tor Expert Bundle with ControlPort 9051 and CookieAuthentication 1.'
+        : '         Linux, on the node: sudo apt install tor, then sudo systemctl restart nodesignal');
+    }
+    return 0;
+  }
+  if (cfgError) { say(`Cannot read ${cfgPath}: ${cfgError}.`); if (cfgError === 'permission denied') say('Try again with sudo.'); return 1; }
+  const cfg = Object.assign({}, ctx.cfg);
+  if (sub === 'on') delete cfg.onion; else cfg.onion = 'off';
+  try { core.writeConfig(cfgPath, cfg); }
+  catch (e) { say(`Could not write ${cfgPath}: ${e.code || e.message}`); if (e.code === 'EACCES' || e.code === 'EPERM') say('Try again with sudo.'); return 1; }
+  say(sub === 'on' ? 'Onion address: automatic (whenever Tor runs on this machine).' : 'Onion address: off. Peers behind NAT can then only reach you if you forward the peer port.');
+  return restartDaemon(ctx);
+}
+
+/* ------------------------------------------------------------ same onion */
+async function cmdSameOnion(ctx) {
+  const port = Number(ctx.cfg['peer-port']) || 8788;
+  const h = await ctx.core.httpGetJson(`http://127.0.0.1:${Number(ctx.cfg['web-port']) || 8789}/health`, 3000);
+  const j = (h.ok && h.json) || {};
+  say('Same onion: your Bitcoin node and NodeSignal answer on ONE onion address,');
+  say('ports 8333 and ' + port + '. Only whoever holds that onion\'s key can run both, so');
+  say('other operators see that you really run that node. Optional and manual;');
+  say('it gives your node a new onion address.');
+  say('');
+  say(j.sameOnion ? 'Status: your node and NodeSignal share an onion address.' : 'Status: not set up' + (j.onion ? ` (NodeSignal's own onion is ${j.onion}).` : '.'));
+  say('');
+  say('1. Add a hidden service for both to torrc (Linux, on the node: /etc/tor/torrc):');
+  say('     HiddenServiceDir /var/lib/tor/bitcoin-nodesignal/');
+  say('     HiddenServicePort 8333 127.0.0.1:8334');
+  say(`     HiddenServicePort ${port} 127.0.0.1:${port}`);
+  say('   then restart Tor and read the address:');
+  say('     sudo systemctl restart tor && sudo cat /var/lib/tor/bitcoin-nodesignal/hostname');
+  say('2. Tell bitcoind to use that onion (bitcoin.conf), instead of making its own:');
+  say('     listenonion=0');
+  say('     bind=127.0.0.1:8334=onion');
+  say('     externalip=<the address from step 1>');
+  say('   and restart bitcoind.');
+  say('3. Tell NodeSignal the same address (its config file), then restart it:');
+  say('     "onion": "external", "onion-address": "<the address from step 1>"');
+  say(IS_WIN ? '' : '   Linux, on the node: sudo nano /etc/nodesignal/config.json; sudo systemctl restart nodesignal');
+  say('');
+  say('Run "nodesignal same-onion" again afterwards: the status line checks it against the');
+  say('onion address your node reports.');
+  return 0;
+}
+
+/* ------------------------------------------------------------ update checks */
+async function cmdUpdates(ctx, onOff) {
+  const { core, cfgPath, cfgError } = ctx;
+  if (onOff !== 'on' && onOff !== 'off') { say('usage: nodesignal updates on|off'); return 2; }
+  if (cfgError) { say(`Cannot read ${cfgPath}: ${cfgError}.`); if (cfgError === 'permission denied') say('Try again with sudo.'); return 1; }
+  const cfg = Object.assign({}, ctx.cfg);
+  if (onOff === 'on') delete cfg['update-check']; else cfg['update-check'] = false;
+  try { core.writeConfig(cfgPath, cfg); }
+  catch (e) { say(`Could not write ${cfgPath}: ${e.code || e.message}`); if (e.code === 'EACCES' || e.code === 'EPERM') say('Try again with sudo.'); return 1; }
+  say(onOff === 'on' ? 'Update checks on: once a day NodeSignal asks GitHub Releases (through Tor when it has an onion address) whether a newer version exists.'
+    : 'Update checks off. Check by hand with: nodesignal update');
+  return restartDaemon(ctx);
+}
+
+/* ------------------------------------------------------------ backup / restore */
+function stateDir(ctx) {
+  if (ctx.cfg.data) return ctx.cfg.data;
+  return IS_WIN ? path.join(os.homedir(), '.nodesignal') : (fs.existsSync('/var/lib/nodesignal/state.json') ? '/var/lib/nodesignal' : path.join(os.homedir(), '.nodesignal'));
+}
+// A passphrase, typed without echo. Never taken from the command line.
+function askHidden(q) {
+  const input = process.stdin;
+  if (!input.isTTY) return ctxPrompter().ask(q);
+  return new Promise((resolve) => {
+    process.stdout.write(q);
+    input.setRawMode(true); input.resume(); input.setEncoding('utf8');
+    let buf = '';
+    const onData = (d) => {
+      for (const ch of d) {
+        if (ch === '\r' || ch === '\n') { input.setRawMode(false); input.pause(); input.removeListener('data', onData); process.stdout.write('\n'); resolve(buf); return; }
+        if (ch === '\u0003') { input.setRawMode(false); process.stdout.write('\n'); process.exit(130); }
+        if (ch === '\u007f' || ch === '\b') buf = buf.slice(0, -1); else buf += ch;
+      }
+    };
+    input.on('data', onData);
+  });
+}
+let promptSingleton = null;
+const ctxPrompter = () => promptSingleton || (promptSingleton = require('./setup-core.js').createPrompter());
+async function cmdBackup(ctx, file) {
+  if (!file) { say('usage: nodesignal backup <file>     (writes a passphrase-protected backup of your identity and contacts)'); return 2; }
+  const backup = loadSibling('backup.js');
+  const dir = stateDir(ctx);
+  let st, so = null;
+  try { st = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf8')); }
+  catch (e) { say(`Cannot read ${path.join(dir, 'state.json')}: ${e.code || e.message}.${e.code === 'EACCES' ? ' Try again with sudo.' : ''}`); return 1; }
+  try { so = JSON.parse(fs.readFileSync(path.join(dir, 'social.json'), 'utf8')); } catch { }
+  if (fs.existsSync(file)) { say(`${file} already exists; pick another name.`); return 1; }
+  say('The backup holds your identity keys and contacts, not your message history.');
+  const p1 = await askHidden('Passphrase for the backup (at least 8 characters): ');
+  const p2 = await askHidden('Again: ');
+  if (p1 !== p2) { say('The two passphrases differ. Nothing was written.'); return 1; }
+  let text;
+  try { text = await backup.exportBackupAsync(backup.buildPayload(st, so, { nick: ctx.cfg.nick || '' }), p1); }
+  catch (e) { say(e.message); return 1; }
+  fs.writeFileSync(file, text, { mode: 0o600, flag: 'wx' });
+  say(`Wrote ${file}. Keep it somewhere safe, away from this machine; anyone with it and the passphrase can be you.`);
+  return 0;
+}
+async function cmdRestore(ctx, file) {
+  if (!file) { say('usage: nodesignal restore <file>'); return 2; }
+  const backup = loadSibling('backup.js');
+  let text;
+  try { text = fs.readFileSync(file, 'utf8'); } catch (e) { say(`Cannot read ${file}: ${e.code || e.message}`); return 1; }
+  const pass = await askHidden('Backup passphrase: ');
+  let payload;
+  try { payload = await backup.importBackupAsync(text, pass); } catch (e) { say(e.message); return 1; }
+  const dir = stateDir(ctx), sf = path.join(dir, 'state.json'), soFile = path.join(dir, 'social.json');
+  let st = {}, so = null;
+  try { st = JSON.parse(fs.readFileSync(sf, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') { say(`Cannot read ${sf}: ${e.code || e.message}`); return 1; } }
+  try { so = JSON.parse(fs.readFileSync(soFile, 'utf8')); } catch { }
+  const merged = backup.mergePayload(st, so, payload);
+  say(`This replaces this machine's NodeSignal identity with the one in the backup${payload.nick ? ` ("${payload.nick}")` : ''},`);
+  say(`adds ${merged.added} contact(s), and keeps the message history that is here.`);
+  if (process.stdin.isTTY && !(await ctxPrompter().askYesNo('Go ahead?', false))) { say('Nothing changed.'); return 0; }
+  // the daemon must not be running while its state is replaced
+  const hooks = ctx.deps.hooks || {};
+  if (hooks.stop) await hooks.stop();
+  else if (!IS_WIN && isRoot() && hasSystemd()) { try { execFileSync('systemctl', ['stop', 'nodesignal'], { stdio: 'ignore', timeout: 30000 }); } catch { } }
+  const h = await ctx.core.httpGetJson(`http://127.0.0.1:${Number(ctx.cfg['web-port']) || 8789}/health`, 1500);
+  if (h.ok) { say('NodeSignal is still running. Stop it first, then restore again.'); return 1; }
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (fs.existsSync(sf)) { const keep = `${sf}.before-restore-${Date.now()}`; fs.copyFileSync(sf, keep); fs.chmodSync(keep, 0o600); say(`The previous state.json was kept as ${keep}.`); }
+  for (const [f, obj] of [[sf, merged.state], [soFile, merged.social]]) {
+    fs.writeFileSync(f + '.tmp', JSON.stringify(obj), { mode: 0o600 }); fs.renameSync(f + '.tmp', f);
+    if (!IS_WIN && isRoot()) { try { const u = ctx.core.readPasswd('').find((x) => x.name === 'nodesignal'); if (u) fs.chownSync(f, u.uid, u.gid); } catch { } }
+  }
+  say('Restored. Starting NodeSignal.');
+  if (hooks.start) await hooks.start();
+  else if (!IS_WIN && isRoot() && hasSystemd()) { try { execFileSync('systemctl', ['start', 'nodesignal'], { stdio: 'ignore', timeout: 30000 }); } catch { } }
+  else say(restartHint().replace('Restart', 'Start'));
+  return 0;
+}
+// A module that ships beside cli.js (or, inside the Windows .exe, among its assets).
+function loadSibling(name) {
+  try { return require('./' + name); } catch { return require(path.join(__dirname, name)); }
+}
+
+/* ------------------------------------------------------------ update / update-apply
+   nodesignal update            check GitHub Releases now and say what it found
+   nodesignal update install    (Linux .deb, root) download, check and install
+   nodesignal update-apply      (root, run by nodesignal-update.service) install
+                                what the console asked for
+   Whatever the daemon wrote is untrusted here: the package, the manifest and
+   its signature are copied into a directory only root can write, and checked
+   there against release-keys.json from /opt/nodesignal (owned by root). */
+// NODESIGNAL_UPDATE_DIR / NODESIGNAL_UPDATE_DRY_RUN: tests only (root's
+// systemd unit sets neither); the dry run stops before the package manager.
+const UPDATE_DIR = process.env.NODESIGNAL_UPDATE_DIR || '/var/lib/nodesignal/updates';
+function installedVersion() { try { return fs.readFileSync(path.join(__dirname, 'VERSION'), 'utf8').trim(); } catch { return readVersion(require('./setup-core.js')); } }
+async function cmdUpdate(ctx, sub) {
+  const updater = loadSibling('updater.js');
+  if (sub && sub !== 'install') { say('usage: nodesignal update [install]'); return 2; }
+  const current = ctx.version || installedVersion();
+  say(`This version: ${current}. Asking GitHub Releases...`);
+  const keys = updater.loadTrustedKeys(path.join(__dirname, 'release-keys.json'));
+  const r = await updater.checkLatest({ currentVersion: current, trustedKeys: keys });
+  if (!r.available) { say(r.error ? `Could not tell: ${r.error}` : 'Up to date.'); return r.error ? 1 : 0; }
+  say(`NodeSignal ${r.version} is available${r.published ? ` (published ${String(r.published).slice(0, 10)})` : ''}.`);
+  say(r.verified ? 'Its release manifest is signed with a NodeSignal release key this copy trusts.'
+    : 'It is NOT signed with a release key this copy trusts' + (r.error ? ` (${r.error})` : '') + ': install it by hand.');
+  if (r.page) say(`Release page: ${r.page}`);
+  if (sub !== 'install') {
+    if (r.verified) say(IS_WIN ? 'Install it from the console (status panel, Updates).' : 'Install it: sudo nodesignal update install   (or from the console)');
+    return 0;
+  }
+  if (IS_WIN) { say('On Windows, install it from the console (status panel, Updates).'); return 1; }
+  if (!isRoot()) { say('Installing needs root: sudo nodesignal update install'); return 1; }
+  if (!r.verified) return 1;
+  const asset = updater.platformAsset();
+  if (!asset || !r.assets[asset] || !r.manifest.files[asset]) { say('This release has no package for this machine.'); return 1; }
+  const tmp = fs.mkdtempSync('/var/tmp/nodesignal-update-');
+  try {
+    const file = path.join(tmp, asset);
+    say(`Downloading ${asset}...`);
+    await updater.downloadVerified({ url: r.assets[asset], sha256: r.manifest.files[asset].sha256, size: r.manifest.files[asset].size, dest: file });
+    fs.writeFileSync(path.join(tmp, updater.MANIFEST_NAME), r.manifestBytes);
+    fs.writeFileSync(path.join(tmp, updater.SIG_NAME), r.sigBytes);
+    return installVerifiedDeb(ctx, tmp, r.version, asset);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+}
+// A file the daemon left, copied without following links, and only if it is
+// a regular file of a sane size.
+function copyUntrusted(src, dest, max) {
+  const fd = fs.openSync(src, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > max) throw new Error(`${path.basename(src)} is not a plain file of a sensible size`);
+    const buf = Buffer.alloc(st.size);
+    let off = 0; while (off < st.size) { const n = fs.readSync(fd, buf, off, st.size - off, off); if (!n) break; off += n; }
+    fs.writeFileSync(dest, buf.subarray(0, off), { mode: 0o600 });
+  } finally { fs.closeSync(fd); }
+}
+async function cmdUpdateApply(ctx) {
+  if (IS_WIN || !isRoot()) { say('update-apply runs as root, from nodesignal-update.service'); return 2; }
+  const updater = loadSibling('updater.js');
+  const reqFile = path.join(UPDATE_DIR, 'request.json');
+  let req;
+  try { req = JSON.parse(fs.readFileSync(reqFile, 'utf8')); } catch { say('No update request.'); return 0; }
+  try { fs.unlinkSync(reqFile); } catch { }
+  const result = (o) => {
+    try {
+      const f = path.join(UPDATE_DIR, 'result.json');
+      fs.writeFileSync(f, JSON.stringify(Object.assign({ at: Date.now() }, o)), { mode: 0o600 });
+      const u = ctx.core.readPasswd('').find((x) => x.name === 'nodesignal');
+      if (u) fs.chownSync(f, u.uid, u.gid);
+    } catch { }
+  };
+  const version = typeof req.version === 'string' ? req.version : '', asset = updater.platformAsset();
+  if (!asset || req.asset !== asset) { result({ ok: false, version, error: 'the request names a package for another machine' }); return 1; }
+  const tmp = fs.mkdtempSync('/var/tmp/nodesignal-update-');
+  try {
+    for (const [name, max] of [[asset, updater.MAX_ASSET_BYTES], [updater.MANIFEST_NAME, updater.MAX_META_BYTES], [updater.SIG_NAME, updater.MAX_META_BYTES]])
+      copyUntrusted(path.join(UPDATE_DIR, name), path.join(tmp, name), max);
+    const code = await installVerifiedDeb(ctx, tmp, version, asset);
+    result(code === 0 ? { ok: true, version } : { ok: false, version, error: lastApplyError || 'the install failed; see journalctl -u nodesignal-update' });
+    return code;
+  } catch (e) {
+    result({ ok: false, version, error: e.message }); say(e.message); return 1;
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    for (const f of [asset, updater.MANIFEST_NAME, updater.SIG_NAME]) { try { fs.unlinkSync(path.join(UPDATE_DIR, f)); } catch { } }
+  }
+}
+let lastApplyError = '';
+// dir holds the package, the manifest and its signature, all written by root.
+async function installVerifiedDeb(ctx, dir, version, asset) {
+  const updater = loadSibling('updater.js');
+  const fail = (m) => { lastApplyError = m; say(m); return 1; };
+  const keys = updater.loadTrustedKeys(path.join(__dirname, 'release-keys.json'));
+  const v = updater.verifyManifest({ manifestBytes: fs.readFileSync(path.join(dir, updater.MANIFEST_NAME)),
+    sigBytes: fs.readFileSync(path.join(dir, updater.SIG_NAME)), trustedKeys: keys });
+  if (!v.ok) return fail('refused: ' + v.error);
+  if (v.manifest.version !== version) return fail(`refused: the signed manifest is for ${v.manifest.version}, the request for ${version}`);
+  const current = installedVersion();
+  if (updater.compareVersions(version, current) <= 0) return fail(`refused: ${version} is not newer than the installed ${current}`);
+  const f = v.manifest.files[asset];
+  if (!f) return fail(`refused: the signed manifest does not list ${asset}`);
+  const deb = path.join(dir, asset), buf = fs.readFileSync(deb);
+  const sha = require('crypto').createHash('sha256').update(buf).digest('hex');
+  if (buf.length !== f.size || sha !== f.sha256) return fail('refused: the package does not match the signed manifest');
+  let fields;
+  try { fields = execFileSync('dpkg-deb', ['-f', deb, 'Package', 'Version'], { encoding: 'utf8' }); } catch (e) { return fail('refused: not a readable package: ' + e.message); }
+  if (!/^Package: nodesignal$/m.test(fields) || !new RegExp('^Version: ' + version.replace(/[.+~-]/g, '\\$&') + '$', 'm').test(fields)) return fail('refused: the package is not nodesignal ' + version);
+  say(`Installing NodeSignal ${version} (signature, version, size and SHA-256 checked)...`);
+  if (process.env.NODESIGNAL_UPDATE_DRY_RUN === '1') { say('dry run: not installing'); return 0; }
+  const env = Object.assign({}, process.env, { DEBIAN_FRONTEND: 'noninteractive' });
+  try {
+    if (fs.existsSync('/usr/bin/apt-get')) execFileSync('apt-get', ['install', '-y', '--no-install-recommends', deb], { stdio: 'inherit', env, timeout: 540000 });
+    else execFileSync('dpkg', ['-i', deb], { stdio: 'inherit', env, timeout: 540000 });
+  } catch (e) { return fail('the package manager failed: ' + (e.message || e)); }
+  say(`NodeSignal ${version} is installed.`);
+  return 0;
+}
 
 /* ------------------------------------------------------------ open / logs */
 async function cmdOpen(ctx) {
@@ -285,6 +564,16 @@ async function cmdSetup(ctx) {
   const user = ensureSystemUser(core, root);
   say(`Service user: ${user.name} (a dedicated system account; NodeSignal never runs as root)`);
   if (det.owner && det.owner.uid === 0) say('Note: your Bitcoin node runs as root. NodeSignal does not need to, and does not.');
+  // Tor: NodeSignal asks Tor's control socket for its own onion service (no
+  // port forwarding). On Debian that socket and its cookie belong to the
+  // debian-tor group. Membership lets NodeSignal control that Tor, which is
+  // why it is only added when Tor is installed, and said out loud.
+  if (!root && groupExists('debian-tor')) {
+    try {
+      execFileSync('usermod', ['-a', '-G', 'debian-tor', user.name], { stdio: 'ignore' });
+      say('Tor: added nodesignal to the debian-tor group, so it can create its own onion address (no port forwarding).');
+    } catch { say('Tor: could not add nodesignal to the debian-tor group; it will run without an onion address.'); }
+  }
 
   // 2. config
   let cfg = {};
@@ -495,6 +784,9 @@ function oldUnitHome(core, root, name) {
   const u = core.readPasswd(root).find((x) => x.name === (name || 'root'));
   return u && u.home && u.home !== '/' ? path.posix.join(u.home, '.nodesignal') : null;
 }
+function groupExists(name) {
+  try { return fs.readFileSync('/etc/group', 'utf8').split('\n').some((l) => l.split(':')[0] === name); } catch { return false; }
+}
 function hostnameOf(root) {
   if (root) { try { return fs.readFileSync(path.join(root, 'etc', 'hostname'), 'utf8').trim() || os.hostname(); } catch { } }
   return os.hostname();
@@ -529,6 +821,12 @@ usage: nodesignal <command> [--config <file>]
                        bitcoin.conf; restart the node after add or remove
   open [--browser]     open NodeSignal (on Windows: its own window; --browser
                        for a normal browser tab) and print its address
+  onion [show|on|off]  NodeSignal's own Tor onion address (automatic when Tor runs here)
+  same-onion           how to serve your node and NodeSignal on one onion (proves you run it)
+  updates on|off       the daily check for a newer version (on by default)
+  update [install]     check for a newer version now; install it (Linux, sudo)
+  backup <file>        write a passphrase-protected backup of your identity and contacts
+  restore <file>       put a backup's identity on this machine (keeps the history here)
   web-token [show|new|off]
                        the console's login token (Linux sets one at install,
                        so other accounts on the machine cannot use it)
@@ -560,6 +858,13 @@ async function main(argv = process.argv.slice(2), deps = {}) {
     case 'setup': return cmdSetup(ctx);
     case 'rpc-access': return cmdRpcAccess(ctx, pos[1]);
     case 'web-token': return cmdWebToken(ctx, pos[1]);
+    case 'onion': return cmdOnion(ctx, pos[1]);
+    case 'same-onion': return cmdSameOnion(ctx);
+    case 'updates': return cmdUpdates(ctx, pos[1]);
+    case 'update': return cmdUpdate(ctx, pos[1]);
+    case 'update-apply': return cmdUpdateApply(ctx);
+    case 'backup': return cmdBackup(ctx, pos[1]);
+    case 'restore': return cmdRestore(ctx, pos[1]);
     case 'rpc-check': {
       const det = await core.detectBitcoinNode();
       const r = await printRpcCheck(core, det, cfg);

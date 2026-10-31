@@ -6,7 +6,14 @@
     "nodeps.js",
     "portmap.js",
     "store.js",
-    "nodesignal.html"
+    "nodesignal.html",
+    "social.js",
+    "mailbox.js",
+    "backup.js",
+    "qr.js",
+    "torcontrol.js",
+    "updater.js",
+    "release-keys.json"
   ],
   "tools": [
     "setup-core.js",

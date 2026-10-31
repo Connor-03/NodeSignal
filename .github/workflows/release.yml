@@ -193,6 +193,17 @@ jobs:
           done
           sha256sum NodeSignal-Setup-windows-x64.exe nodesignal-linux-amd64.deb nodesignal-linux-arm64.deb > SHA256SUMS.txt
           cat SHA256SUMS.txt
+      # In-app updates (1.4) install only a release whose manifest is signed
+      # with a key listed in release-keys.json. The private key is the
+      # NODESIGNAL_RELEASE_SIGNING_KEY secret; without it the manifest is
+      # published unsigned and installed copies only announce the release.
+      - name: Release manifest, signed when the key is set
+        env:
+          NODESIGNAL_RELEASE_SIGNING_KEY: ${{ secrets.NODESIGNAL_RELEASE_SIGNING_KEY }}
+        run: |
+          node src/tools/release-manifest.js make "$VERSION" dist
+          node src/tools/release-manifest.js sign dist/nodesignal-release.json
+          if [ -f dist/nodesignal-release.json.sig ]; then node src/tools/release-manifest.js verify dist/nodesignal-release.json src/release-keys.json; fi
       - name: Release notes
         run: |
           RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -240,6 +251,9 @@ jobs:
           path: |
             notes.md
             dist/SHA256SUMS.txt
+            dist/nodesignal-release.json
+            dist/nodesignal-release.json.sig
+          if-no-files-found: warn
       - name: Dry run, nothing published
         if: needs.version.outputs.publish != 'true'
         run: echo "::notice::Dry run for $TAG. Built, tested and checked; no tag and no release were created. Notes and checksums are in the release-notes artifact."
@@ -253,8 +267,11 @@ jobs:
             case "$VERSION" in *-*) pre="--prerelease" ;; esac   # releases/latest skips pre-releases
             gh release create "$TAG" --target "$GITHUB_SHA" --title "NodeSignal $VERSION" --notes-file notes.md $pre
           fi
+          extra=""
+          if [ -f dist/nodesignal-release.json.sig ]; then extra="dist/nodesignal-release.json.sig"; fi
           gh release upload "$TAG" --clobber \
             dist/NodeSignal-Setup-windows-x64.exe \
             dist/nodesignal-linux-amd64.deb \
             dist/nodesignal-linux-arm64.deb \
-            dist/SHA256SUMS.txt
+            dist/SHA256SUMS.txt \
+            dist/nodesignal-release.json $extra

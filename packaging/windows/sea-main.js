@@ -425,6 +425,10 @@ function cmdDaemon(L) {
     process.stdin.resume();
   }
   process.chdir(L.app);
+  // for the daemon's update check and in-app install (1.4)
+  process.env.NODESIGNAL_VERSION = VERSION;
+  process.env.NODESIGNAL_EXE = L.exe;
+  if (L.custom) process.env.NODESIGNAL_ROOT = L.root;
   process.argv = [process.execPath, main, '--config', L.config, '--web-root', L.app];
   Module.createRequire(main)(main);
   return null; // keep running: the daemon owns the event loop now
@@ -943,6 +947,25 @@ async function cmdInstall(L) {
   return h ? 0 : 1;
 }
 
+/* ------------------------------------------------------------ upgrade (in-app update)
+   Run by the daemon with this .exe after it downloaded it and checked its
+   size and SHA-256 against a release manifest signed with a NodeSignal
+   release key. No questions and no window: stop NodeSignal, put this
+   version's program and files in place (settings and history stay), start
+   it again. The outcome goes to the log. */
+async function cmdUpgrade(L) {
+  if (!installedOk(L)) return 1;
+  redirectOutput(L.log, { fatalMonitor: true });
+  say(`---- upgrading to NodeSignal ${VERSION}, ${new Date().toISOString()} ----`);
+  await stopRunning(L, true);
+  extractFiles(L.app);
+  await copySelf(L);
+  startDetached(L);
+  const h = await core.waitForHealth(portOf(L), { timeoutMs: 30000 });
+  say(h ? `upgrade: NodeSignal ${VERSION} is running` : `upgrade: NodeSignal ${VERSION} is installed but did not answer; it starts at the next sign-in`);
+  return h ? 0 : 1;
+}
+
 /* ------------------------------------------------------------ uninstall */
 async function cmdUninstall(L, args) {
   const P = core.createPrompter();
@@ -1157,6 +1180,7 @@ async function main() {
   const cmd = positional(args)[0] || '';
   switch (cmd) {
     case '': case 'install': return cmdInstall(L);
+    case 'upgrade': return cmdUpgrade(L);
     case 'run': return cmdRun(L);
     case '__daemon': return cmdDaemon(L);
     case '__crash': return 7;
@@ -1174,7 +1198,8 @@ async function main() {
       const cli = loadAssetModule('cli.js');
       return cli.main(args, {
         core, version: VERSION, configPath: L.config, logPath: L.log,
-        hooks: { restart: () => restart(L), openUrl: (url, argv) => openWindow(L, url, argv), uninstall: (a) => cmdUninstall(L, a) },
+        hooks: { restart: () => restart(L), openUrl: (url, argv) => openWindow(L, url, argv), uninstall: (a) => cmdUninstall(L, a),
+          stop: () => stopRunning(L, true), start: async () => { startDetached(L); return !!(await core.waitForHealth(portOf(L), { timeoutMs: 20000 })); } },
       });
     }
   }

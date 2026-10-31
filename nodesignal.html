@@ -479,6 +479,52 @@
   @keyframes shimmer{to{background-position:-200% 0}}
 
   /* ---------- tablet ---------- */
+  /* ---------- feed (1.4) ---------- */
+  #view-feed{flex-direction:row}
+  .feed-main{flex:1;min-width:0;display:flex;flex-direction:column;border-right:1px solid var(--line)}
+  .feed-head{display:flex;align-items:center;gap:var(--s3);padding:var(--s4) var(--s6) var(--s3);border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .feed-head .ch-t{flex:1;min-width:0}
+  .feed-head h2{margin:0;font-family:var(--display);font-weight:600;font-size:var(--fs-lg);letter-spacing:-.2px}
+  .feed-head p{margin:1px 0 0;font-size:var(--fs-xs);color:var(--ink-faint)}
+  .seg{display:flex;gap:3px;background:var(--bg);padding:3px;border-radius:var(--r);border:1px solid var(--line)}
+  .seg button{appearance:none;border:0;background:none;color:var(--ink-dim);font:inherit;font-size:var(--fs-xs);padding:5px 10px;border-radius:6px;cursor:pointer}
+  .seg button.on{background:var(--elev);color:var(--ink)}
+  .feed-compose{padding:var(--s3) var(--s6);border-bottom:1px solid var(--line);background:var(--panel)}
+  .feed-compose textarea,.modal textarea{width:100%;box-sizing:border-box;resize:vertical;min-height:64px;background:var(--bg);border:1px solid var(--line-strong);
+    border-radius:var(--r);color:var(--ink);padding:10px 12px;font:inherit;font-size:var(--fs-sm);line-height:1.5;outline:none}
+  .feed-compose textarea:focus,.modal textarea:focus{border-color:var(--btc)}
+  .feed-compose .row{display:flex;align-items:center;justify-content:space-between;margin-top:8px;gap:var(--s3)}
+  .feed-compose .hint{font-family:var(--mono);font-size:var(--fs-2xs);color:var(--ink-faint)}
+  .feed-scroll{flex:1;overflow-y:auto;padding:var(--s3) var(--s6) var(--s6)}
+  .post{border:1px solid var(--line);background:var(--panel);border-radius:var(--r-lg);padding:12px 14px;margin-bottom:10px}
+  .post.mine{border-color:rgba(247,147,26,.28)}
+  .post-h{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:var(--fs-xs);color:var(--ink-faint)}
+  .post-h b{color:var(--ink);font-size:var(--fs-sm);font-weight:600}
+  .post-h .key{font-family:var(--mono)}
+  .post-h .sp{flex:1}
+  .post-t{margin-top:6px;font-size:var(--fs-sm);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--ink)}
+  .tag{font-family:var(--mono);font-size:10.5px;padding:1px 7px;border-radius:20px;border:1px solid var(--line-strong);color:var(--ink-dim);white-space:nowrap}
+  .tag.ok{color:var(--signal);border-color:rgba(48,209,88,.4)}
+  .tag.warn{color:var(--amber);border-color:rgba(255,214,10,.35)}
+  .feed-side{width:320px;flex:none;overflow-y:auto;padding:var(--s4);display:flex;flex-direction:column;gap:var(--s3);background:var(--panel)}
+  .intro-item{display:flex;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line);font-size:var(--fs-sm)}
+  .intro-item:first-of-type{border-top:0}
+  .intro-item .m{flex:1;min-width:0}
+  .intro-item .m small{display:block;color:var(--ink-faint);font-size:var(--fs-2xs);font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* ---------- rooms (1.4) ---------- */
+  .bubble .who{display:block;font-size:var(--fs-2xs);color:var(--ink-faint);font-family:var(--mono);margin-bottom:2px}
+  .members{display:flex;gap:6px;flex-wrap:wrap;padding:var(--s2) var(--s5);border-bottom:1px solid var(--line);background:var(--panel)}
+  /* ---------- share, switches, update (1.4) ---------- */
+  .qr{display:grid;place-items:center;background:#fff;border-radius:var(--r-lg);padding:10px;width:220px;height:220px;margin:0 auto var(--s3)}
+  .qr svg{width:200px;height:200px}
+  .linkbox{font-family:var(--mono);font-size:var(--fs-2xs);background:var(--bg);border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;
+    word-break:break-all;color:var(--ink-dim);user-select:all}
+  .switch-row{display:flex;align-items:center;justify-content:space-between;gap:var(--s3);padding:6px 0;font-size:var(--fs-sm)}
+  .notes{white-space:pre-wrap;font-size:var(--fs-xs);color:var(--ink-dim);max-height:180px;overflow-y:auto;background:var(--panel);
+    border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;margin-top:6px}
+  .upd{appearance:none;border:1px solid rgba(48,209,88,.45);background:rgba(48,209,88,.08);color:var(--signal);border-radius:20px;
+    padding:5px 11px;font:inherit;font-family:var(--mono);font-size:var(--fs-2xs);cursor:pointer;display:none}
+  .upd.show{display:inline-block}
   @media (max-width:1100px){
     .selfnode{max-width:300px}
     .radar-head .lede{display:none}
@@ -499,6 +545,14 @@
     .thread{display:none}
     #view-msgs.has-thread .conv-list{display:none}
     #view-msgs.has-thread .thread{display:flex}
+    #view-feed{flex-direction:column;overflow-y:auto}
+    .feed-main{border-right:0;flex:none}
+    .feed-scroll{overflow:visible;padding:var(--s3)}
+    .feed-head,.feed-compose{padding-left:var(--s3);padding-right:var(--s3)}
+    .feed-head .ch-t{flex-basis:100%}
+    .feed-side{width:auto;padding:var(--s3)}
+    #view-rooms.has-thread .conv-list{display:none}
+    #view-rooms.has-thread .thread{display:flex}
     .thread-head{padding:10px var(--s3)}
     .thread-head .back{display:grid;width:34px;height:34px}
     .th-acts .actbtn{padding:6px 9px}
@@ -516,8 +570,11 @@
   }
   @media (max-width:520px){
     .brand .stack{display:none}
-    .tab{padding:7px 11px}
-    .tab .ic{display:none}
+    .tab{padding:7px 10px}
+    .tab .lbl{display:none}
+    .tab .ic{font-size:14px;opacity:1}
+    .upd{display:none!important}
+    .topbar .icon-btn{width:34px;height:34px}
     .selfnode .meta{display:none}
     .selfnode{padding:0;width:38px;height:38px;justify-content:center;flex:none}
     .radar-head h1{font-size:var(--fs-md)}
@@ -538,10 +595,14 @@
       <div class="stack"><b>NodeSignal</b><span>node operator console</span></div>
     </div>
     <nav class="tabs" aria-label="views">
-      <button class="tab active" id="tab-peers" onclick="switchTab('peers')"><span class="ic">◈</span>peers</button>
-      <button class="tab" id="tab-msgs" onclick="switchTab('msgs')"><span class="ic">✉</span>messages <span class="tab-count" id="tab-unread" style="display:none">0</span></button>
+      <button class="tab active" id="tab-peers" onclick="switchTab('peers')"><span class="ic">◈</span><span class="lbl">peers</span></button>
+      <button class="tab" id="tab-msgs" onclick="switchTab('msgs')"><span class="ic">✉</span><span class="lbl">messages</span> <span class="tab-count" id="tab-unread" style="display:none">0</span></button>
+      <button class="tab" id="tab-feed" onclick="switchTab('feed')"><span class="ic">✦</span><span class="lbl">feed</span> <span class="tab-count" id="tab-feed-new" style="display:none">0</span></button>
+      <button class="tab" id="tab-rooms" onclick="switchTab('rooms')"><span class="ic">#</span><span class="lbl">rooms</span> <span class="tab-count" id="tab-rooms-new" style="display:none">0</span></button>
     </nav>
     <div class="spacer"></div>
+    <button class="upd" id="upd-pill" onclick="toggleDrawer(true)" title="A newer NodeSignal is available"></button>
+    <button class="icon-btn" id="share-btn" title="Share your contact link" aria-label="Share your contact link" onclick="openShare()">▦</button>
     <button class="selfnode" id="selfnode" onclick="toggleDrawer()" title="Open status">
       <span class="pulse wait" id="self-pulse"></span>
       <span class="meta"><span class="t" id="self-name" style="display:block">connecting…</span><span class="s" id="self-desc" style="display:block">reaching the daemon</span></span>
@@ -583,6 +644,30 @@
       </aside>
       <div class="thread" id="thread"></div>
     </section>
+
+    <section class="view" id="view-feed">
+      <div class="feed-main">
+        <div class="feed-head"><div class="ch-t"><h2>Feed</h2><p id="feed-sub"></p></div><div class="seg" id="feed-filter"></div>
+          <button class="actbtn" onclick="refreshSocial()" title="Ask your contacts for posts, room messages and introductions now">refresh</button></div>
+        <div class="feed-compose">
+          <textarea id="post-in" maxlength="1000" rows="3" placeholder="Post to your contacts. Signed with your key, public to anyone they pass it on to." oninput="postCount()"></textarea>
+          <div class="row"><span class="hint" id="post-count">0 / 1000</span><button class="btn primary" onclick="submitPost()">Post</button></div>
+        </div>
+        <div class="feed-scroll" id="feed-scroll"></div>
+      </div>
+      <aside class="feed-side" id="feed-side"></aside>
+    </section>
+
+    <section class="view" id="view-rooms">
+      <aside class="conv-list">
+        <div class="conv-head">
+          <div class="ch-t"><h2>Rooms</h2><p id="rooms-sub"></p></div>
+          <button class="conv-add" title="New room, or join one by link" aria-label="New room or join" onclick="openRoomDialog()">+</button>
+        </div>
+        <div class="conv-scroll" id="rooms-scroll"></div>
+      </aside>
+      <div class="thread" id="room-thread"></div>
+    </section>
   </div>
 </div>
 
@@ -598,9 +683,9 @@
     <div class="modal-body">
       <div class="field">
         <label for="f-ip">Address</label>
-        <input id="f-ip" class="mono" placeholder="100.x.y.z  or  something.onion" autocomplete="off" spellcheck="false"
+        <input id="f-ip" class="mono" placeholder="nodesignal: link,  something.onion  or  an IP" autocomplete="off" spellcheck="false"
                onkeydown="if(event.key==='Enter')submitAdd()"/>
-        <div class="help">Their daemon listens on :8788. Add <code>:port</code> if they use another one. Their node is identified automatically over :8333.</div>
+        <div class="help">Best: paste their <code>nodesignal:</code> contact link. It carries their key, so it is pinned before the first connection. An address alone works too (their daemon listens on :8788; add <code>:port</code> for another one). Their node is identified automatically over :8333.</div>
       </div>
       <div class="field">
         <label for="f-nick">Nickname <small>(optional, only you see it)</small></label>
@@ -635,6 +720,53 @@
       <button class="btn" onclick="closeVault()">Cancel</button>
       <button class="btn primary" id="vf-go" onclick="submitVault()">Save</button>
     </div>
+  </div>
+</div>
+
+<!-- share: your contact link and its QR code -->
+<div class="scrim" id="share-scrim">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="share-title">
+    <div class="modal-head">
+      <div class="mt"><b id="share-title">Your contact link</b><span id="share-sub">Give it to another operator: it carries your address and your key.</span></div>
+      <button class="x" onclick="closeShare()" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body" id="share-body"></div>
+    <div class="modal-foot"><button class="btn" onclick="closeShare()">Close</button><button class="btn primary" id="share-copy" onclick="copyShare()">Copy link</button></div>
+  </div>
+</div>
+
+<!-- rooms: create one, or join by link -->
+<div class="scrim" id="room-scrim">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="room-title">
+    <div class="modal-head">
+      <div class="mt"><b id="room-title">Rooms</b><span>A topic room shared by its members' daemons. No server.</span></div>
+      <button class="x" onclick="closeRoomDialog()" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label for="r-name">Start a room</label>
+        <input id="r-name" maxlength="60" placeholder="e.g. relay policy" autocomplete="off" onkeydown="if(event.key==='Enter')createRoom()"/>
+        <div class="help">You can invite people with a link once it exists. Members need an onion address or a public address to receive messages directly; the rest catch up when they next connect.</div></div>
+      <div class="field"><label for="r-link">Or join one</label>
+        <input id="r-link" class="mono" placeholder="nodesignal-room:…" autocomplete="off" spellcheck="false" onkeydown="if(event.key==='Enter')joinRoom()"/></div>
+    </div>
+    <div class="modal-foot"><button class="btn" onclick="joinRoom()">Join by link</button><button class="btn primary" onclick="createRoom()">Create room</button></div>
+  </div>
+</div>
+
+<!-- identity backup -->
+<div class="scrim" id="backup-scrim">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="backup-title">
+    <div class="modal-head">
+      <div class="mt"><b id="backup-title">Back up your identity</b><span>Your keys and contacts, sealed with a passphrase.</span></div>
+      <button class="x" onclick="closeBackup()" aria-label="Close">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field"><label for="bk-pass">Passphrase for the backup <small>(at least 8 characters)</small></label><input id="bk-pass" type="password" autocomplete="new-password"/></div>
+      <div class="field"><label for="bk-again">Type it again</label><input id="bk-again" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter')submitBackup()"/></div>
+      <div class="callout"><span class="ci">🔑</span><span>The file holds your identity and signing keys, your onion key and your contacts with their pinned keys. Not your message history. Anyone with the file and the passphrase can be you, so keep it off this machine. Restore it with <code>nodesignal restore &lt;file&gt;</code>.</span></div>
+      <div class="err" id="bk-err"></div>
+    </div>
+    <div class="modal-foot"><button class="btn" onclick="closeBackup()">Cancel</button><button class="btn primary" id="bk-go" onclick="submitBackup()">Download backup</button></div>
   </div>
 </div>
 
@@ -741,13 +873,37 @@ function handle(m){
       state.daemon=m.daemon;
       state.node=m.node&&m.node.self?m.node.self:null;
       state.rpcError=m.node?m.node.error:null;
-      rebuild(m.node&&m.node.peers?m.node.peers:[], m.contacts||[]);
+      state.feed=m.feed||[];state.follows=m.follows||[];state.rooms=m.rooms||[];state.introductions=m.introductions||[];
+      if(state.activeRoom&&!state.rooms.some(r=>r.room===state.activeRoom))state.activeRoom=null;
+      // contacts NodeSignal keeps for rooms, mailboxes and introductions stay off the map and the list
+      rebuild(m.node&&m.node.peers?m.node.peers:[], (m.contacts||[]).filter(c=>!c.hidden));
       flushOutbox();
       renderAll(); break;
     case 'node':
       state.node=m.self||null; state.rpcError=m.error||null;
       rebuild(m.peers||[], null); renderAll(); break;
-    case 'contact': upsertContact(m.contact); renderAll(); break;
+    case 'contact': if(m.contact&&m.contact.hidden)break; upsertContact(m.contact); renderAll(); break;
+    case 'post': {
+      const i=state.feed.findIndex(x=>x.id===m.post.id);
+      if(i<0)state.feed.unshift(m.post); else state.feed[i]=m.post;
+      state.feed.sort((a,b)=>b.ts-a.ts);
+      if(m.post.mine){const inp=document.getElementById('post-in');if(inp){inp.value='';postCount();}}
+      renderFeed(); break;
+    }
+    case 'posted': toast('posted; your contacts get it as their daemons connect'); break;
+    case 'room': {
+      const i=state.rooms.findIndex(r=>r.room===m.room.room);
+      if(i<0)state.rooms.push(m.room); else state.rooms[i]=m.room;
+      renderRooms(); renderRoomThread(); break;
+    }
+    case 'room.created': state.activeRoom=m.room; switchTab('rooms'); renderRooms(); renderRoomThread(); toast('room created: invite people with a link'); break;
+    case 'room.invite': showRoomInvite(m); break;
+    case 'room.joining': toast('asking '+(m.name?'"'+m.name+'"':'the room')+'\'s inviter to let you in…'); break;
+    case 'room.joined': state.activeRoom=m.room; switchTab('rooms'); renderRooms(); renderRoomThread(); break;
+    case 'room.error': toast('room: '+(m.error||'refused')); break;
+    case 'introductions': state.introductions=m.items||[]; renderFeedSide(); break;
+    case 'share': renderShare(m); break;
+    case 'backup': downloadBackup(m); break;
     case 'contact.removed': {
       const p=byHost(m.host);
       if(p){ if(state.active===p.id)state.active=null;
@@ -773,7 +929,7 @@ function handle(m){
     case 'chat.status': {
       const p=byHost(m.host); if(!p)break;
       const msg=p.msgs.find(x=>x.id===m.id);
-      if(msg){msg.status=m.status; msg.error=m.error||null; msg.nextTry=m.nextTry||null;}
+      if(msg){msg.status=m.status; msg.error=m.error||null; msg.nextTry=m.nextTry||null; if(m.heldAt)msg.heldAt=m.heldAt;}
       if(m.status==='failed')toast('not delivered: '+(m.error||'unknown error'));
       renderAll(); break;
     }
@@ -794,6 +950,8 @@ function handle(m){
       if(m.code==='bad-token'){reloadForNewDaemon();break;}
       if(/^vault\./.test(m.op||'')&&document.getElementById('vault-scrim').classList.contains('show')){
         document.getElementById('vf-err').textContent=m.error;document.getElementById('vf-go').disabled=false;
+      }else if(m.op==='backup.export'&&document.getElementById('backup-scrim').classList.contains('show')){
+        document.getElementById('bk-err').textContent=m.error;document.getElementById('bk-go').disabled=false;
       }else toast(m.error||'error');
       break;
     case 'identified':
@@ -803,7 +961,7 @@ function handle(m){
   }
 }
 const wireMsg=w=>({id:w.id,from:w.from,ts:w.ts,text:w.text,locked:!!w.locked,lockKind:w.lockKind||null,status:w.status||null,
-  error:w.error||null,nextTry:w.nextTry||null,attempts:w.attempts||0});
+  error:w.error||null,nextTry:w.nextTry||null,attempts:w.attempts||0,heldAt:w.heldAt||null,viaMailbox:!!w.viaMailbox});
 const byHost=h=>state.peers.find(p=>p.host===h);
 
 /* ===================== OUTBOX =====================
@@ -850,7 +1008,10 @@ function rebuild(nodePeers, contacts){
 
   for(const np of (nodePeers||[])){
     const host=hostOf(np.addr);
-    const existing=next.find(p=>p.host===host);
+    // a peer advertising its NodeSignal onion (uacomment=nodesignal:<onion>) is the
+    // same operator as the contact kept under that onion
+    const nsOnion=np.nodesignal&&np.nodesignal.onion||null;
+    const existing=next.find(p=>p.host===host||(nsOnion&&p.host===nsOnion));
     if(existing){                                  // contact that is also a live node peer
       if(np.latency!=null){existing.latency=np.latency;existing.unmeasured=false;}
       if(!existing.ua&&np.ua)existing.ua=np.ua;
@@ -861,7 +1022,7 @@ function rebuild(nodePeers, contacts){
       continue;
     }
     next.push({
-      id:uid(), kind:'peer', host, addr:np.addr, port:(np.nodesignal&&np.nodesignal.port)||8788, ns:np.nodesignal||null,
+      id:uid(), kind:'peer', host, addr:np.addr, port:(np.nodesignal&&np.nodesignal.port)||8788, ns:np.nodesignal||null, dial:nsOnion,
       nick:'', impl:np.impl||'Unknown', version:np.version||'', ua:np.ua||null,
       declared:np.declared||[], supports:[], services:[], network:null, net:np.net||null,
       height:np.height??null, latency:np.latency??null, unmeasured:np.latency==null,
@@ -895,6 +1056,9 @@ function contactModel(c,angles){
     // online = established AND seen within the daemon's freshness window. Drives
     // the blinking dot, only shown for peers we could actually message now.
     online:!!c.online,
+    // 1.4
+    signPub:c.signPub||null, following:!!c.following, nodeProof:c.nodeProof||null, pinnedBy:c.pinnedBy||null,
+    servesMailbox:!!c.servesMailbox, onion:c.onion||null,
     angle:angles.has(c.host)?angles.get(c.host):Math.random()*Math.PI*2,
   };
 }
@@ -1407,7 +1571,7 @@ function renderConvList(){
     if(!m){prev=esc(p.kind==='contact'?linkState(p).txt:'no messages yet');}
     else if(m.locked){prev=esc(m.lockKind==='vault'?'🔒 locked':'🔒 legacy PIN message');cls='locked';}
     else{
-      const tag=m.status==='queued'?'<span class="q">queued · </span>':m.status==='pending'?'<span class="q">retrying · </span>':m.status==='failed'?'<span class="f">not delivered · </span>':'';
+      const tag=m.status==='queued'?'<span class="q">queued · </span>':m.status==='pending'?'<span class="q">retrying · </span>':m.status==='held'?'<span class="q">at their mailbox · </span>':m.status==='failed'?'<span class="f">not delivered · </span>':'';
       prev=tag+esc((m.from==='me'?'you: ':'')+(m.text||''));
     }
     const isAddr=!p.nick;
@@ -1439,7 +1603,8 @@ function renderThread(){
   const ls=linkState(p);
 
   const acts=p.kind==='contact'
-    ? `<button class="actbtn opt" onclick="doIdentify('${p.id}')" title="Re-read their node over :8333">identify</button>
+    ? (p.signPub?`<button class="actbtn opt" data-a="${esc(p.signPub)}" onclick="setFollow(this.dataset.a,${!p.following})" title="Their posts in your feed">${p.following?'unfollow':'follow'}</button>`:'')+
+      `<button class="actbtn opt" onclick="doIdentify('${p.id}')" title="Re-read their node over :8333">identify</button>
        <button class="actbtn danger" onclick="doRemove('${p.id}')">remove</button>`
     : reachOf(p)&&!reachOf(p).canMsg?''
     : `<button class="actbtn primary" onclick="doAddPeer('${p.id}')" title="Save as a NodeSignal contact">add as contact</button>`;
@@ -1455,6 +1620,8 @@ function renderThread(){
   const pills=`<span class="pill ${ls.cls}"><span class="d"></span>${esc(ls.txt)}</span>`+
     (enc?`<span class="pill ${enc.cls}" title="${p.peerFp?esc('pinned identity '+p.peerFp):''}">${esc(enc.txt)}</span>`:'')+
     (p.ns?`<span class="pill ok" title="its user agent carries the nodesignal comment">◈ advertises NodeSignal</span>`:'')+
+    (p.nodeProof?`<span class="pill ok" title="${esc('Its NodeSignal answered on the onion address of a Bitcoin node ('+p.nodeProof.how+'). Only the holder of that onion key can run both.')}">⛓ runs the node at ${esc(p.nodeProof.onion.slice(0,10))}…</span>`:'')+
+    (p.pinnedBy&&p.pinnedBy!=='backup'?`<span class="pill" title="${esc('The key was pinned before the first connection, from '+(p.pinnedBy==='link'?'their contact link':p.pinnedBy==='typed'?'a fingerprint you entered':'an introduction'))}">🔑 key from ${esc(p.pinnedBy==='link'?'their link':p.pinnedBy==='typed'?'you':'an introduction')}</span>`:'')+
     (p.unmeasured||p.latency==null?'':`<span class="pill">${esc(msText(p.latency))}</span>`)+
     (hasPending?`<button class="actbtn" style="margin-left:auto" onclick="send({type:'chat.retry',host:'${esc(p.host)}'})&&toast('retrying now')">retry now</button>`:'');
 
@@ -1490,7 +1657,8 @@ function renderThread(){
     const shape=(tail?' tail':'')+(gap?' gap':'');
     const st=m.status;
     const tailTxt=st==='sending'?' · sending…':st==='failed'?' · not delivered':st==='delivered'?' · delivered':
-      st==='queued'?' · queued, waiting for the daemon':st==='pending'?' · not delivered yet, retrying'+(m.nextTry?' at '+clock(m.nextTry):''):'';
+      st==='queued'?' · queued, waiting for the daemon':st==='pending'?' · not delivered yet, retrying'+(m.nextTry?' at '+clock(m.nextTry):''):
+      st==='held'?' · held at '+(m.heldAt||'their mailbox')+' for pickup':m.viaMailbox?' · via their mailbox':'';
     if(m.locked){ body+=`<div class="bubble ${m.from} locked${shape}">${esc(LOCKED_TXT[m.lockKind]||LOCKED_TXT.legacy)}<span class="ts">${clock(m.ts)}${tailTxt}</span></div>`; continue; }
     const cls=m.from+(st==='sending'?' sending':st==='failed'?' failed':st==='queued'?' queued':st==='pending'?' pending':'');
     const why=st==='failed'?`<span class="why">${esc(m.error||'no reason given')}<button class="retry" data-mid="${esc(m.id)}" onclick="resend(this.dataset.mid)">send again</button></span>`
@@ -1607,8 +1775,10 @@ function sendMsg(){
 // :8788 and reports delivered / failed. Nothing is encrypted in the browser.
 function queueOrSend(p,text){
   const port=p.port||8788;
-  if(state.wsState==='open'&&send({type:'chat.send',host:p.host,port,text}))return;
-  state.outbox.push({qid:'q'+now()+Math.random().toString(36).slice(2,7),host:p.host,port,text,ts:now()});
+  // a node peer that advertises its onion is messaged there, through Tor
+  const host=p.dial||p.host;
+  if(state.wsState==='open'&&send({type:'chat.send',host,port,text}))return;
+  state.outbox.push({qid:'q'+now()+Math.random().toString(36).slice(2,7),host,port,text,ts:now()});
   saveOutbox(); renderAll();
   toast('daemon offline: message queued');
 }
@@ -1678,11 +1848,13 @@ function updateTitle(total){
 /* ===================== CHROME ===================== */
 function switchTab(tab){
   state.tab=tab;
-  document.getElementById('tab-peers').classList.toggle('active',tab==='peers');
-  document.getElementById('tab-msgs').classList.toggle('active',tab==='msgs');
-  document.getElementById('view-peers').classList.toggle('active',tab==='peers');
-  document.getElementById('view-msgs').classList.toggle('active',tab==='msgs');
+  for(const t of ['peers','msgs','feed','rooms']){
+    document.getElementById('tab-'+t).classList.toggle('active',tab===t);
+    document.getElementById('view-'+t).classList.toggle('active',tab===t);
+  }
   hideTip();
+  if(tab==='feed'){renderFeed();renderFeedSide();}
+  if(tab==='rooms'){renderRooms();renderRoomThread();}
 }
 function setBanner(kind,icon,html,action){
   const ban=document.getElementById('banner');
@@ -1765,6 +1937,7 @@ function renderDrawer(){
          <code id="my-fp">${esc(fpGroups(dm.fingerprint))}</code></div>
          <button class="actbtn copy" onclick="copyFp()">copy</button></div>`:''}
      </section>
+     ${drawerCards14()}
      <section class="card">
        <div class="card-h"><h4>Message history</h4>${pill(vs.set?(vs.unlocked?'ok':'wait'):'',vs.set?(vs.unlocked?'sealed · unlocked':'sealed · locked'):'not encrypted')}</div>
        <div class="note">${vs.set?'Message text is sealed on disk with a key only your passphrase opens. Who you talk to and when is not hidden.'
@@ -1829,6 +2002,10 @@ function closeAdd(){document.getElementById('scrim').classList.remove('show');
 function submitAdd(){
   const raw=document.getElementById('f-ip').value.trim();
   if(!raw){toast('enter an address');return;}
+  if(/^nodesignal:/i.test(raw)){
+    if(!send({type:'contact.add',link:raw,nick:document.getElementById('f-nick').value.trim()||undefined})){toast('daemon not connected: try again once it is back');return;}
+    closeAdd(); toast('contact added with its key pinned from the link'); return;
+  }
   const host=hostOf(raw)||raw;
   const port=Number((raw.match(/:(\d+)$/)||[])[1])||8788;
   if(!send({type:'contact.add',host,port,nick:document.getElementById('f-nick').value.trim()})){
@@ -1837,15 +2014,244 @@ function submitAdd(){
   closeAdd();
   toast('contact added, reading their node over :8333');
 }
+/* ===================== 1.4: FEED, ROOMS, SHARE, REACH, MAILBOX, BACKUP, UPDATES =====================
+   All signing, sealing and checking happens in the daemon. This page only
+   shows what the daemon reports and sends it requests. Every string from a
+   peer goes through esc(). */
+state.feed=[];state.follows=[];state.rooms=[];state.introductions=[];
+state.feedFilter='following';state.activeRoom=null;
+const SEEN_KEY='nodesignal.seen.v1';
+state.seen=(()=>{try{const o=JSON.parse(localStorage.getItem(SEEN_KEY)||'{}');return {feed:Number(o.feed)||0,rooms:o.rooms&&typeof o.rooms==='object'?o.rooms:{}};}catch{return {feed:0,rooms:{}};}})();
+function saveSeen(){try{localStorage.setItem(SEEN_KEY,JSON.stringify(state.seen));}catch{}}
+const when=ts=>dayLabel(ts)+' · '+clock(ts);
+function copyText(text,label){
+  const done=()=>toast((label||'text')+' copied');
+  if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(text).then(done,()=>toast('copy failed'));return;}
+  try{const ta=document.createElement('textarea');ta.value=text;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();done();}catch{toast('copy failed');}
+}
+
+/* ---- feed ---- */
+function postCount(){const v=document.getElementById('post-in').value;document.getElementById('post-count').textContent=v.length+' / 1000';}
+function submitPost(){
+  const inp=document.getElementById('post-in'),text=inp.value.trim();
+  if(!text)return;
+  if(!send({type:'post.create',text})){toast('daemon not connected: post again once it is back');return;}
+}
+function setFollow(a,on){send({type:'follow.set',sk:a,on:!!on});}
+function setFeedFilter(f){state.feedFilter=f;renderFeed();}
+function refreshSocial(){send({type:'sync.now'})?toast('asking your contacts…'):toast('daemon not connected');}
+function renderFeed(){
+  const wrap=document.getElementById('feed-scroll');if(!wrap)return;
+  const follows=new Set(state.follows),f=state.feedFilter;
+  const items=state.feed.filter(p=>f==='mine'?p.mine:f==='discover'?(!p.mine&&!follows.has(p.a)):(p.mine||follows.has(p.a)));
+  document.getElementById('feed-sub').textContent=`${state.feed.length} post${state.feed.length!==1?'s':''} · each signed by its author · passed on at most two hops`;
+  document.getElementById('feed-filter').innerHTML=[['following','following'],['discover','others'],['mine','yours']]
+    .map(([k,t])=>`<button class="${f===k?'on':''}" onclick="setFeedFilter('${k}')">${t}</button>`).join('');
+  wrap.innerHTML=items.length?items.map(p=>postHtml(p,follows)).join('')
+    :`<div class="list-empty"><b>${f==='mine'?'You have not posted yet':f==='discover'?'Nothing from people you do not follow':'No posts yet'}</b>
+      Posts come from your contacts and, one hop further, from people they follow. Your established contacts are followed automatically.</div>`;
+  if(state.tab==='feed'){const top=Math.max(0,...state.feed.map(p=>p.ts));if(top>state.seen.feed){state.seen.feed=top;saveSeen();}}
+  updateSocialBadges();
+}
+function postHtml(p,follows){
+  const who=p.mine?'you':p.contact?(p.contact.nick||p.contact.host):(p.nick||'unnamed');
+  const tags=[];
+  if(p.mine)tags.push('<span class="tag">your post</span>');
+  else if(p.contact)tags.push('<span class="tag ok" title="Signed with the key this contact announced over its own encrypted link">your contact</span>');
+  else tags.push('<span class="tag warn" title="You have not talked to this author directly: the name is self-declared, the signature is real">name not verified</span>');
+  if(!p.mine&&p.via&&p.hops>1)tags.push(`<span class="tag" title="Passed on by">via ${esc(p.via)}</span>`);
+  const fol=follows.has(p.a);
+  const btn=p.mine?'':`<button class="actbtn" data-a="${esc(p.a)}" onclick="setFollow(this.dataset.a,${!fol})">${fol?'unfollow':'follow'}</button>`;
+  return `<article class="post ${p.mine?'mine':''}"><div class="post-h"><b>${esc(who)}</b>${tags.join('')}<span class="key" title="signing key">${esc(p.keyId||'')}</span>
+    <span class="sp"></span><span>${esc(when(p.ts))}</span>${btn}</div><div class="post-t">${esc(p.text)}</div></article>`;
+}
+function renderFeedSide(){
+  const el=document.getElementById('feed-side');if(!el)return;
+  const dm=state.daemon||{},intros=state.introductions||[];
+  const list=intros.length?intros.map(x=>`<div class="intro-item"><div class="m"><b>${esc(x.nick||'unnamed')}</b>
+      <small>${esc(x.host)}</small><small>introduced by ${esc((x.via||[]).join(', '))}</small></div>
+      <button class="actbtn primary" data-fp="${esc(x.fp)}" onclick="send({type:'intro.add',fp:this.dataset.fp})&&toast('added; their key is pinned')">add</button>
+      <button class="actbtn" data-fp="${esc(x.fp)}" onclick="send({type:'intro.dismiss',fp:this.dataset.fp})">×</button></div>`).join('')
+    :'<div class="note">Nobody yet. Introductions arrive when you talk to contacts who also turned them on.</div><div class="drawer-foot"><button class="btn" onclick="refreshSocial()">Ask my contacts now</button></div>';
+  el.innerHTML=`<section class="card"><div class="card-h"><h4>People your contacts know</h4></div>
+      ${dm.discoverable?list:`<div class="note">Turn on introductions to swap them with contacts who also turned them on. Each side shares only contacts who opted in themselves, with their address and key, so adding one pins the right key.</div>
+      <div class="drawer-foot"><button class="btn primary" onclick="setSetting('discoverable',true)">Turn on introductions</button></div>`}</section>
+    <section class="card"><div class="card-h"><h4>How posts travel</h4></div>
+      <div class="note">Your daemon signs each post with your key and hands it to your established contacts. Contacts who follow you pass it on once more, to their contacts. No server keeps it, and nobody can change it on the way. Posts are public to everyone they reach.</div></section>`;
+}
+
+/* ---- rooms ---- */
+function openRoomDialog(){document.getElementById('room-scrim').classList.add('show');document.getElementById('r-name').focus();}
+function closeRoomDialog(){document.getElementById('room-scrim').classList.remove('show');['r-name','r-link'].forEach(i=>document.getElementById(i).value='');}
+function createRoom(){const name=document.getElementById('r-name').value.trim();if(!name){toast('give the room a name');return;}
+  if(send({type:'room.create',name}))closeRoomDialog();}
+function joinRoom(){const link=document.getElementById('r-link').value.trim();if(!link.startsWith('nodesignal-room:')){toast('paste a nodesignal-room: link');return;}
+  if(send({type:'room.join',link}))closeRoomDialog();}
+function openRoom(id){state.activeRoom=id;renderRooms();renderRoomThread();}
+function closeRoom(){state.activeRoom=null;renderRooms();renderRoomThread();}
+function unseenRoom(r){const seen=state.seen.rooms[r.room]||0;return r.msgs.filter(m=>!m.mine&&m.ts>seen).length;}
+function renderRooms(){
+  const wrap=document.getElementById('rooms-scroll');if(!wrap)return;
+  const rooms=[...state.rooms].sort((a,b)=>((b.msgs.at(-1)||{}).ts||0)-((a.msgs.at(-1)||{}).ts||0));
+  document.getElementById('rooms-sub').textContent=`${rooms.length} room${rooms.length!==1?'s':''} · signed messages, kept by the members`;
+  document.getElementById('view-rooms').classList.toggle('has-thread',!!state.activeRoom);
+  wrap.innerHTML=rooms.length?rooms.map(r=>{
+    const last=r.msgs.at(-1),u=unseenRoom(r);
+    return `<div class="conv ${state.activeRoom===r.room?'active':''} ${u?'unread':''}" data-r="${esc(r.room)}" onclick="openRoom(this.dataset.r)">
+      <div class="avatar" style="background:#4dd2ff22;border-color:#4dd2ff;color:#4dd2ff">#${u?`<span class="u">${u>9?'9+':u}</span>`:''}</div>
+      <div class="conv-main"><div class="conv-top"><span class="conv-name">${esc(r.name)}</span><span class="conv-time">${last?esc(clock(last.ts)):''}</span></div>
+      <div class="conv-prev">${last?esc((last.mine?'you':last.nick||'?')+': '+last.text):esc(r.members.filter(m=>!m.left).length+' member(s)')}</div></div></div>`;
+  }).join(''):`<div class="list-empty"><b>No rooms yet</b>Start one about a topic and invite people with a link, or join one with a link someone gave you.
+      <div><button class="btn primary" onclick="openRoomDialog()">New room or join</button></div></div>`;
+  updateSocialBadges();
+}
+function renderRoomThread(){
+  const t=document.getElementById('room-thread');if(!t)return;
+  const r=state.rooms.find(x=>x.room===state.activeRoom);
+  if(!r){t.innerHTML=`<div class="thread-empty"><div><div class="big">#</div><b>Select a room</b><p>Rooms are shared by their members' daemons.</p></div></div>`;return;}
+  if(state.tab==='rooms'){const top=Math.max(0,...r.msgs.map(m=>m.ts));if(top>(state.seen.rooms[r.room]||0)){state.seen.rooms[r.room]=top;saveSeen();renderRooms();}}
+  const members=r.members.filter(m=>!m.left);
+  const head=`<div class="thread-head" style="--accent:#4dd2ff">
+      <button class="icon-btn back" onclick="closeRoom()" aria-label="Back to rooms">←</button>
+      <div class="avatar" style="background:#4dd2ff22;border-color:#4dd2ff;color:#4dd2ff">#</div>
+      <div class="th-meta"><div class="n" style="color:#4dd2ff">${esc(r.name)}</div><div class="s">${members.length} member${members.length!==1?'s':''} · ${esc(r.room.slice(0,12))}</div></div>
+      <div class="th-acts"><button class="actbtn primary" data-r="${esc(r.room)}" onclick="send({type:'room.invite',room:this.dataset.r})">invite</button>
+        <button class="actbtn danger" data-r="${esc(r.room)}" onclick="leaveRoom(this.dataset.r)">leave</button></div></div>
+    <div class="members">${members.map(m=>`<span class="tag ${m.me?'':'ok'}" title="${esc(m.host?'reachable at '+m.host:'no address: catches up when it next connects')}">${esc(m.me?'you':m.nick||'?')}${m.host?'':' ·'}</span>`).join('')}</div>`;
+  const body=r.msgs.length?r.msgs.map(m=>`<div class="bubble ${m.mine?'me':'them'} tail gap">${m.mine?'':`<span class="who">${esc(m.nick||'?')}</span>`}${esc(m.text)}<span class="ts">${esc(clock(m.ts))}</span></div>`).join('')
+    :`<div class="intro"><b>${esc(r.name)}</b>Messages here are signed by their authors and kept by every member's daemon. Invite people with a link.</div>`;
+  const box=document.getElementById('room-msgs'),atBottom=!box||(box.scrollHeight-box.scrollTop-box.clientHeight<60);
+  t.innerHTML=head+`<div class="msgs" id="room-msgs">${body}</div>
+    <div class="composer"><div class="row"><input id="room-in" placeholder="message ${esc(r.name)}…" autocomplete="off" aria-label="Room message" onkeydown="if(event.key==='Enter')sendRoomMsg()">
+      <button class="send" onclick="sendRoomMsg()" title="Send" aria-label="Send">➤</button></div>
+      <div class="hint">signed with your key · sent to every member your daemon can reach</div></div>`;
+  const nb=document.getElementById('room-msgs');if(atBottom)nb.scrollTop=nb.scrollHeight;
+}
+function sendRoomMsg(){const inp=document.getElementById('room-in');if(!inp)return;const text=inp.value.trim();if(!text)return;
+  if(send({type:'room.send',room:state.activeRoom,text}))inp.value='';else toast('daemon not connected');}
+function leaveRoom(id){if(!confirm('Leave this room? Your daemon tells the other members and forgets the room.'))return;send({type:'room.leave',room:id});state.activeRoom=null;}
+function updateSocialBadges(){
+  const nf=state.feed.filter(p=>!p.mine&&p.ts>state.seen.feed&&state.follows.includes(p.a)).length;
+  const nr=state.rooms.reduce((a,r)=>a+unseenRoom(r),0);
+  for(const [id,n] of [['tab-feed-new',state.tab==='feed'?0:nf],['tab-rooms-new',nr]]){const e=document.getElementById(id);if(!e)continue;
+    e.style.display=n?'':'none';e.textContent=n>99?'99+':n;}
+}
+
+/* ---- share (contact link + QR code from the daemon) ---- */
+state.share=null;
+function openShare(title){document.getElementById('share-scrim').classList.add('show');
+  document.getElementById('share-title').textContent=title||'Your contact link';
+  document.getElementById('share-body').innerHTML='<div class="note">asking the daemon…</div>';
+  if(!title)send({type:'share.get'})||closeShare();}
+function closeShare(){document.getElementById('share-scrim').classList.remove('show');}
+function copyShare(){if(state.share&&state.share.link)copyText(state.share.link,'link');}
+function renderShare(m){
+  state.share=m;
+  document.getElementById('share-copy').disabled=!m.link;
+  // the SVG is drawn by this machine's own daemon from its own address and key
+  document.getElementById('share-body').innerHTML=m.link
+    ?`${m.svg?`<div class="qr">${m.svg}</div>`:''}<div class="linkbox">${esc(m.link)}</div>
+      <div class="note" style="margin-top:10px">Whoever adds this link gets your key pinned before the first connection, so nobody else can answer in your place. It also reveals the address in it.</div>`
+    :`<div class="errbox">${esc(m.why||'No address to share yet.')}</div>${m.fp?`<div class="note">Your fingerprint, to read out over another channel: <code>${esc(fpGroups(m.fp))}</code></div>`:''}`;
+}
+function showRoomInvite(m){
+  openShare('Invite to this room');
+  state.share={link:m.link};
+  document.getElementById('share-copy').disabled=false;
+  document.getElementById('share-body').innerHTML=`<div class="linkbox">${esc(m.link)}</div>
+    <div class="note" style="margin-top:10px">Anyone with this link can join and read the room from then on. It carries your address and key, so the person joining talks to you first.</div>`;
+}
+
+/* ---- settings, mailbox, backup, updates ---- */
+function setSetting(key,value){send({type:'settings.set',key,value:!!value});}
+function openBackup(){document.getElementById('backup-scrim').classList.add('show');document.getElementById('bk-err').textContent='';document.getElementById('bk-go').disabled=false;document.getElementById('bk-pass').focus();}
+function closeBackup(){document.getElementById('backup-scrim').classList.remove('show');['bk-pass','bk-again'].forEach(i=>document.getElementById(i).value='');}
+function submitBackup(){
+  const a=document.getElementById('bk-pass').value,b=document.getElementById('bk-again').value,err=document.getElementById('bk-err');
+  if(a.length<8){err.textContent='at least 8 characters';return;}
+  if(a!==b){err.textContent='the two passphrases differ';return;}
+  if(!send({type:'backup.export',passphrase:a})){err.textContent='daemon not connected';return;}
+  document.getElementById('bk-go').disabled=true;err.textContent='sealing (takes a second)…';
+}
+function downloadBackup(m){
+  closeBackup();
+  const blob=new Blob([m.text],{type:'application/octet-stream'}),a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);a.download=m.filename||'nodesignal-identity.nsbackup';document.body.appendChild(a);a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
+  toast('backup downloaded: keep it somewhere safe, off this machine');
+}
+function renderUpdatePill(){
+  const u=state.daemon&&state.daemon.update,e=document.getElementById('upd-pill');if(!e)return;
+  const show=!!(u&&u.state==='available');
+  e.classList.toggle('show',show);e.textContent=show?('update '+(u.version||'')):'';
+}
+function drawerCards14(){
+  const dm=state.daemon||{},kv=(k,v,cls)=>`<div class="kv"><span class="k">${esc(k)}</span><span class="v ${cls||''}">${esc(v)}</span></div>`;
+  const pill=(cls,txt)=>`<span class="pill ${cls}"><span class="d"></span>${esc(txt)}</span>`;
+  const tor=dm.tor||{},contacts=state.peers.filter(p=>p.kind==='contact');
+  const reach=`<section class="card">
+      <div class="card-h"><h4>Reachability</h4>${pill(dm.onion?'ok':dm.reach?'':'wait',dm.onion?'onion address':dm.reach?'public address':'outgoing only')}</div>
+      ${dm.onion?kv('onion',dm.onion):''}
+      ${kv('Tor',tor.state==='up'?'own onion service, no port forwarding':tor.state==='off'?'off':tor.state==='external'?'onion from torrc':tor.error?'not available':'starting')}
+      ${!dm.onion&&dm.reach?kv('public address',dm.reach.host+':'+dm.reach.port):''}
+      ${tor.error&&!dm.onion?`<div class="note">${esc(tor.error)}</div>`:''}
+      ${!dm.onion?`<div class="note">With Tor installed, NodeSignal makes its own onion address through Tor's control port: operators can reach you behind any router, with no port forwarding. Linux, on the node: <code>sudo apt install tor</code> then <code>sudo systemctl restart nodesignal</code>.</div>`:''}
+      ${kv('same onion as your node',dm.sameOnion?'yes: proves you run it':'no','')}
+      ${dm.sameOnion?'':`<div class="note">Optional: serve your node and NodeSignal on one onion, so others can see you run that node. <code>nodesignal same-onion</code> shows how.</div>`}
+      <div class="drawer-foot"><button class="btn primary" onclick="openShare()">Share contact link</button></div></section>`;
+  const served=contacts.filter(p=>p.servesMailbox&&!(dm.myMailboxes||[]).some(x=>x.fp===p.peerFp));
+  const mbox=`<section class="card">
+      <div class="card-h"><h4>Mailbox</h4>${pill(dm.mailbox?'ok':'',dm.mailbox?'holding mail':'off')}</div>
+      <div class="switch-row"><span>Hold sealed mail for contacts who cannot be reached</span>
+        <button class="btn" onclick="setSetting('mailbox',${!dm.mailbox})">${dm.mailbox?'Stop':'Offer'}</button></div>
+      ${dm.mailbox&&dm.mailboxStats?kv('holding',`${dm.mailboxStats.items} item(s) for ${dm.mailboxStats.recipients} contact(s)`):''}
+      <div class="note">A mailbox cannot read what it holds, but it does see who leaves mail for whom, when and how much. Mail expires after 7 days.</div>
+      ${(dm.myMailboxes||[]).map(x=>kv('your mailbox',(x.nick||x.host)+(x.ok?'':x.error?' · '+x.error:' · registering'),x.ok?'ok':'')+`<div class="drawer-foot"><button class="btn" data-fp="${esc(x.fp)}" onclick="send({type:'mailbox.stop',fp:this.dataset.fp})">Stop using</button></div>`).join('')}
+      ${!(dm.myMailboxes||[]).length?`<div class="note">${dm.onion?'You have an onion address, so others can reach you directly; a mailbox helps when your daemon is off.':'Without an onion or a forwarded port, others cannot reach you. A contact who offers a mailbox can hold their messages until you collect them.'}</div>`:''}
+      ${served.map(p=>`<div class="drawer-foot"><button class="btn" data-fp="${esc(p.peerFp)}" onclick="send({type:'mailbox.use',fp:this.dataset.fp})">Use ${esc(p.nick||p.host)} as my mailbox</button></div>`).join('')}
+    </section>`;
+  const intro=`<section class="card">
+      <div class="card-h"><h4>Introductions</h4>${pill(dm.discoverable?'ok':'',dm.discoverable?'on':'off')}</div>
+      <div class="switch-row"><span>Swap contacts with contacts who also turned this on</span>
+        <button class="btn" onclick="setSetting('discoverable',${!dm.discoverable})">${dm.discoverable?'Turn off':'Turn on'}</button></div>
+      <div class="note">Only established contacts who opted in are shared, with their address and key. Turning it on lets your contacts introduce you to theirs.</div></section>`;
+  const bk=`<section class="card"><div class="card-h"><h4>Identity backup</h4></div>
+      <div class="note">Your keys and contacts in one passphrase-sealed file. Without it, a lost disk means a new identity and every contact sees a key change.</div>
+      <div class="drawer-foot"><button class="btn primary" onclick="openBackup()">Back up</button></div></section>`;
+  const u=dm.update||{};
+  const upd=`<section class="card">
+      <div class="card-h"><h4>Updates</h4>${pill(u.state==='available'?'ok':u.state==='error'?'':'',u.state==='available'?'new version':u.state==='current'?'up to date':u.state==='off'?'checks off':u.state==='installing'?'installing':u.state||'not checked')}</div>
+      ${kv('this version',(dm.ua||'').replace(/^\/|\/$/g,'')+(u.current?' ('+u.current+')':''))}
+      ${u.version&&u.state==='available'?kv('available',u.version+(u.verified?' · signature verified':' · not signed')):''}
+      ${u.checkedAt?kv('last checked',when(u.checkedAt)):''}
+      ${u.error?`<div class="errbox">${esc(u.error)}</div>`:''}
+      ${u.notes&&u.state==='available'?`<div class="notes">${esc(u.notes)}</div>`:''}
+      ${u.state==='available'&&!u.verified?`<div class="note">This release is not signed with a release key built into NodeSignal, so it can only be installed by hand: github.com/Connor-03/NodeSignal/releases</div>`:''}
+      ${u.state==='available'&&u.verified&&!u.installable?`<div class="note">${esc(u.why||'Install it by hand from github.com/Connor-03/NodeSignal/releases.')}</div>`:''}
+      <div class="drawer-foot">${u.state==='available'&&u.verified&&u.installable?`<button class="btn primary" onclick="installUpdate()">Install ${esc(u.version)}</button>`:''}
+        <button class="btn" onclick="send({type:'update.check'})&&toast('checking GitHub Releases…')">Check now</button></div>
+      <div class="note">Once a day NodeSignal asks GitHub Releases for the newest version${dm.onion?', through Tor':''}. It installs nothing on its own, and only a release signed with the key built into NodeSignal can be installed from here. Turn the check off with <code>nodesignal updates off</code>.</div></section>`;
+  return reach+mbox+intro+bk+upd;
+}
+function installUpdate(){
+  const u=state.daemon&&state.daemon.update;if(!u)return;
+  if(!confirm(`Install NodeSignal ${u.version}? The daemon checks the signature and checksum, installs it and restarts; this page reconnects by itself.`))return;
+  send({type:'update.install'})&&toast('downloading and checking the update…');
+}
 function toast(m){
   const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');
   clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2600);
 }
-function renderAll(){ renderChrome(); renderRadar(); renderConvList(); renderThread(); updateUnread(); if(document.getElementById('drawer').classList.contains('open'))renderDrawer(); }
+function renderAll(){ renderChrome(); renderRadar(); renderConvList(); renderThread(); updateUnread(); renderUpdatePill();
+  renderFeed(); renderFeedSide(); renderRooms(); if(state.tab==='rooms')renderRoomThread();
+  if(document.getElementById('drawer').classList.contains('open'))renderDrawer(); }
 
 document.getElementById('scrim').addEventListener('click',e=>{if(e.target.id==='scrim')closeAdd();});
 document.getElementById('vault-scrim').addEventListener('click',e=>{if(e.target.id==='vault-scrim')closeVault();});
-window.addEventListener('keydown',e=>{if(e.key==='Escape'){closeAdd();closeVault();toggleDrawer(false);}});
+for(const [id,fn] of [['share-scrim',()=>closeShare()],['room-scrim',()=>closeRoomDialog()],['backup-scrim',()=>closeBackup()]])
+  document.getElementById(id).addEventListener('click',e=>{if(e.target.id===id)fn();});
+window.addEventListener('keydown',e=>{if(e.key==='Escape'){closeAdd();closeVault();closeShare();closeRoomDialog();closeBackup();toggleDrawer(false);}});
 
 renderChrome();
 renderAll();

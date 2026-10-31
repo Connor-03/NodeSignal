@@ -21,7 +21,7 @@ const t = async (name, fn) => {
 
 /* ---- daemons ---- */
 function daemon(name, { host, peer, web, rpc = false, data = name, extra = [] }) {
-  const args = [path.join(ROOT, 'nodesignald.js'), '--nick', name, '--bind', host, '--peer-port', String(peer), '--web-port', String(web),
+  const args = [path.join(ROOT, 'nodesignald.js'), '--onion', 'off', '--no-update-check', '--nick', name, '--bind', host, '--peer-port', String(peer), '--web-port', String(web),
     '--data', path.join(TMP, data), '--retry-scale', '0.01', '--checkin-ms', '0', '--rl-burst', '1000', ...extra];
   if (rpc) args.push('--rpc-url', 'http://127.0.0.1:18342', '--rpc-user', 'u', '--rpc-pass', 'p'); else args.push('--no-rpc');
   const c = spawn(process.execPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });

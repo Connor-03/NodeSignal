@@ -22,7 +22,7 @@ const skip = (name, why) => { skipped++; console.log(`  skip ${name}: ${why}`); 
 const HAS_WS = typeof WebSocket !== 'undefined';
 
 function start(data, extra = []) {
-  const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--nick', 'hard', '--no-rpc', '--bind', '127.0.0.1',
+  const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--onion', 'off', '--no-update-check', '--nick', 'hard', '--no-rpc', '--bind', '127.0.0.1',
     '--web-port', String(WEB), '--peer-port', String(PEER), '--data', data, '--checkin-ms', '0', ...extra],
   { stdio: ['ignore', 'pipe', 'pipe'] });
   c.log = ''; c.stdout.on('data', (d) => (c.log += d)); c.stderr.on('data', (d) => (c.log += d));
@@ -244,7 +244,7 @@ const stateFile = (d) => JSON.parse(fs.readFileSync(path.join(d, 'state.json'), 
       fs.writeFileSync(pre, "const os = require('os'); const real = os.networkInterfaces;\n" +
         "os.networkInterfaces = () => Object.assign({}, real(), { tailscale0: [{ address: '127.0.0.2', family: 'IPv4', internal: false }] });\n");
       const d = path.join(TMP, 'tailnet');
-      const c = spawn(process.execPath, ['-r', pre, path.join(ROOT, 'nodesignald.js'), '--nick', 'ts', '--no-rpc',
+      const c = spawn(process.execPath, ['-r', pre, path.join(ROOT, 'nodesignald.js'), '--onion', 'off', '--no-update-check', '--nick', 'ts', '--no-rpc',
         '--web-port', String(WEB), '--peer-port', String(PEER), '--data', d, '--checkin-ms', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
       c.log = ''; c.stdout.on('data', (x) => (c.log += x)); c.stderr.on('data', (x) => (c.log += x));
       try {
@@ -274,7 +274,7 @@ const stateFile = (d) => JSON.parse(fs.readFileSync(path.join(d, 'state.json'), 
     });
     await new Promise((r) => slow.listen(21732, '127.0.0.1', r));
     const d = path.join(TMP, 'slowrpc');
-    const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--nick', 'slow', '--bind', '127.0.0.1',
+    const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--onion', 'off', '--no-update-check', '--nick', 'slow', '--bind', '127.0.0.1',
       '--rpc-url', 'http://127.0.0.1:21732', '--rpc-user', 'u', '--rpc-pass', 'p',
       '--web-port', String(WEB), '--peer-port', String(PEER), '--data', d, '--checkin-ms', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
     c.log = ''; c.stdout.on('data', (x) => (c.log += x)); c.stderr.on('data', (x) => (c.log += x));
@@ -338,7 +338,7 @@ const stateFile = (d) => JSON.parse(fs.readFileSync(path.join(d, 'state.json'), 
       });
       await new Promise((r) => mock.listen(21731, '127.0.0.1', r));
       const d = path.join(TMP, 'heights');
-      const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--nick', 'h', '--bind', '127.0.0.1',
+      const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--onion', 'off', '--no-update-check', '--nick', 'h', '--bind', '127.0.0.1',
         '--rpc-url', 'http://127.0.0.1:21731', '--rpc-user', 'u', '--rpc-pass', 'p',
         '--web-port', String(WEB), '--peer-port', String(PEER), '--data', d, '--checkin-ms', '0'], { stdio: ['ignore', 'pipe', 'pipe'] });
       c.log = ''; c.stdout.on('data', (x) => (c.log += x)); c.stderr.on('data', (x) => (c.log += x));

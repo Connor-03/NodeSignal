@@ -44,6 +44,8 @@ running=0
 if [ -z "$R" ] && [ -d /run/systemd/system ]; then
   systemctl daemon-reload || true
   systemctl enable nodesignal.service >/dev/null 2>&1 || true
+  # in-app updates: the root side that installs what the console asked for
+  systemctl enable --now nodesignal-update.path >/dev/null 2>&1 || true
   if systemctl restart nodesignal.service; then
     running=1
   else
