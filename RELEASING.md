@@ -44,7 +44,7 @@ on the publish job narrows that.
 
 ## 1. Check the version agrees everywhere
 
-The workflow refuses to publish unless these match (for 1.3.0):
+The workflow refuses to publish unless these match (for 1.4.0):
 
 - `package.json` `"version": "1.4.0"`
 - `nodesignald.js` `const UA = '/NodeSignal:1.4/'` (major.minor of the release)

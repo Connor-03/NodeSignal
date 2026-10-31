@@ -3,7 +3,7 @@
 Every release lists what changed for an operator, then what changed under the
 hood. Security changes are tracked in more depth in `SECURITY-CRITIQUE.md`.
 
-## 1.4.0 (not yet released)
+## 1.4.0 (2026-10-31)
 
 NodeSignal 1.4 turns operator-to-operator chat into a small social network
 that the operators' own daemons carry: posts, topic rooms, introductions, and
