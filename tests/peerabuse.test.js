@@ -380,9 +380,15 @@ async function countEvents(u, pred, quietMs = 1500) {
   });
 
   /* ---- rate limiter (review A, 10) ---- */
+  // the limiter runs from "const MAX_CONNS" to the next section comment
+  const limiterCode = (src) => {
+    const from = src.indexOf('const MAX_CONNS'), to = src.indexOf('\n/* ---- ', src.indexOf('function rateOk'));
+    assert(from >= 0 && to > from, 'the limiter moved: update limiterCode()');
+    return src.slice(from, to);
+  };
   await t('rate limiter: a new source block costs no sort, and the least recently used block is the one dropped', () => {
     const src = fs.readFileSync(path.join(H.ROOT, 'nodesignald.js'), 'utf8');
-    const code = src.slice(src.indexOf('const MAX_CONNS'), src.indexOf('/* ---- privacy:'));
+    const code = limiterCode(src);
     assert(code.includes('function rateOk'), 'the limiter moved: update this test');
     const L = vm.runInNewContext(code + '\n;({ rateOk, rlBuckets, RL_MAX_BLOCKS })', { arg: (n, d) => d, Date, Math, Map, Number });
     const ip = (i) => `10.${(i >> 16) & 255}.${(i >> 8) & 255}.${i & 255}`;
@@ -399,7 +405,7 @@ async function countEvents(u, pred, quietMs = 1500) {
   });
   await t('rate limiter: one IPv6 /64 is one block however Node writes the address (final review)', () => {
     const src = fs.readFileSync(path.join(H.ROOT, 'nodesignald.js'), 'utf8');
-    const code = src.slice(src.indexOf('const MAX_CONNS'), src.indexOf('/* ---- privacy:'));
+    const code = limiterCode(src);
     const L = vm.runInNewContext(code + '\n;({ sourceBlock })', { arg: (n, d) => d, Date, Math, Map, Number });
     const net = require('net');
     // the compressed form Node gives a socket, for 5000 addresses in 2001:db8:0:0::/64
