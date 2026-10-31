@@ -320,8 +320,8 @@ status table. Keep it current whenever security changes.
 - Noise-XX handshake replaced the shared PIN: mutual authentication, forward
   secrecy, persistent X25519 identity per daemon. Since v1.3 it is the
   standard Noise_XX_25519_ChaChaPoly_SHA256, checked against the cacophony and
-  snow vectors (`tests/noise.test.js`). v1.2 peers are still answered; remove
-  `noise.legacy` and the v2 branches in the release after v1.3.
+  snow vectors (`tests/noise.test.js`). v1.2 peers are still answered in
+  1.4.0; remove `noise.legacy` and the v2 branches in 1.5 (item 6b).
 - TOFU key pinning. A changed key is REJECTED with a red banner and held as
   `pendingFp` until the operator accepts it (echoing the exact fingerprint)
   or keeps the old one.
@@ -339,8 +339,9 @@ status table. Keep it current whenever security changes.
 - Rate limiting per source block (/32 IPv4, /64 IPv6), which defeats IPv6
   address spraying. Connection cap.
 - Auto-binds the peer port to the Tailscale interface when present (plus
-  127.0.0.1, where a Tor hidden service forwards); the web UI is always
-  127.0.0.1.
+  127.0.0.1, where a Tor hidden service forwards); otherwise it listens on
+  every interface (`"bind": "127.0.0.1"` keeps it to Tor). The web UI is
+  always 127.0.0.1.
 - Tor: SOCKS5 for outbound `.onion` (DNS cannot resolve them), hidden service
   for inbound. Both halves are required.
 - Zero dependencies.
@@ -370,9 +371,15 @@ status table. Keep it current whenever security changes.
   crypto and parsers) found a stored XSS, root escalations through links in
   folders other accounts own, peers choosing their own contact key or
   pinning keys for others, prototype pollution, a Tor control impostor and
-  floods; all fixed with tests. `SECURITY-CRITIQUE.md` section 10 lists
-  every finding and what is still open. This is not the outside review
-  below: the reviewers were agents run by the project.
+  floods; all fixed with tests. A fifth agent then followed
+  `docs/AGENT-SETUP.md` as an operator's agent would and found eight smaller
+  problems, also fixed. `SECURITY-CRITIQUE.md` section 10 lists all 33 and
+  what is still open. This is not the outside review below: the reviewers
+  were agents run by the project.
+- Never create keys with `crypto.generateKeyPairSync` (decided Oct 2026):
+  on Node 18, exporting a key it made can deadlock the process (found when
+  CI hung). Import random bytes as PKCS8 instead (`freshX25519` in
+  `noise.js`); `tests/noise.test.js` checks every runtime module.
 
 **Still open, in honest terms**
 - Without a passphrase, messages are stored in the clear in `state.json`;
@@ -492,7 +499,6 @@ Still open:
   key, and "add" pins it; one key can have a `tor:` conversation and one
   under an address until the operator adds it by link; records written by
   earlier 1.4 builds are not migrated (1.4 was unreleased).
-  contacts.
 
 ### Open questions for the maintainer (from the v1.3 installer work)
 
@@ -519,6 +525,12 @@ Still open:
   Windows selftest.
 
 ### Website handoff (do this when NodeSignal is finished, not before)
+
+Done for 1.4.0 (Oct 2026): `docs/website/HANDOFF.md` starts with what
+changed since the 1.3 handoff, and `docs/website/screenshots/` holds the
+11-image set from `shoot.js` (about 299 KB). The fixture shows a made-up
+newer release only in `?mode=update`, so no other image suggests a release
+that does not exist. Update both for every release the site should show.
 
 The maintainer's site **nodesignal.connoraherne.com** is built by a separate
 Claude instance on his home server (Caddy, static files from
