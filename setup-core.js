@@ -499,7 +499,7 @@ function readRpcRecord(cfgPath) {
 }
 function writeRpcRecord(cfgPath, confPath) {
   fs.mkdirSync(path.dirname(cfgPath), { recursive: true });
-  fs.writeFileSync(rpcRecordPath(cfgPath), confPath + '\n', { mode: 0o644 });
+  replaceFile(rpcRecordPath(cfgPath), confPath + '\n', 0o644);
 }
 /* installRpcAccess: the whole job, shared by Linux setup, "nodesignal
    rpc-access add" and the Windows installer. Ensures NodeSignal's login in
@@ -547,12 +547,27 @@ function lockDownFile(file) {
 function writeConfig(file, obj, opts = {}) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   let owner = opts.owner || null;
-  try { const st = fs.statSync(file); owner = owner || { uid: st.uid, gid: st.gid }; } catch { }
-  const tmp = file + '.tmp-' + process.pid;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', { mode: 0o600 });
+  try { const st = fs.lstatSync(file); if (!st.isSymbolicLink()) owner = owner || { uid: st.uid, gid: st.gid }; } catch { }
+  replaceFile(file, JSON.stringify(obj, null, 2) + '\n', 0o600, owner);
+  return IS_WIN ? lockDownFile(file) : true;
+}
+/* replaceFile: write a new file under a fresh random name opened with O_EXCL
+   (so never an existing file or a link someone left in the folder), set its
+   owner and mode on the open descriptor, then rename it over `file`. Root
+   uses this for files beside the config, which a from-source install keeps
+   in a folder its user owns. */
+function replaceFile(file, data, mode, owner = null) {
+  const tmp = `${file}.tmp-${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
+  const fd = fs.openSync(tmp, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW || 0), mode);
+  try {
+    fs.writeSync(fd, data);
+    if (!IS_WIN) {
+      if (owner && typeof process.getuid === 'function' && process.getuid() === 0) { try { fs.fchownSync(fd, owner.uid, owner.gid); } catch { } }
+      fs.fchmodSync(fd, mode);
+    }
+  } catch (e) { fs.closeSync(fd); try { fs.unlinkSync(tmp); } catch { } throw e; }
+  fs.closeSync(fd);
   fs.renameSync(tmp, file);
-  chownIfRoot(file, owner);
-  return lockDownFile(file);
 }
 function readConfig(file) {
   return JSON.parse(fs.readFileSync(file, 'utf8'));

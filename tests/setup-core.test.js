@@ -92,6 +92,23 @@ t('writeConfig is atomic JSON readable by its owner only', () => {
   if (process.platform !== 'win32') assert.strictEqual(fs.statSync(f).mode & 0o777, 0o600);
 });
 
+t('writeConfig never writes through a link left beside the config (the old temp name was predictable)', () => {
+  if (process.platform === 'win32') return;
+  const d = path.join(tmp, 'cfg-links'); fs.mkdirSync(d, { recursive: true });
+  const f = path.join(d, 'config.json'), victim = path.join(tmp, 'victim.txt');
+  fs.writeFileSync(victim, 'untouched\n');
+  // what the old code wrote to, and a link in place of the config itself
+  fs.symlinkSync(victim, f + '.tmp-' + process.pid);
+  fs.symlinkSync(victim, f);
+  core.writeConfig(f, { nick: 'x', 'rpc-pass': 'secret' });
+  assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'untouched\n', 'the link target is untouched');
+  assert(!fs.lstatSync(f).isSymbolicLink() && JSON.parse(fs.readFileSync(f, 'utf8')).nick === 'x', 'the config is a new plain file');
+  assert.strictEqual(fs.statSync(f).mode & 0o777, 0o600);
+  assert.deepStrictEqual(fs.readdirSync(d).filter((x) => /\.tmp-/.test(x) && !fs.lstatSync(path.join(d, x)).isSymbolicLink()), [], 'no temp file left');
+  core.writeRpcRecord(f, '/home/alice/.bitcoin/bitcoin.conf');
+  assert.strictEqual(fs.readFileSync(path.join(d, 'bitcoin-conf'), 'utf8'), '/home/alice/.bitcoin/bitcoin.conf\n');
+});
+
 // a fake Linux machine: one user whose node runs on testnet or mainnet
 function fakeRoot(name, { conf = '', proc = true } = {}) {
   const r = path.join(tmp, name);
