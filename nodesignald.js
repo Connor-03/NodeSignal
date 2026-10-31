@@ -168,7 +168,19 @@ function refuseState(why) {
   console.error('  Restore it from a backup, or move it aside to start with a new identity.\n');
   process.exit(1);
 }
-if (!state.contacts || typeof state.contacts !== 'object') state.contacts = {};
+/* Maps keyed by something a peer can choose (an address, a fingerprint) have
+   no prototype: on a plain object, contacts["__proto__"] IS Object.prototype,
+   and a field written to that "contact" would show up on every other one
+   (a pinned key, for one). Names like these are refused as keys anyway. */
+const RESERVED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+function dict(from, keep = () => true) {
+  const d = Object.create(null);
+  if (from && typeof from === 'object' && !Array.isArray(from)) {
+    for (const [k, v] of Object.entries(from)) if (!RESERVED_KEYS.has(k) && v && typeof v === 'object' && !Array.isArray(v) && keep(k, v)) d[k] = v;
+  }
+  return d;
+}
+state.contacts = dict(state.contacts, (k, c) => { c.host = k; return true; });
 try { fs.chmodSync(STATE_FILE, 0o600); } catch { }
 // v1.3 retired the shared-PIN scheme: drop stored PINs.
 for (const c of Object.values(state.contacts)) { delete c.pin; if (!Array.isArray(c.msgs)) c.msgs = []; }
@@ -210,6 +222,13 @@ for (const c of Object.values(state.contacts || {})) {
 // cannot sign. Kept beside it in state.json, generated once.
 if (!state.signKey) { state.signKey = social.newSigningKey(); saveNow(); }
 const mySign = social.loadSigningKey(state.signKey);
+// Our signing key, signed for our Noise identity: it goes in every hello.
+const MY_SKP = social.bindKey(mySign, myIdentity.fp);
+// A contact's signing key counts only with its holder's proof for that
+// contact's Noise key (see social.bindKey). Records without one are dropped.
+for (const c of Object.values(state.contacts)) {
+  if (c.signPub && !(c.peerFp && social.checkBinding(c.signPub, c.skp, c.peerFp))) { delete c.signPub; delete c.skp; }
+}
 // Settings the console can change at run time. The config file gives the
 // defaults; these win once set.
 if (!state.settings || typeof state.settings !== 'object') state.settings = {};
@@ -217,27 +236,32 @@ const setting = (k, dflt) => (k in state.settings ? state.settings[k] : dflt);
 if (!Array.isArray(state.follows)) state.follows = [];         // signing keys (base64) we follow
 if (!Array.isArray(state.unfollows)) state.unfollows = [];     // contacts we chose not to follow
 if (!Array.isArray(state.myMailboxes)) state.myMailboxes = []; // [{ host, port, fp }] holding mail for us
-if (!state.introductions || typeof state.introductions !== 'object') state.introductions = {};
+state.introductions = dict(state.introductions, (k, it) => social.FP_RE.test(k) && it.fp === k);
 
 /* Posts and rooms live in social.json, mail held for others in
-   mailbox.json: both can grow to megabytes, and state.json is rewritten on
-   every message. Same atomic write, same 0600. */
-function jsonFile(name) {
+   mailbox.json: both can grow to megabytes (mailbox.json to some 43 MB of
+   base64), and state.json is rewritten on every message. Same atomic write,
+   same 0600. Written at most once per interval, however often something
+   changes: a debounce would rewrite the whole file after every quiet second,
+   which a peer can arrange. Shutdown flushes. */
+function jsonFile(name, everyMs) {
   const file = path.join(CFG.dataDir, name);
-  let timer = null;
+  let timer = null, pending = null;
+  const writeNow = (obj) => { fs.writeFileSync(file + '.tmp', JSON.stringify(obj()), { mode: 0o600 }); fs.renameSync(file + '.tmp', file); };
   return {
     read() { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } },
     write(obj) {
-      clearTimeout(timer);
+      pending = obj;
+      if (timer) return;
       timer = setTimeout(() => {
-        try { fs.writeFileSync(file + '.tmp', JSON.stringify(obj()), { mode: 0o600 }); fs.renameSync(file + '.tmp', file); }
-        catch (e) { log('!! could not save ' + name + ': ' + e.message); }
-      }, 1000);
+        timer = null; const o = pending; pending = null;
+        try { writeNow(o); } catch (e) { log('!! could not save ' + name + ': ' + e.message); }
+      }, everyMs);
     },
-    flush(obj) { clearTimeout(timer); try { fs.writeFileSync(file + '.tmp', JSON.stringify(obj()), { mode: 0o600 }); fs.renameSync(file + '.tmp', file); } catch { } },
+    flush(obj) { clearTimeout(timer); timer = null; pending = null; try { writeNow(obj); } catch { } },
   };
 }
-const SOCIAL_FILE = jsonFile('social.json'), MAILBOX_FILE = jsonFile('mailbox.json');
+const SOCIAL_FILE = jsonFile('social.json', 5000), MAILBOX_FILE = jsonFile('mailbox.json', 30000);
 const feedStore = social.createStore();
 feedStore.load(SOCIAL_FILE.read());
 const saveSocial = () => SOCIAL_FILE.write(() => feedStore.toJSON());
@@ -615,11 +639,14 @@ function identifyP2P(host, port) {
           : (e.message || e.code))));
   });
 }
+// The "same onion" proof is not set here: answering on :8333 says nothing
+// about who holds the NodeSignal key. attemptDial() sets it, once we have
+// dialled the onion ourselves and the pinned key answered.
 async function identifyContact(host, port) {
+  if (isPlaceholder(host)) throw new Error('it reached you through Tor or a mailbox: there is no address of its own to identify');
   const info = await identifyP2P(host, port);
   const c = contact(host, true);
   c.peerInfo = info; c.lastSeen = c.lastSeen || 0; delete c._idRetry; save();
-  if (validOnion(host) && c.peerFp && c.established) noteSameOnion(c, host);
   broadcastUi({ type: 'contact', contact: uiContact(c) });
   log(`identified ${host}: ${info.ua} · height ${info.height}`);
   return info;
@@ -635,7 +662,7 @@ function scheduleIdentify(host, delay) {
   host = normIp(host);
   if (idTimers.has(host)) return;
   const c = state.contacts[host];
-  if (!c || (c.peerInfo && c.peerInfo.source !== 'claimed')) return;
+  if (!c || !identifiable(c) || (c.peerInfo && c.peerInfo.source !== 'claimed')) return;
   if ((c._idRetry || 0) >= MAX_ID_TRIES) return;
   const wait = delay ?? Math.min(60000, 5000 * Math.pow(2, c._idRetry || 0));
   idTimers.set(host, setTimeout(async () => {
@@ -767,12 +794,13 @@ function rateOk(host) {
   // source gets eight times the burst and refill. MAX_CONNS still caps it.
   const tor = host === '127.0.0.1' || host === '::1';
   const burst = tor ? RL_BURST * 8 : RL_BURST, every = tor ? RL_REFILL_MS / 8 : RL_REFILL_MS;
+  // The Map's insertion order is the eviction order: a bucket in use moves to
+  // the end, so the first one is the least recently used. Sorting all 4096
+  // on every new source block let a spray of addresses burn CPU instead.
   let b = rlBuckets.get(key);
-  if (!b) {
-    if (rlBuckets.size >= RL_MAX_BLOCKS) {     // evict oldest to bound memory
-      const oldest = [...rlBuckets.entries()].sort((a, c) => a[1].ts - c[1].ts)[0];
-      if (oldest) rlBuckets.delete(oldest[0]);
-    }
+  if (b) { rlBuckets.delete(key); rlBuckets.set(key, b); }
+  else {
+    if (rlBuckets.size >= RL_MAX_BLOCKS) rlBuckets.delete(rlBuckets.keys().next().value);
     b = { tokens: burst, ts: now }; rlBuckets.set(key, b);
   }
   const refill = Math.floor((now - b.ts) / every);
@@ -822,9 +850,53 @@ const PEER_BIND = explicitBind ? CFG.bind : (CFG.portMapping ? '0.0.0.0' : (TS_A
 /* ------------------------------------------------------------ contacts */
 function contact(host, create) {
   host = normIp(host);
+  if (RESERVED_KEYS.has(host)) { if (create) throw new Error('not a valid address'); return undefined; }
   if (!state.contacts[host] && create)
     state.contacts[host] = { host, port: CFG.peerPort, nick: '', msgs: [], unread: 0, lastSeen: 0, peerInfo: null };
   return state.contacts[host];
+}
+/* Placeholder keys for peers whose address says nothing: "tor:<fp>" for one
+   that reached us through Tor (from 127.0.0.1), "mbox:<fp>" for one we only
+   know from sealed mail, "peer:<fp>" for one someone else told us about (a
+   room member entry, a contact's mailbox). Nobody can claim them: they are
+   the peer's own key. */
+function isPlaceholder(h) { return /^(tor|mbox|peer):/.test(String(h || '')); }
+// A contact the operator added or wrote to: not one that only called us
+// (inbound), and not one NodeSignal made itself for a room member, a mailbox
+// or a pinned introduction (auto).
+function chosen(c) { return !!c && !c.inbound && !c.auto; }
+// ...and a real two-way exchange happened. Introductions, auto-follow, other
+// people's posts, mailbox registration and check-ins are for these only: one
+// unsolicited message makes a stranger "established", nothing more.
+function trusted(c) { return chosen(c) && !!c.established; }
+// Its node is worth a :8333 handshake: an address it really connected from,
+// or one the operator gave. Never a host a peer merely claimed.
+function identifiable(c) { return !!c && !isPlaceholder(c.host) && !c.auto; }
+// The contact a proven key belongs to. A record at a real address (the
+// operator's) wins over a placeholder for the same key.
+function contactByKey(fp) {
+  let alt = null;
+  for (const x of Object.values(state.contacts)) {
+    if (x.peerFp !== fp) continue;
+    if (!isPlaceholder(x.host)) return x;
+    alt = alt || x;
+  }
+  return alt;
+}
+// Move a record to another key (a placeholder the operator now gives an
+// address for), with the link and queued work that go with it.
+function rekeyContact(c, host) {
+  const old = c.host;
+  if (old === host || state.contacts[host] || dialing.has(old)) return false;
+  delete state.contacts[old];
+  c.host = host; state.contacts[host] = c;
+  delete c.addr;                             // the address it now lives at is the one to call
+  const l = links.get(old);
+  if (l) { links.delete(old); if (!links.has(host)) links.set(host, l); }
+  const tasks = linkTasks.get(old);
+  if (tasks) { linkTasks.delete(old); linkTasks.set(host, tasks); }
+  broadcastUi({ type: 'contact.removed', host: old });
+  return true;
 }
 /* Strangers: anyone can make a key and complete a handshake, so a contact
    created by an inbound peer (not one the operator added or wrote to) is
@@ -834,7 +906,11 @@ function contact(host, create) {
 const MAX_STRANGERS = 256;                   // inbound-only contacts kept at once
 const STRANGER_MSGS = 50;                    // messages kept per inbound-only contact
 const LINK_MAX_FRAMES = 1000, LINK_MAX_MSGS = 200;   // per connection
+const LINK_MAX_POSTS = 200;                  // posts looked at per connection (each is a signature check)
 let strangerFullLogged = 0;
+// A new record for a peer that called us. Never an existing one: whatever is
+// filed under that key (a contact the operator wrote to, a message waiting)
+// belongs to someone else, and the caller has already matched by key.
 function newStranger(addr) {
   if (Object.values(state.contacts).filter((x) => x.inbound).length >= MAX_STRANGERS) {
     if (Date.now() - strangerFullLogged > 60000) {
@@ -843,6 +919,7 @@ function newStranger(addr) {
     }
     return null;
   }
+  if (contact(addr, false)) { log(`!! refused a peer as ${addr}: that name already belongs to another contact`); return null; }
   const c = contact(addr, true); c.inbound = true; return c;
 }
 function pushMsg(c, m) {
@@ -866,7 +943,15 @@ function cleanNode(n) {
     pruned: n.pruned === true, simulated: n.simulated === true, source: 'claimed',
   };
 }
-function applyHello(c, m) {
+// What a hello can change that is worth writing state.json for. Not the
+// claimed node's peer count or height (they move with every block), and
+// lastSeen only now and then (see onPeerMessage).
+function helloSnapshot(c) {
+  const pi = c.peerInfo ? Object.assign({}, c.peerInfo, { connections: null, height: null }) : null;
+  return JSON.stringify([c.nick, c.port, pi, c.peerProto, c.caps, c.signPub, c.skp, c.onion, c.servesMailbox, c.mailboxes, c.discoverable, c.peerPub]);
+}
+// peerFp: the key this hello arrived under (proven by the handshake).
+function applyHello(c, m, peerFp) {
   const nick = cleanStr(m.nick, 60);
   if (nick && !c.nick) c.nick = nick;
   const pp = Number(m.peerPort);
@@ -880,10 +965,14 @@ function applyHello(c, m) {
   // 1.4 fields. The hello arrives over the authenticated link, so what it
   // says about the peer's own keys and addresses is the peer's word for it.
   c.caps = Array.isArray(m.caps) ? m.caps.filter((x) => typeof x === 'string' && /^[a-z0-9]{1,16}$/.test(x)).slice(0, 16) : [];
-  if (social.isPub(m.sk)) {
+  // A signing key counts only with its holder's signature for this link's
+  // Noise key (skp): anyone can copy someone else's sk from a hello.
+  if (social.isPub(m.sk) && social.checkBinding(m.sk, m.skp, peerFp)) {
     if (c.signPub && c.signPub !== m.sk) log(`${c.nick || c.host} now signs with a different key`);
-    c.signPub = m.sk;
+    c.signPub = m.sk; c.skp = m.skp;
   }
+  // The onion it names is only a way to call it back, through Tor, where the
+  // pinned key must answer (attemptDial). Never the key it is filed under.
   if (validOnion(m.onion)) c.onion = m.onion;
   c.servesMailbox = m.mbox === true;
   c.mailboxes = cleanMailboxes(m.mbx);
@@ -894,7 +983,7 @@ function applyHello(c, m) {
 const helloPayload = () => ({ t: 'hello', proto: PROTO, nick: CFG.nick, ua: UA,
   peerPort: CFG.peerPort, node: rpc.ok ? rpc.self : (IMPERSONATED || null), fp: myIdentity.fp,
   // 1.4: what this daemon understands, its signing key, how to reach it
-  caps: CAPS, sk: mySign.pub, onion: myOnion || undefined, pub: CFG.publicHost || undefined,
+  caps: CAPS, sk: mySign.pub, skp: MY_SKP, onion: myOnion || undefined, pub: CFG.publicHost || undefined,
   mbox: mailboxServing() || undefined, mbx: state.myMailboxes.length ? state.myMailboxes.map(mbPublic) : undefined,
   disc: discoverable() || undefined });
 
@@ -946,11 +1035,10 @@ function tofuRecord(c, fp) {
 // An authenticated key we already pinned identifies the contact even if its
 // address changed (dynamic IP, NAT): the key is the identity, not the IP.
 function contactFor(addr, fp) {
-  const c = state.contacts[addr];
   // From loopback (Tor), the address belongs to nobody: only the key counts.
-  if (c && !(isLoopback(addr) && c.peerFp && c.peerFp !== fp)) return c;
-  const byKey = Object.values(state.contacts).find((x) => x.peerFp === fp);
-  if (byKey) { byKey.lastAddr = addr; return byKey; }
+  if (!isLoopback(addr)) { const c = state.contacts[addr]; if (c) return c; }
+  const byKey = contactByKey(fp);
+  if (byKey) { if (!isLoopback(addr)) byKey.lastAddr = addr; return byKey; }
   return null;
 }
 
@@ -961,9 +1049,38 @@ function contactFor(addr, fp) {
    operators needs to be reachable. */
 const links = new Map();                     // contact host -> live link
 const LINK_IDLE_MS = 2500, LINK_MAX_MS = 30000;
+/* Sizes. A Noise frame carries at most 65535 bytes, tag included, so one
+   JSON frame may be 65519 bytes; anything batched (posts, room items, mail,
+   introductions) is cut to FRAME_BUDGET bytes per frame. A peer that stops
+   reading must not make us buffer without end: past LINK_MAX_BUFFER bytes
+   waiting to be written, the link is dropped. */
+const FRAME_MAX = 65519, FRAME_BUDGET = 60000, LINK_MAX_BUFFER = 1024 * 1024;
+// items -> arrays of items, each at most `max` long and FRAME_BUDGET - reserve
+// bytes as JSON. An item too big for any frame is left out.
+function batches(items, max, reserve = 512) {
+  const budget = FRAME_BUDGET - reserve, out = [];
+  let cur = [], bytes = 0;
+  for (const it of items) {
+    const n = Buffer.byteLength(JSON.stringify(it)) + 1;
+    if (n > budget) continue;
+    if (cur.length && (cur.length >= max || bytes + n > budget)) { out.push(cur); cur = []; bytes = 0; }
+    cur.push(it); bytes += n;
+  }
+  if (cur.length) out.push(cur);
+  return out;
+}
 function openLink(sock, { initiator, addr, peerFp, proto, session }) {
   const link = { sock, initiator, addr, peerFp, proto, contact: null, unacked: new Set(), closed: false, helloSent: false, peerHello: false };
-  link.send = (obj) => { if (!link.closed) sendFrame(sock, session.encrypt(JSON.stringify(obj))); };
+  link.send = (obj) => {
+    if (link.closed) return;
+    const json = JSON.stringify(obj);
+    if (Buffer.byteLength(json) > FRAME_MAX) { log(`!! not sent to ${addr}: a "${obj.t}" frame over ${FRAME_MAX} bytes`); return; }
+    sendFrame(sock, session.encrypt(json));
+    if (sock.writableLength > LINK_MAX_BUFFER) {
+      log(`!! dropped the link with ${link.contact ? link.contact.nick || link.contact.host : addr}: over ${LINK_MAX_BUFFER >> 20} MB waiting, it is not reading`);
+      link.closed = true; sock.destroy();
+    }
+  };
   link.close = () => { if (link.closed) return; link.closed = true; try { sock.end(); } catch { } setTimeout(() => sock.destroy(), 1000).unref(); };
   // The dialling side hangs up once nothing is in flight and the line is quiet.
   link.touch = () => {
@@ -994,6 +1111,27 @@ function bindLink(link, c) {
   link.contact = c;
   if (!links.has(c.host) || links.get(c.host).closed) links.set(c.host, link);
 }
+/* Requests whose answer can be large are answered one at a time per link,
+   the next only once the last answer has left our write buffer, and at most
+   one of each kind waits (one per room for room-req). A peer that asks
+   again and again and never reads gets one answer, not one per request. */
+const REQ_FRAMES = new Set(['feed-req', 'room-req', 'mb-get', 'who-req']);
+function serveReq(link, key, fn) {
+  const q = link.reqs || (link.reqs = { waiting: new Map(), busy: false });
+  if (q.waiting.has(key) || q.waiting.size >= 24) return;
+  q.waiting.set(key, fn);
+  pumpReqs(link);
+}
+function pumpReqs(link) {
+  const q = link.reqs;
+  if (!q || q.busy || link.closed || !q.waiting.size) return;
+  const [key, fn] = q.waiting.entries().next().value;
+  q.waiting.delete(key);
+  q.busy = true;
+  try { fn(); } catch { link.sock.destroy(); return; }   // as for any bad frame: this link, never the daemon
+  const next = () => { q.busy = false; pumpReqs(link); };
+  if (link.sock.writableNeedDrain) link.sock.once('drain', next); else setImmediate(next);
+}
 
 function onPeerMessage(link, m) {
   link.touch();
@@ -1006,10 +1144,14 @@ function onPeerMessage(link, m) {
       if (!tofuCheck(c, link.peerFp)) { link.sock.destroy(); return; }
       tofuRecord(c, link.peerFp);
       bindLink(link, c);
-      if (!/^(tor|mbox):/.test(c.host) && !isLoopback(c.host)) scheduleIdentify(c.host, 1000);
+      if (!isPlaceholder(c.host) && !isLoopback(c.host)) scheduleIdentify(c.host, 1000);
     }
+    // Write state.json only when the hello changed something: every check-in
+    // is a hello, and the file holds the whole history.
+    const before = helloSnapshot(c);
     if (link.peerPub) c.peerPub = link.peerPub;
-    applyHello(c, m); link.peerHello = true; save();
+    applyHello(c, m, link.peerFp); link.peerHello = true;
+    if (helloSnapshot(c) !== before || Date.now() - (seenSaved.get(c) || 0) > 10 * 60e3) { seenSaved.set(c, Date.now()); save(); }
     if (!link.helloSent) { link.send(helloPayload()); link.helloSent = true; }
     // Answer a v3 peer's call with whatever we have queued for it.
     if (!link.initiator && c.peerProto >= 3) flushPending(c, link);
@@ -1061,21 +1203,20 @@ function onPeerMessage(link, m) {
   const handler = typeof m.t === 'string' && Object.prototype.hasOwnProperty.call(SOCIAL_FRAMES, m.t) ? SOCIAL_FRAMES[m.t] : null;
   if (handler && link.contact && link.peerHello) {
     if ((link.social = (link.social || 0) + 1) > 400) { link.sock.destroy(); return; }
-    handler(link, link.contact, m);
+    if (REQ_FRAMES.has(m.t)) serveReq(link, m.t === 'room-req' ? 'room-req:' + String(m.room).slice(0, 40) : m.t, () => handler(link, link.contact, m));
+    else handler(link, link.contact, m);
   }
 }
-// The contact key for a peer that called us. Tor hands every onion peer over
-// from 127.0.0.1, so there the address says nothing: use the onion the peer
-// names in its hello, or a placeholder tied to its key.
-function strangerHost(link, hello) {
-  if (!isLoopback(link.addr)) return link.addr;
-  const free = (h) => !(state.contacts[h] && state.contacts[h].peerFp && state.contacts[h].peerFp !== link.peerFp);
-  if (validOnion(hello.onion) && free(hello.onion)) return hello.onion;
-  // or the public address it says reaches it (its public-host setting)
-  const pub = cleanStr(hello.pub, 255);
-  if (pub && /^[A-Za-z0-9.:\-[\]]+$/.test(pub) && !isLoopback(pub) && free(pub)) return pub;
-  const have = state.contacts[link.addr];
-  return have && have.peerFp && have.peerFp !== link.peerFp ? 'tor:' + link.peerFp.slice(0, 16) : link.addr;
+const seenSaved = new WeakMap();             // contact -> when a hello last saved it
+/* The contact key for a peer that called us: the address it called from.
+   Tor hands every onion peer over from 127.0.0.1, where the address says
+   nothing, so there it is "tor:<its fingerprint>". Whatever the hello names
+   (an onion, a public address) is the peer's word only: filing the peer
+   under it would let anyone take over a contact the operator wrote to, with
+   its waiting messages, or make us dial and identify a host of their
+   choosing. The onion stays a way to call back through Tor (applyHello). */
+function strangerHost(link) {
+  return isLoopback(link.addr) ? 'tor:' + link.peerFp : link.addr;
 }
 
 /* ==========================================================================
@@ -1101,30 +1242,70 @@ function myReach() {
   return null;
 }
 const mbPublic = (mb) => ({ host: mb.host, port: mb.port, fp: mb.fp });
+// A host from a peer that may become a contact key or be dialled: an IP,
+// a name or an onion; never a placeholder, loopback or a reserved name.
+const peerHostOk = (h) => typeof h === 'string' && /^[A-Za-z0-9.:\-[\]]{1,255}$/.test(h) && !RESERVED_KEYS.has(h) && !isLoopback(h) && !isPlaceholder(h);
 function cleanMailboxes(v) {
   if (!Array.isArray(v)) return [];
   const out = [];
   for (const x of v.slice(0, 2)) {
     if (!x || typeof x !== 'object') continue;
     const host = cleanStr(x.host, 255), port = Number(x.port);
-    if (!host || !/^[A-Za-z0-9.:\-[\]]+$/.test(host) || !FP_RE.test(x.fp) || !(Number.isInteger(port) && port > 0 && port < 65536)) continue;
+    if (!peerHostOk(host) || !FP_RE.test(x.fp) || !(Number.isInteger(port) && port > 0 && port < 65536)) continue;
     out.push({ host, port, fp: x.fp });
   }
   return out;
 }
-// A contact NodeSignal itself needs (a room member, a mailbox, an
-// introduction), with its key pinned up front. Hidden from the
-// conversation list until a message is exchanged.
-function ensureContact({ host, port, fp, nick, hidden = true }) {
-  const byKey = Object.values(state.contacts).find((x) => x.peerFp === fp);
-  if (byKey) return byKey;
-  if (!host || !FP_RE.test(fp)) return null;
-  const have = state.contacts[host];
-  if (have && have.peerFp && have.peerFp !== fp) return null;      // someone else answers there
+/* A contact NodeSignal itself needs (a room member, a mailbox), with its key
+   pinned up front, from what someone else said: a member entry, a mailbox
+   a contact named. That is their word, so it is filed under the key
+   ("peer:<fp>", an "auto" record) and never under the address it names: a
+   record there, or one made there later, would let the holder of that key
+   take what the operator writes to that address (over its own link, or
+   sealed to its key at its mailbox), and lock out whoever really answers
+   there. The address is kept only as a place to call it (c.addr), where
+   the pinned key must answer (attemptDial). Auto records are hidden until a
+   message is exchanged and capped like strangers.
+   operator: the operator asked (a room link, an introduction they
+   accepted): the record goes under the address they gave, their key may go
+   on a record there that has none yet, and a placeholder for the same key
+   moves there. */
+const MAX_AUTO = 256;
+let autoFullLogged = 0;
+function ensureContact({ host, port, fp, nick, hidden = true }, { operator = false } = {}) {
+  if (!FP_RE.test(fp) || fp === myIdentity.fp) return null;
+  const okPort = Number.isInteger(port) && port > 0 && port < 65536;
+  const byKey = contactByKey(fp);
+  if (byKey) {
+    if (operator && isPlaceholder(byKey.host) && peerHostOk(host) && !contact(host, false) && rekeyContact(byKey, host)) {
+      delete byKey.auto; delete byKey.addr;
+      if (validOnion(host)) byKey.onion = host;
+      if (okPort) byKey.port = port;
+      save();
+    }
+    return byKey;
+  }
+  if (!peerHostOk(host)) return null;
+  if (!operator) {
+    if (contact('peer:' + fp, false)) return null;
+    if (Object.values(state.contacts).filter((x) => x.auto).length >= MAX_AUTO) {
+      if (Date.now() - autoFullLogged > 60000) { autoFullLogged = Date.now(); log(`!! not adding ${host} for a room or mailbox: ${MAX_AUTO} such contacts are stored already`); }
+      return null;
+    }
+    const c = contact('peer:' + fp, true);
+    c.auto = true; c.hidden = true; c.peerFp = fp; c.pinnedBy = 'introduced';
+    if (validOnion(host)) c.onion = host; else c.addr = host;
+    if (okPort) c.port = port;
+    if (nick) c.nick = cleanStr(nick, 60);
+    save();
+    return c;
+  }
+  const have = contact(host, false);
+  if (have && have.peerFp) return null;                 // someone else answers there
   const c = contact(host, true);
   delete c.inbound;
-  if (!c.peerFp) { c.peerFp = fp; c.pinnedBy = 'introduced'; }
-  if (Number.isInteger(port) && port > 0 && port < 65536) c.port = port;
+  c.peerFp = fp; c.pinnedBy = 'introduced';
+  if (okPort) c.port = port;
   if (nick && !c.nick) c.nick = cleanStr(nick, 60);
   if (hidden && !c.msgs.length && !have) c.hidden = true;
   if (validOnion(host)) c.onion = host;
@@ -1175,19 +1356,23 @@ function syncWith(link, c, force) {
       link.send({ t: 'room-req', room: r.def.room, since: since ? since - 3600e3 : 0 });
     }
   }
-  if (hasCap(c, 'who1') && discoverable() && c.discoverable && c.established && (force || now - (c.whoAt || 0) > 864e5)) link.send({ t: 'who-req' });
+  if (hasCap(c, 'who1') && discoverable() && c.discoverable && trusted(c) && (force || now - (c.whoAt || 0) > 864e5)) {
+    link.whoAsked = true; link.whoTaken = 0;  // the only answer we take is to this, 100 entries at most
+    link.send({ t: 'who-req' });
+  }
   if (hasCap(c, 'mbox1') && state.myMailboxes.some((mb) => mb.fp === c.peerFp)) { link.send({ t: 'mb-reg' }); link.send({ t: 'mb-get' }); }
 }
 
 /* ---- posts ------------------------------------------------------------- */
-// Followed signing keys: the ones followed by hand, plus every established
-// contact's, unless unfollowed.
+// Followed signing keys: the ones followed by hand, plus every trusted
+// contact's (one the operator added or wrote to, with a two-way exchange),
+// unless unfollowed. A stranger who sent one message is not followed.
 function followSet() {
   const s = new Set(state.follows);
-  for (const c of Object.values(state.contacts)) if (c.established && c.signPub && !state.unfollows.includes(c.signPub)) s.add(c.signPub);
+  for (const c of Object.values(state.contacts)) if (trusted(c) && c.signPub && !state.unfollows.includes(c.signPub)) s.add(c.signPub);
   return s;
 }
-const nameForFp = (fp) => { const c = Object.values(state.contacts).find((x) => x.peerFp === fp); return c ? (c.nick || c.host) : null; };
+const nameForFp = (fp) => { const c = contactByKey(fp); return c ? (c.nick || c.host) : null; };
 function uiPost(p) {
   const author = Object.values(state.contacts).find((x) => x.signPub === p.o.a);
   return { id: p.id || social.idOf(p.o), a: p.o.a, keyId: social.keyId(Buffer.from(p.o.a, 'base64')), nick: p.o.nick, fp: p.o.fp,
@@ -1196,7 +1381,7 @@ function uiPost(p) {
     contact: author ? { host: author.host, nick: author.nick || null } : null };
 }
 function sendPosts(link, entries) {
-  for (let i = 0; i < entries.length; i += 25) link.send({ t: 'posts', items: entries.slice(i, i + 25).map((p) => ({ o: p.o, h: p.via === null ? 0 : p.hops })) });
+  for (const items of batches(entries.map((p) => ({ o: p.o, h: p.via === null ? 0 : p.hops })), 25)) link.send({ t: 'posts', items });
 }
 function createPost(text) {
   const o = social.makePost(mySign, { fp: myIdentity.fp, nick: CFG.nick, text });
@@ -1208,7 +1393,7 @@ function createPost(text) {
   broadcastUi({ type: 'post', post: uiPost(entry) });
   let n = 0;
   for (const c of Object.values(state.contacts)) {
-    if (n >= 100 || !c.established || !hasCap(c, 'social1')) continue;
+    if (n >= 100 || !trusted(c) || !hasCap(c, 'social1')) continue;
     n++; withLink(c, (l) => sendPosts(l, [entry]));
   }
   log(`posted ${r.id.slice(0, 12)}..., pushed to ${n} contact(s)`);
@@ -1228,16 +1413,23 @@ function myMember(room, left = false) {
 }
 // Send items to every other member we can address. Members with no address
 // (no onion, no public host) get them through the sync on their next link.
+// A member entry is the member's word for its key and address: ensureContact
+// never lets it take over a record that exists, and a contact we know signs
+// with another key is not that member. Dialling goes through dial(), so an
+// onion, or every host under --tor-all, is reached through Tor.
 function fanOutRoom(r, items) {
   let n = 0;
   for (const m of r.members.values()) {
     if (m.a === mySign.pub || m.left || !m.host || n >= 100) continue;
     const c = ensureContact({ host: m.host, port: m.port, fp: m.fp, nick: m.nick });
-    if (!c) continue;
+    if (!c || (c.signPub && c.signPub !== m.a)) continue;
     n++;
-    withLink(c, (l) => { for (let i = 0; i < items.length; i += 20) l.send({ t: 'room-items', room: r.def.room, items: items.slice(i, i + 20) }); });
+    withLink(c, (l) => sendRoomItems(l, r.def.room, items));
   }
   return n;
+}
+function sendRoomItems(link, room, items) {
+  for (const b of batches(items, 20)) link.send({ t: 'room-items', room, items: b });
 }
 function roomLink(room) {
   const r = feedStore.room(room), reach = myReach();
@@ -1250,8 +1442,10 @@ function parseRoomLink(s) {
   const m = /^nodesignal-room:([0-9a-f]{32})\?(.*)$/.exec(String(s || '').trim());
   if (!m) throw new Error('not a NodeSignal room link');
   const q = new URLSearchParams(m[2]);
-  const host = cleanStr(q.get('host') || '', 255), port = Number(q.get('port') || CFG.peerPort), fp = q.get('fp') || '';
-  if (!host || !FP_RE.test(fp) || !(port > 0 && port < 65536)) throw new Error('the room link is incomplete');
+  const host = (q.get('host') || '').replace(/^\[|\]$/g, ''), port = Number(q.get('port') || CFG.peerPort), fp = (q.get('fp') || '').toLowerCase();
+  if (!host || !FP_RE.test(fp) || !(Number.isInteger(port) && port > 0 && port < 65536)) throw new Error('the room link is incomplete');
+  // the same rule as a contact link: the host becomes a contact key
+  if (!/^[A-Za-z0-9.:-]{1,255}$/.test(host) || RESERVED_KEYS.has(host)) throw new Error('the room link has no usable address');
   return { room: m[1], name: cleanStr(q.get('name') || '', 60), host, port, fp };
 }
 
@@ -1262,18 +1456,25 @@ function parseRoomLink(s) {
    the mailbox does learn who writes to whom, when, and how much: say so
    wherever the feature is offered. */
 const MB_MAX_BLOB = 16 * 1024;
+const MB_REPLY_BYTES = 512 * 1024;           // base64 per mb-get answer
 function mailboxContact(mb) { return ensureContact({ host: mb.host, port: mb.port, fp: mb.fp }); }
+// Sealed only to the public key that answered for the pinned fingerprint
+// (learned in a handshake or from mail it sealed itself), never to a key
+// someone named for it.
 function sealFor(c, payload) {
-  if (!c.peerPub) throw new Error('no public key for ' + (c.nick || c.host) + ' yet');
+  if (!c.peerPub || !c.peerFp) throw new Error('no public key for ' + (c.nick || c.host) + ' yet');
+  const pub = Buffer.from(c.peerPub, 'base64');
+  if (pub.length !== 32 || noise.fingerprintRaw(pub) !== c.peerFp) throw new Error('the stored public key for ' + (c.nick || c.host) + ' is not the pinned one');
   const blob = mailbox.seal({ senderPrivRaw: myIdentity.privRaw, senderPubRaw: myIdentity.pubRaw,
-    recipientPubRaw: Buffer.from(c.peerPub, 'base64'), plaintext: Buffer.from(JSON.stringify(payload)) });
+    recipientPubRaw: pub, plaintext: Buffer.from(JSON.stringify(payload)) });
   if (blob.length > MB_MAX_BLOB) throw new Error('too large for a mailbox');
   return blob.toString('base64');
 }
-const myReturnAddress = () => ({ reply: myReach() || undefined, mbx: state.myMailboxes.length ? state.myMailboxes.map(mbPublic) : undefined, sk: mySign.pub, nick: CFG.nick });
+const myReturnAddress = () => ({ reply: myReach() || undefined, mbx: state.myMailboxes.length ? state.myMailboxes.map(mbPublic) : undefined, sk: mySign.pub, skp: MY_SKP, nick: CFG.nick });
 // Leave a message at the recipient's mailbox when it cannot be reached directly.
 function depositMessage(c, m) {
-  if (!c.mailboxes || !c.mailboxes.length || !c.peerPub || m.heldAt) return;
+  // not while its key is in doubt: a different key answered at its address
+  if (!c.mailboxes || !c.mailboxes.length || !c.peerPub || m.heldAt || c.pendingFp) return;
   if (Date.now() - (m.mbTriedAt || 0) < 10 * 60e3) return;
   const text = textOf(m);
   if (text == null) return;
@@ -1310,19 +1511,21 @@ function onMailboxItem(item) {
   const fp = noise.fingerprintRaw(opened.senderPubRaw);
   if (fp === myIdentity.fp) return true;
   const reply = p.reply && typeof p.reply === 'object' ? p.reply : null;
-  let c = Object.values(state.contacts).find((x) => x.peerFp === fp);
+  // The sender is its key (the seal proves it). The address it names is its
+  // word only: a new key is filed as "mbox:<fp>", never under that address,
+  // which may be a contact the operator wrote to.
+  let c = contactByKey(fp);
   if (!c) {
-    let host = reply && typeof reply.host === 'string' && /^[A-Za-z0-9.:\-[\]]{1,255}$/.test(reply.host) ? reply.host : 'mbox:' + fp.slice(0, 16);
-    if (state.contacts[host] && state.contacts[host].peerFp && state.contacts[host].peerFp !== fp) host = 'mbox:' + fp.slice(0, 16);
-    c = state.contacts[host] || newStranger(host);
+    c = newStranger('mbox:' + fp);
     if (!c) return false;
     c.peerFp = fp;
   }
   c.peerPub = opened.senderPubRaw.toString('base64');
   if (reply && Number.isInteger(reply.port) && reply.port > 0 && reply.port < 65536) c.port = reply.port;
+  // its onion: a way back through Tor, where the pinned key must answer
   if (reply && validOnion(reply.host)) c.onion = reply.host;
   const mbx = cleanMailboxes(p.mbx); if (mbx.length) c.mailboxes = mbx;
-  if (social.isPub(p.sk) && !c.signPub) c.signPub = p.sk;
+  if (social.isPub(p.sk) && !c.signPub && social.checkBinding(p.sk, p.skp, fp)) { c.signPub = p.sk; c.skp = p.skp; }
   if (!c.nick && typeof p.nick === 'string') c.nick = cleanStr(p.nick, 60);
   if (p.k === 'msg') {
     const id = typeof p.id === 'string' && MSG_ID.test(p.id) ? p.id : null;
@@ -1356,7 +1559,7 @@ function onMailboxItem(item) {
 }
 function mailboxTick() {
   for (const mb of state.myMailboxes) { const c = mailboxContact(mb); if (c) pokeMailbox(c); }
-  if (mbStore) { mbStore.prune(Date.now()); saveMailbox(); }
+  if (mbStore) { const r = mbStore.prune(Date.now()); if (r.items || r.recipients) saveMailbox(); }
   for (const [room, j] of pendingJoins) {
     if (Date.now() - j.at < 120000) continue;
     pendingJoins.delete(room);
@@ -1374,41 +1577,52 @@ const SOCIAL_FRAMES = {
   },
   'posts'(link, c, m) {
     if (!Array.isArray(m.items)) return;
+    // Each post costs a signature check: one link gets LINK_MAX_POSTS looked at.
+    if (link.postsIn >= LINK_MAX_POSTS) return;
+    const follows = followSet();              // once per frame, not once per post
+    const fromTrusted = trusted(c);
     let added = 0;
     for (const it of m.items.slice(0, 100)) {
+      if ((link.postsIn = (link.postsIn || 0) + 1) > LINK_MAX_POSTS) break;
       if (!it || typeof it !== 'object') continue;
       const h = Number.isInteger(it.h) && it.h >= 0 ? it.h : 9;
       if (h + 1 > 2) continue;
-      // a stranger who only ever called us may pass on its own posts, nobody else's
-      if (c.inbound && !c.established && (!it.o || it.o.a !== c.signPub)) continue;
-      const r = feedStore.addPost(it.o, { via: link.peerFp, hops: h + 1 });
+      // only someone the operator added or wrote to, with a two-way exchange,
+      // may pass on other people's posts; anyone else only its own
+      if (!fromTrusted && (!it.o || !c.signPub || it.o.a !== c.signPub)) continue;
+      // the people we follow are the last to go when the store is full
+      const r = feedStore.addPost(it.o, { via: link.peerFp, hops: h + 1, keepAuthors: follows });
       if (r.status === 'new') { added++; broadcastUi({ type: 'post', post: uiPost({ id: r.id, o: it.o, via: link.peerFp, hops: h + 1 }) }); }
     }
     c.feedAt = Date.now();
     if (added) { saveSocial(); save(); }
     // pass new posts by people we follow straight on over links that are
     // open now (no dialling); everyone else pulls them on their next link
-    const fresh = added ? feedStore.postsSince(Date.now() - 60e3, (p) => p.via === link.peerFp && p.hops <= 1 && followSet().has(p.o.a), 25) : [];
+    const fresh = added ? feedStore.postsSince(Date.now() - 60e3, (p) => p.via === link.peerFp && p.hops <= 1 && follows.has(p.o.a), 25) : [];
     if (fresh.length) for (const l of links.values()) {
-      if (l === link || l.closed || !l.peerHello || !l.contact || !hasCap(l.contact, 'social1') || !l.contact.established) continue;
+      if (l === link || l.closed || !l.peerHello || !l.contact || !hasCap(l.contact, 'social1') || !trusted(l.contact)) continue;
       sendPosts(l, fresh);
     }
   },
   'room-req'(link, c, m) {
     const r = typeof m.room === 'string' ? feedStore.room(m.room) : null;
-    if (!r || !r.joined) { link.send({ t: 'room-err', room: m.room, error: 'unknown room' }); return; }
+    if (!r || !r.joined) { link.send({ t: 'room-err', room: typeof m.room === 'string' ? m.room.slice(0, 40) : null, error: 'unknown room' }); return; }
     if (m.join && typeof m.join === 'object') {
-      if (m.join.a !== c.signPub || m.join.room !== r.def.room) { link.send({ t: 'room-err', room: r.def.room, error: 'that join is not signed by you' }); return; }
+      // c.signPub is proven (applyHello): the join must be signed by this link's own signing key
+      if (!c.signPub || m.join.a !== c.signPub || m.join.room !== r.def.room) { link.send({ t: 'room-err', room: r.def.room, error: 'that join is not signed by you' }); return; }
       const res = feedStore.addMember(m.join);
       if (res.status === 'rejected') { link.send({ t: 'room-err', room: r.def.room, error: res.error }); return; }
       if (res.status !== 'dup') { saveSocial(); fanOutRoom(r, [m.join]); broadcastUi({ type: 'room', room: uiRoom(r) }); }
     }
     const me = c.signPub && r.members.get(c.signPub);
     if (!me || me.left) { link.send({ t: 'room-err', room: r.def.room, error: 'not a member' }); return; }
-    link.send({ t: 'room-state', def: r.def, members: [...r.members.values()].slice(0, 100) });
+    // room-state with as many members as fit beside the definition, the rest
+    // (and the history) as room-items, which take member entries too
+    const parts = batches([...r.members.values()].slice(0, 100), 100, 512 + Buffer.byteLength(JSON.stringify(r.def)));
+    link.send({ t: 'room-state', def: r.def, members: parts[0] || [] });
     const since = Number.isFinite(m.since) ? m.since : 0;
     const msgs = feedStore.roomMsgs(r.def.room, { since, limit: 200 }).map((x) => x.o);
-    for (let i = 0; i < msgs.length; i += 20) link.send({ t: 'room-items', room: r.def.room, items: msgs.slice(i, i + 20) });
+    sendRoomItems(link, r.def.room, parts.slice(1).flat().concat(msgs));
   },
   'room-state'(link, c, m) {
     const def = m.def;
@@ -1446,37 +1660,61 @@ const SOCIAL_FRAMES = {
       broadcastUi({ type: 'room.error', room: m.room, error: cleanStr(m.error, 120) || 'refused' });
     }
   },
+  // Introductions go only to a contact the operator added or wrote to, with
+  // a two-way exchange, and name only such contacts: one unsolicited message
+  // must not let a stranger list the addresses and keys of everyone we know.
   'who-req'(link, c) {
-    if (!discoverable() || !c.discoverable || !c.established) { link.send({ t: 'who', items: [] }); return; }
+    if (!discoverable() || !c.discoverable || !trusted(c)) { link.send({ t: 'who', items: [] }); return; }
     const items = [];
     for (const x of Object.values(state.contacts)) {
-      if (x === c || !x.established || !x.discoverable || !x.peerFp || items.length >= 100) continue;
-      const host = x.onion || (validOnion(x.host) || !/^(tor|mbox):/.test(x.host) && !isLoopback(x.host) ? x.host : null);
-      if (!host || /^(tor|mbox):/.test(host)) continue;
-      items.push({ nick: x.nick || '', host, port: x.port || 8788, fp: x.peerFp, sk: x.signPub || undefined });
+      if (x === c || !trusted(x) || !x.discoverable || !x.peerFp || items.length >= 100) continue;
+      const host = x.onion || (!isPlaceholder(x.host) && !isLoopback(x.host) ? x.host : null);
+      if (!host) continue;
+      items.push({ nick: x.nick || '', host, port: x.port || 8788, fp: x.peerFp, sk: x.signPub || undefined, skp: x.signPub ? x.skp : undefined });
     }
-    link.send({ t: 'who', items });
+    const parts = batches(items, 100);
+    if (!parts.length) parts.push([]);
+    parts.forEach((b, i) => link.send({ t: 'who', items: b, more: i < parts.length - 1 || undefined }));
   },
+  // Taken only as the answer to our who-req on this link (syncWith asks
+  // trusted contacts only), 100 entries per answer. An entry another
+  // introducer gave is never rewritten: a second introducer that agrees is
+  // added to "via", one that names another address or key is ignored.
   'who'(link, c, m) {
+    if (!link.whoAsked || !trusted(c)) return;
+    if (m.more !== true) link.whoAsked = false;
     c.whoAt = Date.now();
     if (!Array.isArray(m.items)) return;
     const via = c.nick || c.host;
     for (const it of m.items.slice(0, 100)) {
-      if (!it || !FP_RE.test(it.fp) || it.fp === myIdentity.fp) continue;
+      if (++link.whoTaken > 100) { link.whoAsked = false; break; }
+      if (!it || typeof it !== 'object' || !FP_RE.test(it.fp) || it.fp === myIdentity.fp || it.fp === link.peerFp) continue;
       if (Object.values(state.contacts).some((x) => x.peerFp === it.fp && !x.hidden && !x.inbound)) continue;
       const host = cleanStr(it.host, 255), port = Number(it.port);
-      if (!host || !/^[A-Za-z0-9.:\-[\]]+$/.test(host) || !(port > 0 && port < 65536)) continue;
+      if (!peerHostOk(host) || !(Number.isInteger(port) && port > 0 && port < 65536)) continue;
+      // its signing key, only with the holder's proof for that fingerprint
+      const sk = social.isPub(it.sk) && social.checkBinding(it.sk, it.skp, it.fp) ? it.sk : null;
       const have = state.introductions[it.fp];
-      state.introductions[it.fp] = { fp: it.fp, nick: cleanStr(it.nick, 60), host, port, sk: social.isPub(it.sk) ? it.sk : null,
-        via: [...new Set([via, ...((have && have.via) || [])])].slice(0, 5), at: Date.now() };
+      const owners = have ? (Array.isArray(have.viaFp) ? have.viaFp : ['']) : [];
+      if (owners.some((x) => x !== link.peerFp)) {
+        if (have.host === host && have.port === port && (have.sk || null) === sk && !owners.includes(link.peerFp)) {
+          have.via = [...(have.via || []), via].slice(0, 5); have.viaFp = [...owners, link.peerFp].slice(0, 5);
+        }
+        continue;
+      }
+      state.introductions[it.fp] = { fp: it.fp, nick: cleanStr(it.nick, 60), host, port, sk, skp: sk ? it.skp : null,
+        via: [via], viaFp: [link.peerFp], at: Date.now() };
     }
     const all = Object.values(state.introductions).sort((a, b) => b.at - a.at);
     for (const old of all.slice(300)) delete state.introductions[old.fp];
     save();
     broadcastUi({ type: 'introductions', items: Object.values(state.introductions) });
   },
+  // Only for a contact the operator added or wrote to, with a two-way
+  // exchange: otherwise 256 throwaway keys would take every slot.
   'mb-reg'(link, c) {
     if (!mailboxServing()) { link.send({ t: 'mb-reg-err', error: 'this daemon does not run a mailbox' }); return; }
+    if (!trusted(c)) { link.send({ t: 'mb-reg-err', error: 'this mailbox holds mail only for contacts its operator added or wrote to' }); return; }
     if (openMailboxStore().register(link.peerFp, Date.now())) { saveMailbox(); link.send({ t: 'mb-reg-ok' }); }
     else link.send({ t: 'mb-reg-err', error: 'this mailbox is full' });
   },
@@ -1503,18 +1741,32 @@ const SOCIAL_FRAMES = {
     const d = link.deposits && link.deposits.get(m.id);
     if (d) { link.deposits.delete(m.id); log(`mailbox ${c.nick || c.host} refused mail for ${d.c.nick || d.c.host}: ${cleanStr(m.error, 120)}`); }
   },
+  // Oldest first, up to MB_REPLY_BYTES per answer, in frames that fit
+  // (a 16 KiB item is some 22 KB of base64, so four of them overflowed one
+  // Noise frame and jammed the mailbox for good). "more" on the last frame:
+  // the recipient acknowledges and asks again.
   'mb-get'(link, c) {
     if (!mailboxServing() || !openMailboxStore().isRegistered(link.peerFp)) { link.send({ t: 'mb-items', items: [] }); return; }
     openMailboxStore().register(link.peerFp, Date.now());       // a fetch keeps the registration alive
-    const items = mbStore.fetch(link.peerFp, 50).map((x) => ({ id: x.id, blob: Buffer.from(x.blob).toString('base64') }));
-    for (let i = 0; i < items.length; i += 4) link.send({ t: 'mb-items', items: items.slice(i, i + 4) });
-    if (!items.length) link.send({ t: 'mb-items', items: [] });
+    const held = mbStore.fetch(link.peerFp, 51), items = [];
+    let bytes = 0;
+    for (const x of held.slice(0, 50)) {
+      const it = { id: x.id, blob: Buffer.from(x.blob).toString('base64') };
+      if (items.length && bytes + it.blob.length > MB_REPLY_BYTES) break;
+      items.push(it); bytes += it.blob.length;
+    }
+    const parts = batches(items, 10);
+    if (!parts.length) parts.push([]);
+    const more = held.length > items.length;
+    parts.forEach((b, i) => link.send({ t: 'mb-items', items: b, more: more && i === parts.length - 1 ? true : undefined }));
   },
   'mb-items'(link, c, m) {
     if (!state.myMailboxes.some((mb) => mb.fp === link.peerFp) || !Array.isArray(m.items)) return;
     const done = [];
     for (const it of m.items.slice(0, 10)) if (it && typeof it.id === 'string' && onMailboxItem(it)) done.push(it.id);
     if (done.length) link.send({ t: 'mb-ack', ids: done });
+    // more waiting, and this batch moved: fetch the next (the mailbox answers once the last has gone out)
+    if (m.more === true && done.length) link.send({ t: 'mb-get' });
   },
   'mb-ack'(link, c, m) {
     if (!mbStore || !Array.isArray(m.ids)) return;
@@ -1524,12 +1776,16 @@ const SOCIAL_FRAMES = {
 
 /* ---- how to reach a contact -------------------------------------------- */
 // Its address, then its onion. A loopback address is Tor handing a peer
-// over locally, so with an onion known the onion is the way back; tor: and
-// mbox: hosts are placeholders for peers we only know a key for.
+// over locally, so with an onion known the onion is the way back; tor:,
+// mbox: and peer: hosts are placeholders for peers we only know a key for.
+// An address that is not the contact's own key is someone's claim (the
+// peer's hello or mail, a member entry): it is dialled only for a pinned
+// key, which must answer there.
 function dialTargets(c) {
   const out = [];
-  if (!/^(tor|mbox):/.test(c.host) && !(isLoopback(c.host) && c.onion)) out.push(c.host);
-  if (c.onion && !out.includes(c.onion)) out.push(c.onion);
+  if (!isPlaceholder(c.host) && !(isLoopback(c.host) && c.onion)) out.push(c.host);
+  if (c.peerFp && c.addr && !out.includes(c.addr)) out.push(c.addr);
+  if (c.onion && !out.includes(c.onion) && (c.onion === c.host || c.peerFp)) out.push(c.onion);
   return out;
 }
 
@@ -1660,7 +1916,8 @@ function connectTo(c, why) {
     const now = Date.now();
     for (const m of c.msgs) if (deliverable(m) && (m.status === 'sending' || (m.nextTry || 0) <= now)) deferMsg(c, m, reason);
     // Still unreachable: leave it at the contact's mailbox, if it has one.
-    for (const m of c.msgs) if (deliverable(m) && !m.heldAt) depositMessage(c, m);
+    // Not after a key mismatch: the key the mail would be sealed to is the one in question.
+    if (!err.mismatch) for (const m of c.msgs) if (deliverable(m) && !m.heldAt) depositMessage(c, m);
     if (why !== 'checkin' && why !== 'task') log(`deliver to ${c.host}: ${reason}`);
     // A failed dial is fresher news than the last hello: stop calling it online.
     c.lastFailAt = Date.now();
@@ -1682,6 +1939,17 @@ function attemptDial(c, host, port, proto, cb) {
       if (res.peerFp === myIdentity.fp) {
         s.destroy();
         const e = new Error(SELF_ERROR); e.self = true; return settle(e);
+      }
+      // A second address (an onion or address someone named for it) that
+      // answers with another key was never its address: forget it, and
+      // raise no key-change alarm.
+      if (host !== c.host && c.peerFp && res.peerFp !== c.peerFp) {
+        s.destroy();
+        if (c.onion === host || c.addr === host) {
+          if (c.onion === host) delete c.onion; else delete c.addr;
+          save(); log(`${c.nick || c.host}: ${host}, named for it, answered with another key; forgotten`);
+        }
+        return settle(new Error(`${host} answered with a different key than ${c.nick || c.host} has`));
       }
       if (!tofuCheck(c, res.peerFp)) {
         s.destroy();
@@ -1728,7 +1996,11 @@ function serveSecure(sock, addr) {
     if (c && !tofuCheck(c, res.peerFp)) { sock.destroy(); return; }
     link = openLink(sock, { initiator: false, addr, peerFp: res.peerFp, proto, session });
     link.peerPub = pubRawB64(res.peerPub);
-    if (c) { tofuRecord(c, res.peerFp); if (proto === 3) c.proto = 3; if (link.peerPub) c.peerPub = link.peerPub; bindLink(link, c); }
+    if (c) {
+      tofuRecord(c, res.peerFp);
+      if ((proto === 3 && c.proto !== 3) || (link.peerPub && c.peerPub !== link.peerPub)) { if (proto === 3) c.proto = 3; if (link.peerPub) c.peerPub = link.peerPub; save(); }
+      bindLink(link, c);
+    }
   });
 }
 
@@ -1779,7 +2051,9 @@ function checkinTick() {
   if (!(CFG.checkinMs > 0)) return;
   const now = Date.now();
   for (const c of Object.values(state.contacts)) {
-    if (!c.established || links.has(c.host) || dialing.has(c.host)) continue;
+    // only contacts the operator added or wrote to: a stranger's one message
+    // does not earn it a call from us every few minutes
+    if (!trusted(c) || links.has(c.host) || dialing.has(c.host)) continue;
     if (now - Math.max(c.lastSeen || 0, lastDial.get(c.host) || 0) < CFG.checkinMs * (0.8 + Math.random() * 0.4)) continue;
     connectTo(c, 'checkin');
   }
@@ -2041,10 +2315,11 @@ wss.on('connection', (ws) => {
   // listener that 'error' event would be unhandled and stop the whole daemon.
   ws.on('error', () => uiClients.delete(ws));
 });
-// An address the operator typed: IPv4, IPv6 (brackets stripped), hostname or .onion.
+// An address the operator typed: IPv4, IPv6 (brackets stripped, % for a
+// zone), hostname or .onion; or a contact's tor:/mbox: key from the console.
 function uiHost(v) {
   const h = normIp(cleanStr(v, 255).replace(/^\[|\]$/g, ''));
-  if (!h || !/^[A-Za-z0-9.:%_-]+$/.test(h)) throw new Error('not a valid address');
+  if (!h || !/^[A-Za-z0-9.:%-]+$/.test(h) || RESERVED_KEYS.has(h)) throw new Error('not a valid address');
   return h;
 }
 const uiPort = (v, d) => { const n = Number(v); return Number.isInteger(n) && n > 0 && n < 65536 ? n : d; };
@@ -2074,8 +2349,12 @@ async function handleUi(m, reply) {
       if (fp && !FP_RE.test(fp)) throw new Error('that fingerprint is not 32 hex characters');
       const existing = state.contacts[host];
       if (fp && existing && existing.peerFp && existing.peerFp !== fp) throw new Error(`${host} is already pinned to a different key; remove it first if this is a new install`);
+      // Someone who reached us through Tor (or by mail) under this key: its
+      // conversation moves to the address the operator now gives for it.
+      const ph = fp && !existing ? Object.values(state.contacts).find((x) => x.peerFp === fp && isPlaceholder(x.host)) : null;
+      if (ph) rekeyContact(ph, host);
       const c = contact(host, true);
-      delete c.inbound; delete c.hidden;      // the operator added it
+      delete c.inbound; delete c.hidden; delete c.auto;      // the operator added it
       c.port = uiPort(lk ? lk.port : m.port, c.port || CFG.peerPort);
       const nick = lk ? lk.nick : m.nick;
       if (nick != null && nick !== '') c.nick = cleanStr(String(nick), 60);
@@ -2123,7 +2402,7 @@ async function handleUi(m, reply) {
       const have = feedStore.room(lk.room);
       if (have && have.joined) { reply({ type: 'room.joined', room: lk.room }); return; }
       if (lk.fp === myIdentity.fp) throw new Error('that is your own room link');
-      const ic = ensureContact({ host: lk.host, port: lk.port, fp: lk.fp });
+      const ic = ensureContact({ host: lk.host, port: lk.port, fp: lk.fp }, { operator: true });
       if (!ic) throw new Error(`${lk.host} is pinned to a different key than the link says`);
       pendingJoins.set(lk.room, { at: Date.now(), name: lk.name });
       // the member entry is signed for this room; the inviter checks it is ours
@@ -2155,10 +2434,10 @@ async function handleUi(m, reply) {
     case 'intro.add': {
       const it = state.introductions[String(m.fp || '')];
       if (!it) throw new Error('no such introduction');
-      const c = ensureContact({ host: it.host, port: it.port, fp: it.fp, nick: it.nick, hidden: false });
+      const c = ensureContact({ host: it.host, port: it.port, fp: it.fp, nick: it.nick, hidden: false }, { operator: true });
       if (!c) throw new Error(`${it.host} is already pinned to a different key`);
-      delete c.hidden; delete c.inbound; c.pinnedBy = 'introduced'; c.introducedBy = it.via;
-      if (it.sk && !c.signPub) c.signPub = it.sk;
+      delete c.hidden; delete c.inbound; delete c.auto; c.pinnedBy = 'introduced'; c.introducedBy = it.via;
+      if (it.sk && !c.signPub && c.peerFp === it.fp && social.checkBinding(it.sk, it.skp, it.fp)) { c.signPub = it.sk; c.skp = it.skp; }
       delete state.introductions[it.fp]; save();
       identifyNew(c); broadcastState();
       return;
@@ -2167,7 +2446,7 @@ async function handleUi(m, reply) {
       // the console's refresh: sync with every established contact that speaks 1.4
       let n = 0;
       for (const c of Object.values(state.contacts)) {
-        if (n >= 50 || !c.established || !hasCap(c, 'social1')) continue;
+        if (n >= 50 || !trusted(c) || !hasCap(c, 'social1')) continue;
         n++; withLink(c, (l) => syncWith(l, c, true));
       }
       reply({ type: 'synced', contacts: n });
@@ -2189,7 +2468,7 @@ async function handleUi(m, reply) {
       const c = Object.values(state.contacts).find((x) => x.peerFp === m.fp);
       if (!c || !c.servesMailbox) throw new Error('that contact does not run a mailbox');
       if (!state.myMailboxes.some((x) => x.fp === c.peerFp)) {
-        const host = c.onion || c.host;
+        const host = c.onion || (isPlaceholder(c.host) ? c.addr : null) || c.host;   // an address others can use
         state.myMailboxes = [{ host, port: c.port || 8788, fp: c.peerFp }].concat(state.myMailboxes).slice(0, 2);
       }
       save(); pokeMailbox(c); rehello(); broadcastState();
@@ -2224,7 +2503,11 @@ async function handleUi(m, reply) {
       const c = contact(uiHost(m.host), false);
       if (!c || !c.pendingFp || c.pendingFp.got !== m.fp) throw new Error('no matching key change to accept');
       c.prevFps = (c.prevFps || []).concat({ fp: c.peerFp, replacedAt: Date.now() }).slice(-5);
-      c.peerFp = c.pendingFp.got; delete c.pendingFp; save();
+      c.peerFp = c.pendingFp.got; delete c.pendingFp;
+      // what belonged to the old key (its public key for sealed mail, its
+      // signing key) is learned again from the new one's hello
+      delete c.peerPub; delete c.signPub; delete c.skp;
+      save();
       log(`new identity accepted for ${c.host}: ${c.peerFp.slice(0, 16)}...`);
       broadcastUi({ type: 'contact', contact: uiContact(c) });
       for (const x of c.msgs) if (deliverable(x)) x.nextTry = 0;
@@ -2240,7 +2523,7 @@ async function handleUi(m, reply) {
       const host = uiHost(m.host);
       const isNew = !state.contacts[host];
       const c = contact(host, true);
-      delete c.inbound;                       // the operator wrote to it
+      delete c.inbound; delete c.auto;        // the operator wrote to it
       c.port = uiPort(m.port, c.port || CFG.peerPort);
       const text = typeof m.text === 'string' ? m.text.replace(/\r\n?/g, '\n').trim().slice(0, 4000) : '';
       if (!text) return;
@@ -2520,9 +2803,11 @@ peerServer.listen(CFG.peerPort, PEER_BIND, () => {
     setInterval(checkinTick, Math.max(5000, Math.min(30000, (CFG.checkinMs || 30000) / 4)));
     setTimeout(retryTick, 1500);
     // identify anything we don't know yet, then refresh hourly
+    // (only addresses a peer connected from or the operator gave: identifiable())
     setTimeout(() => { for (const c of Object.values(state.contacts)) if (!c.peerInfo || c.peerInfo.source === 'claimed') scheduleIdentify(c.host, 2000); }, 2500);
     setInterval(() => {
       for (const c of Object.values(state.contacts)) {
+        if (!identifiable(c)) continue;
         const age = c.peerInfo && c.peerInfo.source !== 'claimed' ? Date.now() - (c.peerInfo.at || 0) : Infinity;
         if (age > 60 * 60 * 1000) identifyContact(c.host, 8333).catch(() => { });
       }

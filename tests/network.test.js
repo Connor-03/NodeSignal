@@ -5,12 +5,17 @@
 // the key before the first connection, posts and their two-hop spread,
 // rooms joined by link, a mailbox holding sealed mail for an unreachable
 // operator, introductions, identity backup, and several Tor peers arriving
-// from 127.0.0.1. Ports 26000-26099.
+// from 127.0.0.1. Daemons dial each other from 127.0.0.1, which reads as Tor,
+// so a daemon files a peer that calls first under "tor:<its fingerprint>"
+// until its operator adds that peer's link. Last, peers from 127.0.0.1 that
+// claim an address or an onion in their hello, through a mock SOCKS proxy
+// and a mock node. Ports 26000-26099.
 'use strict';
-const fs = require('fs'), path = require('path'), assert = require('assert');
+const fs = require('fs'), path = require('path'), assert = require('assert'), net = require('net');
 const H = require('./harness.js');
 const backup = require('../backup.js');
 const noise = require('../noise.js');
+const { rpcServer, p2pServer } = require('./mock-node.js');
 const { until, sleep, ui, contactOf, sent, status } = H;
 
 const S = H.suite('ns-net-');
@@ -45,6 +50,20 @@ const shareOf = async (u) => { u.send({ type: 'share.get' }); return u.wait((m) 
     await status(ub, id, 'delivered', 8000);
   });
 
+  await t('a peer that called from 127.0.0.1 is filed under its key; adding its link moves the conversation to its address', async () => {
+    let st = await ua.state();
+    const k = contactOf(st, 'tor:' + fp.B);
+    assert(k, 'B called A from 127.0.0.1: kept as tor:<fingerprint>, not as the address it names');
+    assert(!contactOf(st, ADDR.B), 'no contact under the public-host B names');
+    assert(k.msgs.some((m) => m.text === 'hello by link'));
+    ua.send({ type: 'contact.add', link: (await shareOf(ub)).link });
+    const c = await until(async () => { st = await ua.state(); return contactOf(st, ADDR.B); });
+    assert(!contactOf(st, 'tor:' + fp.B), 'moved, not copied');
+    assert.strictEqual(c.peerFp, fp.B);
+    assert(c.msgs.some((m) => m.text === 'hello by link'), 'the history came with it');
+    await status(ua, await sent(ua, ADDR.B, PORT.B, 'hi B, from A'), 'delivered', 8000);
+  });
+
   await t('a link with the wrong key is not trusted: the real key is held for review', async () => {
     const bad = `nodesignal:${ADDR.C}?port=${PORT.C}&fp=${'0'.repeat(32)}&nick=fake`;
     ua.send({ type: 'contact.add', link: bad });
@@ -64,6 +83,8 @@ const shareOf = async (u) => { u.send({ type: 'share.get' }); return u.wait((m) 
     ub.send({ type: 'contact.add', link: s.link });
     const id = await sent(ub, ADDR.C, PORT.C, 'hi C');
     await status(ub, id, 'delivered', 8000);
+    uc.send({ type: 'contact.add', link: (await shareOf(ub)).link });
+    await until(async () => contactOf(await uc.state(), ADDR.B));
     const back = await sent(uc, ADDR.B, PORT.B, 'hi B');
     await status(uc, back, 'delivered', 8000);
   });
@@ -166,23 +187,166 @@ const shareOf = async (u) => { u.send({ type: 'share.get' }); return u.wait((m) 
     assert.strictEqual((await ua.wait((m) => m.type === 'error')).type, 'error');
   });
 
-  await t('Tor: several peers arriving from 127.0.0.1 are told apart by key and onion', async () => {
+  await t('Tor: several peers arriving from 127.0.0.1 are told apart by key, each keeping the onion it named', async () => {
     // each raw client says hello with its own onion, the way Tor hands peers over locally
     const onion = (ch) => ch.repeat(56) + '.onion';
-    const peers = [];
+    const peers = {};
     for (const ch of ['a', 'b']) {
-      const cl = await H.v3Client(ADDR.A, PORT.A, () => { }, '127.0.0.1');
+      const got = [];
+      const cl = await H.v3Client(ADDR.A, PORT.A, (m) => { got.push(m); if (m.t === 'msg') cl.send({ t: 'ack', id: m.id }); }, '127.0.0.1');
+      cl.got = got;
       cl.send({ t: 'hello', proto: 3, nick: 'tor-' + ch, peerPort: 8788, onion: onion(ch), caps: [] });
       cl.send({ t: 'msg', id: 'tor-msg-' + ch, ts: Date.now(), text: 'over tor ' + ch });
-      peers.push(cl);
+      peers[ch] = cl;
     }
-    const st = await until(async () => { const s = await ua.state(); return contactOf(s, onion('a')) && contactOf(s, onion('b')) && s; }, 8000);
-    assert(contactOf(st, onion('a')).msgs.some((m) => m.text === 'over tor a'));
-    assert(contactOf(st, onion('b')).msgs.some((m) => m.text === 'over tor b'));
-    assert(!contactOf(st, onion('b')).pendingFp, 'no key-change alarm for a different Tor peer');
-    for (const p of peers) p.close();
+    const key = (ch) => 'tor:' + peers[ch].id.fp;
+    const st = await until(async () => { const s = await ua.state(); return contactOf(s, key('a')) && contactOf(s, key('b')) && s; }, 8000);
+    for (const ch of ['a', 'b']) {
+      const k = contactOf(st, key(ch));
+      assert(k.msgs.some((m) => m.text === 'over tor ' + ch));
+      assert.strictEqual(k.nick, 'tor-' + ch);
+      assert.strictEqual(k.onion, onion(ch), 'the onion is kept as a way back through Tor');
+      assert(!k.pendingFp, 'no key-change alarm for a different Tor peer');
+      assert(!contactOf(st, onion(ch)), 'nothing is filed under the onion a peer names');
+    }
+    // a reply goes back over that peer's own open link
+    const rid = await sent(ua, key('b'), 8788, 'back to you, b');
+    await status(ua, rid, 'delivered', 5000);
+    assert(peers.b.got.some((m) => m.t === 'msg' && m.text === 'back to you, b'));
+    assert(!peers.a.got.some((m) => m.t === 'msg'));
+    for (const p of Object.values(peers)) p.close();
+  });
+
+  await t('a peer from 127.0.0.1 cannot claim an address: not a contact you wrote to, not one to dial or identify', async () => {
+    // The operator writes to a map peer where no NodeSignal answers: it waits, no key pinned.
+    const X = '198.51.100.7';
+    const xid = await sent(ua, X, 26099, 'meet at 9, the key is under the mat');
+    // Something listens where a second claimer says it can be reached.
+    const knocks = [];
+    const trap = net.createServer((s) => { knocks.push(s.remoteAddress); s.destroy(); });
+    await new Promise((r) => trap.listen(26098, '127.0.0.9', r));
+    const got = [], got2 = [];
+    const M = await H.v3Client(ADDR.A, PORT.A, (m) => { got.push(m); if (m.t === 'msg') M.send({ t: 'ack', id: m.id }); }, '127.0.0.1');
+    M.send({ t: 'hello', proto: 3, nick: 'alice', pub: X, peerPort: 26099, caps: [] });
+    M.send({ t: 'msg', id: 'claim-1', ts: Date.now(), text: 'it is me, the operator of ' + X });
+    const M2 = await H.v3Client(ADDR.A, PORT.A, (m) => { got2.push(m); if (m.t === 'msg') M2.send({ t: 'ack', id: m.id }); }, '127.0.0.1');
+    M2.send({ t: 'hello', proto: 3, nick: 'x', pub: '127.0.0.9', peerPort: 26098, caps: [] });
+    M2.send({ t: 'msg', id: 'claim-2', ts: Date.now(), text: 'call me back' });
+    await sleep(2500);
+    assert(!got.some((m) => m.t === 'msg'), 'the waiting message went to the peer that claimed its address');
+    let st = await ua.state();
+    const x = contactOf(st, X);
+    assert.strictEqual(x.peerFp, null, 'the claimer\'s key was pinned on the address it claimed');
+    assert.notStrictEqual(x.msgs.find((m) => m.id === xid).status, 'delivered');
+    assert(contactOf(st, 'tor:' + M.id.fp).msgs.some((m) => m.text.startsWith('it is me')), 'the claimer is filed under its own key');
+    assert(!contactOf(st, '127.0.0.9'), 'nothing is filed (or identified) under a claimed address');
+    // A reply to the second goes over its own link; nothing ever calls the address it named.
+    await status(ua, await sent(ua, 'tor:' + M2.id.fp, 26098, 'hello x'), 'delivered', 5000);
+    assert(got2.some((m) => m.t === 'msg' && m.text === 'hello x'));
+    M.close(); M2.close();
+    await sleep(1500);
+    assert.deepStrictEqual(knocks, [], 'the daemon connected to an address a peer only claimed');
+    trap.close();
+    st = await ua.state();
+    assert.strictEqual(contactOf(st, X).peerFp, null);
+  });
+
+  await t('an onion named in a hello is reached only through Tor, where the claimer\'s key must answer: no node proof, no key alarm', async () => {
+    // The onion is C's: C's NodeSignal and C's Bitcoin node answer there, through
+    // a mock SOCKS proxy. D's node has it as a peer, which the old "same onion"
+    // check took as proof once :8333 answered.
+    const ONION = 'nodesignalclaimedonion'.padEnd(56, 'c') + '.onion';
+    const rpc = await rpcServer({ port: 26061, npeers: 2 });
+    rpc.peers.push({ addr: ONION + ':8333', subver: '/Satoshi:29.0.0/', pingtime: 0.2, inbound: false, synced_headers: 950000, network: 'onion' });
+    const node = await p2pServer({ port: 26071, host: '127.0.0.24' });
+    const routes = { [ONION + ':' + PORT.C]: { host: ADDR.C, port: PORT.C }, [ONION + ':8333']: { host: '127.0.0.24', port: 26071 } };
+    const proxy = await socksProxy(26051, routes);
+    const D = await H.up(S.daemon('dD', { host: '127.0.0.25', peer: 26041, web: 26042, rpc: 26061, extra: ['--tor-proxy', '127.0.0.1:26051'] }));
+    const ud = await ui(D);
+    try {
+      const M = await H.v3Client('127.0.0.25', 26041, () => { }, '127.0.0.1');
+      M.send({ t: 'hello', proto: 3, nick: 'satoshi', onion: ONION, peerPort: PORT.C, caps: [] });
+      M.send({ t: 'msg', id: 'onion-claim', ts: Date.now(), text: 'that node is mine' });
+      const key = 'tor:' + M.id.fp;
+      await until(async () => contactOf(await ud.state(), key), 5000);
+      M.close();
+      await sleep(3000);                    // where the old code identified the claimed onion and called it proven
+      let st = await ud.state();
+      assert(!contactOf(st, ONION), 'nothing is filed under the claimed onion');
+      assert.strictEqual(contactOf(st, key).nodeProof, null);
+      assert(!proxy.requests.includes(ONION + ':8333'), 'the claimed onion was identified');
+      // The operator replies. The link is gone, so D calls the onion through Tor, and C answers with its own key.
+      const rid = await sent(ud, key, PORT.C, 'did you mean it?');
+      await until(() => proxy.requests.includes(ONION + ':' + PORT.C), 15000);
+      const k = await until(async () => { const y = contactOf(await ud.state(), key); return !y.onion && y; }, 15000);
+      assert.strictEqual(k.pendingFp, null, 'another key at a claimed onion is not a key change to review');
+      assert.strictEqual(k.nodeProof, null);
+      assert.notStrictEqual(k.msgs.find((m) => m.id === rid).status, 'delivered');
+      st = await uc.state();
+      assert(!st.contacts.some((c) => c.msgs.some((m) => m.text === 'did you mean it?')), 'the onion\'s real owner got the reply');
+      // A peer whose onion is its own: the reply reaches it there, through Tor.
+      const ONION2 = 'nodesignalhonestonion'.padEnd(56, 'h') + '.onion';
+      const P = noise.loadIdentity(noise.newIdentity()), pgot = [];
+      const psrv = await H.v3Server('127.0.0.26', 26081, (m, reply) => {
+        pgot.push(m);
+        if (m.t === 'hello') reply({ t: 'hello', proto: 3, nick: 'honest', peerPort: 26081, caps: [] });
+        if (m.t === 'msg') reply({ t: 'ack', id: m.id });
+      }, P);
+      routes[ONION2 + ':26081'] = { host: '127.0.0.26', port: 26081 };
+      try {
+        const P1 = await H.v3Client('127.0.0.25', 26041, () => { }, '127.0.0.1', P);
+        P1.send({ t: 'hello', proto: 3, nick: 'honest', onion: ONION2, peerPort: 26081, caps: [] });
+        P1.send({ t: 'msg', id: 'honest-1', ts: Date.now(), text: 'reach me at my onion' });
+        await until(async () => contactOf(await ud.state(), 'tor:' + P.fp), 5000);
+        P1.close();
+        await sleep(300);
+        await status(ud, await sent(ud, 'tor:' + P.fp, 26081, 'here you are'), 'delivered', 15000);
+        assert(proxy.requests.includes(ONION2 + ':26081'), 'not through Tor');
+        assert(pgot.some((m) => m.t === 'msg' && m.text === 'here you are'));
+        assert.strictEqual(contactOf(await ud.state(), 'tor:' + P.fp).onion, ONION2, 'its own onion is kept');
+      } finally { await psrv.shut(); }
+    } finally {
+      ud.close(); await H.stop(D);
+      await new Promise((r) => proxy.close(r)); rpc.close(); node.close();
+    }
   });
 
   ua.close(); ub.close(); uc.close();
   await S.finish();
 })().catch(S.abort);
+
+// A SOCKS5 proxy (RFC 1928, no auth, domain names only) that records each
+// CONNECT and relays "host:port" to a route, the way Tor reaches an onion.
+function socksProxy(port, routes) {
+  const requests = [], conns = new Set();
+  const srv = net.createServer((c) => {
+    conns.add(c); c.on('close', () => conns.delete(c)); c.on('error', () => { });
+    let buf = Buffer.alloc(0), stage = 0;
+    const onData = (d) => {
+      buf = Buffer.concat([buf, d]);
+      if (stage === 0) {
+        if (buf.length < 2 || buf.length < 2 + buf[1]) return;
+        buf = buf.subarray(2 + buf[1]); stage = 1; c.write(Buffer.from([5, 0]));
+      }
+      if (stage === 1) {
+        if (buf.length < 5) return;
+        if (buf[3] !== 3) { c.destroy(); return; }
+        const alen = 1 + buf[4];
+        if (buf.length < 4 + alen + 2) return;
+        const host = buf.subarray(5, 4 + alen).toString('latin1'), dport = buf.readUInt16BE(4 + alen);
+        const rest = buf.subarray(4 + alen + 2);
+        requests.push(host + ':' + dport); stage = 2; c.removeListener('data', onData);
+        const rt = routes[host + ':' + dport];
+        if (!rt) { c.end(Buffer.from([5, 4, 0, 1, 0, 0, 0, 0, 0, 0])); return; }
+        const up = net.connect(rt);
+        up.on('error', () => c.destroy()); c.on('close', () => up.destroy()); up.on('close', () => c.destroy());
+        up.on('connect', () => { c.write(Buffer.from([5, 0, 0, 1, 127, 0, 0, 1, 0, 0])); if (rest.length) up.write(rest); c.pipe(up); up.pipe(c); });
+      }
+    };
+    c.on('data', onData);
+  });
+  srv.requests = requests;
+  const close = srv.close.bind(srv);
+  srv.close = (cb) => { for (const c of conns) c.destroy(); close(cb); };
+  return new Promise((r) => srv.listen(port, '127.0.0.1', () => r(srv)));
+}

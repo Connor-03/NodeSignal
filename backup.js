@@ -170,9 +170,9 @@ async function importBackupAsync(text, passphrase) {
    social.json's (or null). */
 function buildPayload(state, socialJson, { nick = '' } = {}) {
   const contacts = Object.values((state && state.contacts) || {})
-    .filter((c) => c && !c.inbound && typeof c.host === 'string' && !/^(tor|mbox):/.test(c.host))
+    .filter((c) => c && !c.inbound && !c.auto && typeof c.host === 'string' && !/^(tor|mbox|peer):/.test(c.host))
     .map((c) => ({ host: c.host, port: c.port, nick: c.nick || '', peerFp: c.peerFp || null, peerPub: c.peerPub || null,
-      signPub: c.signPub || null, onion: c.onion || null, mailboxes: c.mailboxes || [], established: !!c.established, hidden: !!c.hidden }));
+      signPub: c.signPub || null, skp: c.skp || null, onion: c.onion || null, mailboxes: c.mailboxes || [], established: !!c.established, hidden: !!c.hidden }));
   const rooms = ((socialJson && socialJson.rooms) || []).filter((r) => r && r.joined && r.def).map((r) => ({ def: r.def, members: r.members || [] }));
   return {
     kind: 'nodesignal-identity', v: 1, at: Date.now(), nick,
@@ -196,9 +196,11 @@ function mergePayload(state, socialJson, p) {
   if (p.onionKey) st.onionKey = p.onionKey;
   let added = 0;
   for (const c of p.contacts || []) {
-    if (!c || typeof c.host !== 'string' || st.contacts[c.host]) continue;
+    // own keys only, and never a name that means something to every object
+    if (!c || typeof c.host !== 'string' || ['__proto__', 'constructor', 'prototype'].includes(c.host)
+      || Object.prototype.hasOwnProperty.call(st.contacts, c.host)) continue;
     st.contacts[c.host] = { host: c.host, port: c.port || 8788, nick: c.nick || '', msgs: [], unread: 0, lastSeen: 0, peerInfo: null,
-      peerFp: c.peerFp || undefined, peerPub: c.peerPub || undefined, signPub: c.signPub || undefined, onion: c.onion || undefined,
+      peerFp: c.peerFp || undefined, peerPub: c.peerPub || undefined, signPub: c.signPub || undefined, skp: c.skp || undefined, onion: c.onion || undefined,
       mailboxes: c.mailboxes || [], established: !!c.established, hidden: !!c.hidden || undefined, pinnedBy: 'backup' };
     added++;
   }

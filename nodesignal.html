@@ -1041,10 +1041,19 @@ function rebuild(nodePeers, contacts){
   if(prevActive){ const again=state.peers.find(p=>p.host===prevActive.host); state.active=again?again.id:null; }
   layoutDirty=true;
 }
+// A peer that reached us through Tor, only by sealed mail, or that someone
+// else named (a room member, a mailbox) is kept under its key ("tor:",
+// "mbox:", "peer:" and its fingerprint): show the onion it named, which
+// answers only if its key does, or how we know it.
+const contactAddr=c=>{
+  const port=c.port||8788, ph=/^(tor|mbox|peer):/.exec(c.host);
+  if(!ph)return c.host+':'+port;
+  return c.onion?c.onion+':'+port:({tor:'reached you through Tor',mbox:'reached you by mailbox',peer:'known from a room or a mailbox'})[ph[1]];
+};
 function contactModel(c,angles){
   const ni=c.peerInfo||{};
   return {
-    id:uid(), kind:'contact', host:c.host, addr:c.host+':'+(c.port||8788), port:c.port||8788,
+    id:uid(), kind:'contact', host:c.host, addr:contactAddr(c), port:c.port||8788,
     nick:c.nick||'', impl:ni.impl||'Unknown', version:ni.version||'', ua:ni.ua||null,
     declared:ni.declared||[], supports:ni.supports||[], services:ni.services||[], network:ni.network||null,
     height:ni.height??null,

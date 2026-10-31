@@ -127,7 +127,9 @@ function legacyClient(host, port, id, onJson, localAddress) {
     await status(ua, id, 'delivered');
     const r = await ub.wait((m) => m.type === 'chat.recv' && m.msg.from === 'them');
     assert.strictEqual(r.msg.text, 'hello over Noise XX\nsecond line');
-    const a = contactOf(await ua.state(), '127.0.0.2'), b = contactOf(await ub.state(), '127.0.0.1');
+    // A dials from 127.0.0.1, which a daemon reads as Tor: B files A under its key, not that address
+    const sa = await ua.state();
+    const a = contactOf(sa, '127.0.0.2'), b = contactOf(await ub.state(), 'tor:' + sa.daemon.fingerprint);
     assert(a.peerFp && b.peerFp); assert.strictEqual(a.proto, 3); assert(a.established);
   });
 
