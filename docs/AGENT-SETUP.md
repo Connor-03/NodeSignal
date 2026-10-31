@@ -164,8 +164,9 @@ described; do not report them as hidden behaviour.
   "Install update" works without giving the daemon root.
 - **Root switches to another account for file work in that account's
   folders.** When setup, `restore` or `update-apply` runs as root and reads or
-  writes bitcoin.conf (owned by the node's user), the state folder or the
-  update requests (owned by `nodesignal`), it does that file work with the
+  writes bitcoin.conf (owned by the node's user), the state folder, an older
+  state folder it copies once, or the update requests (owned by
+  `nodesignal`), it does that file work with the
   owner's uid and gid (`seteuid`), so a link planted there reaches nothing
   the owner could not reach already. A root-owned file in a folder another
   account can change is refused. Seeing `setegid`/`seteuid` calls in

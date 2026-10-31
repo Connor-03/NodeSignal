@@ -191,6 +191,23 @@ code. What they found and what changed:
 - Releases: the update manifest is signed only when a release is
   published, not on dry runs, and the release workflow's token is read-only
   except for the publishing step.
+- **A final check by a fresh agent following `docs/AGENT-SETUP.md`** found
+  no critical or high problem and these smaller ones, all fixed: setup
+  copied an older state folder as root (now as its owners); setup could
+  turn on full RPC access for other users when whitelists lived in an
+  `includeconf` file, a `[section]` or bitcoind's command line (it now
+  leaves bitcoin.conf alone in those cases and prints the lines to add by
+  hand); with the node stopped, setup could pick another account's data
+  folder and send NodeSignal's RPC login to a remote host named there (the
+  system data folder now wins and the RPC address always stays on this
+  machine); a planted link could make root add NodeSignal's lines to a
+  root-owned file; `advertise on` trusted whatever answered on the console
+  port for the onion it publishes; `update-apply` copied the package before
+  checking the signature; the IPv6 rate limit did not group a /64.
+- What you may notice: a bitcoin.conf with `includeconf` (Umbrel-style
+  setups use it), a whitelist in a section or `-rpcwhitelist` on bitcoind's
+  command line gets "add these lines by hand" instead of an automatic edit,
+  and a node on another machine needs `rpc-url` set by hand.
 - **The Windows build fetched a build tool's dependency by version range**,
   with install scripts on. It is now pinned exactly, scripts off.
 
@@ -235,6 +252,16 @@ code. What they found and what changed:
 - A mailbox learns who writes to whom and when.
 - In-app installs need a release signed with the NodeSignal release key. If
   the copy you installed lists no key, it announces new versions only.
+- 1.4.0 still answers the 1.2 handshake; 1.3's notes said it would go in
+  this release. It goes in 1.5.
+- Reading a peer's node over :8333 introduces itself as `/NodeSignal:1.4/`,
+  so those nodes learn this IP runs NodeSignal even with `advertise` off.
+- A message to someone whose key is not pinned yet (a map peer, or a contact
+  added without a fingerprint) goes to the first NodeSignal that proves a
+  key at that address. Behind a shared IP that can be someone else; a
+  contact link pins the key first.
+- Without Tailscale the peer port listens on every interface; set
+  `"bind": "127.0.0.1"` to keep it to Tor.
 - Not yet run on real Windows, real arm64 hardware or a real Tor; CI runs
   mocks for all three.
 

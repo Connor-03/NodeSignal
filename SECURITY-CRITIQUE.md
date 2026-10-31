@@ -55,7 +55,7 @@
 | Public posts and rooms | **[NEW in v1.4]**: signed and bounded, but public to everyone they reach and as Sybil-prone as any key-based identity (section 9) |
 | Mailbox metadata | **[NEW in v1.4, opt-in]**: a mailbox cannot read mail but sees who writes to whom, when and how much (section 9) |
 | Update supply chain | **[NEW in v1.4]**: in-app installs need a release manifest signed with a key shipped in the app; root re-checks everything, working as the daemon's account in its folder; no downgrades. Only a published release is signed. A key kept as a GitHub Actions secret means a compromised GitHub account can sign (section 9) |
-| Pre-release review of 1.4 (four reviewers, AI agents run by the project) | **[FIXED in v1.4]**: a stored XSS in the console, root escalations through links in folders other accounts own, peers choosing their contact key or pinning keys for others, prototype pollution, a Tor control impostor, floods and memory growth. Each is in section 10 with its test and what is still open. Not an outside review |
+| Pre-release review of 1.4 (four reviewers and a final check, AI agents run by the project) | **[FIXED in v1.4]**: a stored XSS in the console, root escalations through links in folders other accounts own, peers choosing their contact key or pinning keys for others, prototype pollution, a Tor control impostor, floods and memory growth. Each is in section 10 with its test and what is still open. Not an outside review |
 
 ---
 
@@ -470,6 +470,26 @@ the fix (except where noted) and pass after it.
 | 24 | Low | `social.verify` accepted small-order author keys (a signature that verifies any message) and threw on kinds named like `toString` | Small-order points refused in every encoding; own-property lookups [social] |
 | 25 | Low | Mid-body cut-offs could leave a test waiting forever (CI waited 25 minutes once) | Every harness wait ends within 5 s; each suite has a time limit (`tests/run-all.js`, `tests/harness.js`; not reproduced locally) |
 
+**A final check.** After those fixes, a fresh agent that knew nothing of
+the work followed `docs/AGENT-SETUP.md` as an operator's agent would. It
+found no critical or high problem, confirmed the fixes above held, and found
+these, all fixed with tests that fail on the old code:
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| 26 | Medium (Low under the shipped unit) | Setup copied an older state folder, named in the nodesignal-writable config, as root with `fs.cpSync`, following a link in the destination | Read as the source folder's owner, written as the state folder's owner, links and special files skipped, size-capped [setup-core] |
+| 27 | Low-Medium | `rpcwhitelistdefault=0` was decided from the top of bitcoin.conf only, ignoring `includeconf`, `[section]` scope and bitcoind's command line, so it could open every method to other RPC users or lock them out of one chain | In those cases setup does not edit and prints the lines to add by hand [setup-core] |
+| 28 | Low | With the node stopped, another account's `~/.bitcoin` could outrank the system data folder, and its `rpcconnect` became NodeSignal's RPC address, sending the RPC login off the machine | System data folders rank first; `rpc-url` only ever names this machine [setup-core] |
+| 29 | Low | A bitcoin.conf link planted in the node user's folder made root edit a root-owned file elsewhere, as root | Refused unless every folder on the path as given is root's [setup-core] |
+| 30 | Low | Root CLI commands trusted whatever listened on the console port: `advertise on` published its onion, `status` printed its text raw | The onion is used only when the listener belongs to NodeSignal's account (read from /proc/net/tcp); printed text has control characters removed [setup-core] |
+| 31 | Hardening | `update-apply` copied the package (up to 300 MB) before checking the signature | The manifest is verified first [update-apply] |
+| 32 | Low | The IPv6 /64 rate-limit block was taken from Node's compressed address text, so it did not group a /64 at all | Addresses are expanded first [peerabuse] |
+| 33 | Low | An inline onclick put an escaped host inside a JS string, where entity escaping does not protect | A data attribute; a static check refuses the pattern [console] |
+
+It also found documentation that promised more than the code (the peer
+port's bind, Tor for update checks, Tor installed by the package), now
+corrected, and the behaviours listed next.
+
 **Still open after the review, in honest terms**
 
 - The console still allows inline script (it is one file with onclick
@@ -494,3 +514,22 @@ the fix (except where noted) and pass after it.
   same host, not its GPG signature.
 - `asOwner` relies on glibc applying `seteuid` to every thread; none of
   its call sites have asynchronous work in flight.
+- A message to someone whose key is not pinned yet (a map peer, or a
+  contact added without a fingerprint) is trust on first use: the first
+  NodeSignal that proves a key at that address gets it, by answering on
+  its port 8788 or by connecting in from that IP. Behind a shared IP
+  (carrier-grade or campus NAT) that can be someone else. Contact links pin
+  the key first.
+- The :8333 identify handshake sends `/NodeSignal:1.4/` from the node's IP,
+  so nodes it identifies learn this IP runs NodeSignal even with
+  `advertise` off. Whether to send a neutral user agent is the
+  maintainer's call.
+- 1.4.0 still answers the 1.2 custom handshake (not Noise) and tries it as
+  a fallback when dialling; 1.3's notes said it would go in this release.
+  It goes in 1.5.
+- Setup sees whitelists on bitcoind's command line only while bitcoind
+  runs; a block written by an older version into a layout now refused is
+  left as it is; a link one non-root account plants to another non-root
+  account's bitcoin.conf is followed (the edit runs as that file's owner,
+  not root).
+- The hostile-render test needs Playwright and is not run by CI.

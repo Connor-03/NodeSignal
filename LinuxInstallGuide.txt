@@ -72,8 +72,11 @@ What the package does:
      (if bitcoin.conf is a link, beside the file it points to). The edit
      is made as the file's owner, never as root, so a link in a folder
      someone else controls cannot redirect it; if the owner cannot write
-     that folder, setup says no copy was kept. NodeSignal never reads
-     your node's cookie file.
+     that folder, setup says no copy was kept. If bitcoin.conf uses
+     includeconf, or whitelists RPC users in a [section] or on bitcoind's
+     command line, setup does not edit it (it cannot see every whitelist)
+     and prints the lines to add by hand. NodeSignal never reads your
+     node's cookie file.
   5. writes /etc/nodesignal/config.json (readable by the nodesignal user
      only): your display name (the hostname), the RPC address, and the
      RPC password. An existing file keeps its settings and password.
