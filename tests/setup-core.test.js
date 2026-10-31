@@ -822,6 +822,45 @@ t('setup leaves bitcoin.conf alone, and prints the lines, when the running bitco
   assert(/^rpcwhitelistdefault=0$/m.test(fs.readFileSync(conf, 'utf8')));
 });
 
+/* ---------------------------------------------------------- detection
+   Root cause (Oct 2026 final review): with bitcoind stopped, any account's
+   ~/.bitcoin holding blocks/ and a .cookie outranked /var/lib/bitcoind, and
+   setup wrote that bitcoin.conf's rpcconnect host as rpc-url, so NodeSignal
+   sent its RPC login to whatever host that account named. */
+t('detectBitcoinNode: with no node running, /var/lib/bitcoind outranks another account\'s ~/.bitcoin (final review poc3)', async () => {
+  const r = path.join(tmp, 'sysdd');
+  write(path.join(r, 'etc/passwd'), 'root:x:0:0:root:/root:/bin/sh\nbitcoin:x:998:998::/var/lib/bitcoind:/usr/sbin/nologin\nmallory:x:4244:4244::/home/mallory:/bin/sh\n');
+  write(path.join(r, 'var/lib/bitcoind/bitcoin.conf'), 'server=1\n');
+  fs.mkdirSync(path.join(r, 'var/lib/bitcoind/blocks'));
+  write(path.join(r, 'home/mallory/.bitcoin/bitcoin.conf'), 'rpcconnect=203.0.113.5\nrpcport=8332\n');
+  write(path.join(r, 'home/mallory/.bitcoin/.cookie'), '__cookie__:x');
+  fs.mkdirSync(path.join(r, 'home/mallory/.bitcoin/blocks'));
+  if (asRoot) ownTree(path.join(r, 'home/mallory'), OTHER_UID);
+  const d = await core.detectBitcoinNode({ root: r, platform: 'linux' });
+  assert.strictEqual(d.datadir, '/var/lib/bitcoind', d.how.join(' | '));
+  assert.strictEqual(d.confPath, '/var/lib/bitcoind/bitcoin.conf');
+  assert.strictEqual(d.rpcUrl, 'http://127.0.0.1:8332');
+});
+
+t('detectBitcoinNode and setup never take an rpcconnect host that is not this machine', async () => {
+  const { r } = fakeRoot('rpcconnect', { conf: 'rpcconnect=203.0.113.5\nrpcport=18350\n' });
+  const conf = path.join(r, 'home/alice/.bitcoin/bitcoin.conf');
+  const d = await core.detectBitcoinNode({ root: r, platform: 'linux' });
+  assert.strictEqual(d.rpcUrl, 'http://127.0.0.1:18350');
+  assert.strictEqual(d.rpcconnectIgnored, '203.0.113.5');
+  assert(d.how.some((h) => /^ignored rpcconnect=203\.0\.113\.5 in \/home\/alice\/\.bitcoin\/bitcoin\.conf: it is not this machine/.test(h)), d.how.join(' | '));
+  const out = runSetup(r);
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /Note: ignored rpcconnect=203\.0\.113\.5 .*set rpc-url in NodeSignal's config by hand/);
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(r, 'etc/nodesignal/config.json'), 'utf8'))['rpc-url'], 'http://127.0.0.1:18350');
+  // this machine's addresses are kept, with rpcconnect's own port unless rpcport is set
+  for (const [rc, url] of [['127.0.0.2', 'http://127.0.0.2:8332'], ['[::1]:18444', 'http://[::1]:18444'], ['localhost', 'http://localhost:8332'],
+    ['127.0.0.1:18445\nrpcport=18446', 'http://127.0.0.1:18446'], ['node.example.org', 'http://127.0.0.1:8332'], ['0.0.0.0', 'http://127.0.0.1:8332'], ['198.51.100.7:8332', 'http://127.0.0.1:8332']]) {
+    fs.writeFileSync(conf, `rpcconnect=${rc}\n`);
+    assert.strictEqual((await core.detectBitcoinNode({ root: r, platform: 'linux' })).rpcUrl, url, rc);
+  }
+});
+
 (async () => {
   for (const [name, fn] of tests) {
     try {

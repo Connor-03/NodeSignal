@@ -759,6 +759,7 @@ const PROC_NAMES = new Set(['bitcoind', 'bitcoin-qt', 'bitcoin-node', 'bitcoin-g
 const WIN_IMAGES = new Set(['bitcoind.exe', 'bitcoin-qt.exe', 'bitcoin-node.exe', 'bitcoin-gui.exe']);
 const CHAIN_SUBDIR = { main: '', test: 'testnet3', testnet4: 'testnet4', signet: 'signet', regtest: 'regtest' };
 const CHAIN_PORT = { main: 8332, test: 18332, testnet4: 48332, signet: 38332, regtest: 18443 };
+const SYSTEM_DATADIRS = ['/var/lib/bitcoind', '/var/lib/bitcoin'];
 
 function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch { return false; } }
 function isFile(p) { try { return fs.statSync(p).isFile(); } catch { return false; } }
@@ -925,7 +926,8 @@ function trustedProcesses(processes, R, how) {
 /* detectBitcoinNode: is a Bitcoin node (Core or Knots) installed here, and
    where does it keep its data? Never throws.
    Returns { installed, datadirs, datadir, confPath, cookiePath, chain,
-             rpcUrl, owner, running, processes, binaries, how }.
+             rpcUrl, rpcconnectIgnored, owner, running, processes, binaries,
+             how, rpcWhitelistOnCmdline }. rpcUrl is always on this machine.
    opts.root lets tests point the Linux scan at a fake filesystem. */
 async function detectBitcoinNode(opts = {}) {
   const platform = opts.platform || process.platform;
@@ -977,14 +979,24 @@ async function detectBitcoinNode(opts = {}) {
     seen.add(key);
     if (looksLikeDatadir(R(d))) datadirs.push(d);
   }
-  // Prefer the datadir a running node uses, then one holding a chain.
+  // Prefer the datadir a running node uses, then one holding a chain. With
+  // no node running, a system datadir comes first: only root can make a
+  // folder in /var/lib, while any account can make a ~/.bitcoin with blocks/
+  // and a .cookie, and setup would then edit that account's bitcoin.conf.
   datadirs.sort((a, b) => score(b) - score(a));
   function score(d) {
     let s = 0;
     if (processes.some((p) => p.datadir && samePath(p.datadir, d, platform))) s += 4;
+    else if (!processes.length && isSystemDatadir(d)) s += 8;
     if (isDir(R(path.join(d, 'blocks')))) s += 2;
     if (isFile(R(path.join(d, '.cookie')))) s += 1;
     return s;
+  }
+  // /var/lib/bitcoind or /var/lib/bitcoin, in a folder only root can change
+  // (when we are root and can tell)
+  function isSystemDatadir(d) {
+    if (platform !== 'linux' || !SYSTEM_DATADIRS.includes(path.posix.resolve(d))) return false;
+    return !(canSwitchIds() && unsafeFolder(R(path.dirname(d))));
   }
   const datadir = datadirs[0] || null;
 
@@ -1003,13 +1015,26 @@ async function detectBitcoinNode(opts = {}) {
   } else if (effectiveDatadir) {
     cookiePath = path.join(effectiveDatadir, CHAIN_SUBDIR[chain], '.cookie');
   }
-  const port = (conf && Number(conf.rpcport)) || CHAIN_PORT[chain];
-  let host = '127.0.0.1';
-  if (conf && conf.rpcconnect) host = conf.rpcconnect;
-  const rpcUrl = `http://${host.includes(':') && !host.startsWith('[') ? '[' + host + ']' : host}:${port}`;
+  const confPort = (conf && Number(conf.rpcport)) || CHAIN_PORT[chain];
+  let host = '127.0.0.1', port = confPort, rpcconnectIgnored = null;
+  // rpcconnect=host or host:port (rpcport wins over its port, as in
+  // bitcoin-cli). Only this machine: setup writes the result as rpc-url, and
+  // NodeSignal sends its RPC login there. A bitcoin.conf can belong to any
+  // account, so a remote host in it would carry that login off the machine.
+  if (conf && conf.rpcconnect) {
+    const hp = splitHostPort(conf.rpcconnect);
+    if (isLoopbackHost(hp.host)) {
+      host = hp.host.replace(/^\[|\]$/g, '');
+      if (hp.port && !(conf && Number(conf.rpcport))) port = hp.port;
+    } else rpcconnectIgnored = conf.rpcconnect;
+  }
+  const rpcUrl = `http://${host.includes(':') ? '[' + host + ']' : host}:${port}`;
+  if (rpcconnectIgnored !== null) {
+    ignored.push(`ignored rpcconnect=${String(rpcconnectIgnored).replace(/[^\x20-\x7e]/g, '?')} in ${confPath}: it is not this machine, so NodeSignal uses ${rpcUrl} and never sends its RPC login elsewhere by itself (for a node on another machine, set rpc-url in NodeSignal's config by hand)`);
+  }
   // The daemon applies rpcport= from bitcoin.conf by itself, but knows nothing
   // of test chains or rpcconnect=, so only then must installers write rpc-url.
-  const rpcUrlNeeded = host !== '127.0.0.1' || !!(chain !== 'main' && !(conf && conf.rpcport));
+  const rpcUrlNeeded = host !== '127.0.0.1' || port !== confPort || !!(chain !== 'main' && !(conf && conf.rpcport));
 
   const binaries = platform === 'win32' ? windowsBinaries(env) : (platform === 'linux' ? linuxBinaries(root) : []);
   for (const d of datadirs) how.push(`data directory ${d}`);
@@ -1033,10 +1058,29 @@ async function detectBitcoinNode(opts = {}) {
 
   return {
     installed: !!(datadirs.length || confPath || binaries.length || processes.length),
-    datadirs, datadir, confPath, cookiePath, chain, rpcUrl, rpcUrlNeeded, owner,
+    datadirs, datadir, confPath, cookiePath, chain, rpcUrl, rpcUrlNeeded, rpcconnectIgnored, owner,
     running: processes.length > 0, processes, binaries, how,
     rpcWhitelistOnCmdline: processes.some((p) => p.rpcWhitelistArgs),
   };
+}
+// "host", "host:port", "[v6]" or "[v6]:port"; a bare IPv6 address has no port
+function splitHostPort(s) {
+  s = String(s).trim();
+  let m = /^\[([^\]]+)\](?::(\d+))?$/.exec(s);
+  if (m) return { host: m[1], port: m[2] ? Number(m[2]) : null };
+  m = /^([^:]+):(\d+)$/.exec(s);
+  if (m) return { host: m[1], port: Number(m[2]) };
+  return { host: s, port: null };
+}
+// 127.0.0.0/8, ::1 (and IPv4-mapped 127/8) or localhost; never a name DNS answers
+function isLoopbackHost(h) {
+  h = String(h || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (h === 'localhost') return true;
+  if (net.isIPv4(h)) return h.split('.')[0] === '127';
+  if (!net.isIPv6(h)) return false;
+  let n;
+  try { n = new URL(`http://[${h}]/`).hostname; } catch { return false; }
+  return n === '[::1]' || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(n);
 }
 
 /* ------------------------------------------------------------ RPC */
@@ -1411,6 +1455,7 @@ module.exports = {
   defaultConfigPath, createPrompter, termStyle, uaCommentFor,
   copyStateTree,
   linuxProcesses,
+  isLoopbackHost,
 };
 
 /* ------------------------------------------------------------ direct use */
