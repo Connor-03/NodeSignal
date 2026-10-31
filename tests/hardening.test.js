@@ -330,7 +330,7 @@ const stateFile = (d) => JSON.parse(fs.readFileSync(path.join(d, 'state.json'), 
         let b = ''; req.on('data', (x) => (b += x)); req.on('end', () => {
           const { method } = JSON.parse(b);
           const result = method === 'getpeerinfo'
-            ? [{ addr: '198.51.100.7:8333', subver: '/NBXplorer:2.5/', pingtime: 0.0003, inbound: true, synced_headers: -1 },
+            ? [{ addr: '198.51.100.7:8333', subver: '/NBXplorer:2.5/', pingtime: 0.0003, inbound: true, synced_headers: -1, network: 'onion' },
               { addr: '203.0.113.9:8333', subver: '/Satoshi:28.0.0/', pingtime: 0.042, inbound: false, synced_headers: 900000 }]
             : method === 'getnetworkinfo' ? { subversion: '/Satoshi:28.0.0/', connections: 2 } : { blocks: 900000, chain: 'main' };
           res.end(JSON.stringify({ result, error: null, id: 'ns' }));
@@ -354,6 +354,8 @@ const stateFile = (d) => JSON.parse(fs.readFileSync(path.join(d, 'state.json'), 
         assert.strictEqual(nbx.latency, 0, 'a real measurement under half a millisecond');
         assert.strictEqual(core.height, 900000);
         assert.strictEqual(core.latency, 42);
+        assert.strictEqual(nbx.net, 'onion', 'bitcoind\'s network field is passed on (the console marks Tor peers with it)');
+        assert.strictEqual(core.net, null);
         u.close();
       } finally { await stop(c); mock.close(); }
     });

@@ -27,9 +27,21 @@ hood. Security changes are tracked in more depth in `SECURITY-CRITIQUE.md`.
 - A peer that has sent no block headers (BTCPay's NBXplorer, light clients)
   showed height -1. It now shows unknown.
 - A ping under half a millisecond (a peer on the same machine or LAN) showed
-  as "0 ms" in the peer card and the chat header, which read like a missing
-  value. It now says "<1 ms". Unmeasured pings were already shown as
-  unmeasured and drawn at the map's outer edge.
+  as "0 ms" on the map, in the peer card and in the chat header, which read
+  like a missing value. It now says "<1 ms". Unmeasured pings were already
+  shown as unmeasured and drawn at the map's outer edge.
+
+### Map
+
+- Peers that are not another operator you can message are labelled on the
+  map: "via Tor" (someone who connected to your node through Tor; it shows as
+  127.0.0.1 because Tor hides the real address), "this machine" (a program on
+  your computer, such as an indexer), "via I2P", and "local network" (a
+  private address, usually a program in a container, which can still be
+  messaged). The peer card and the conversation say why, and they get no
+  "add as contact" button. This uses the `network` field bitcoind reports
+  for each peer (Bitcoin Core 22 and later, and Knots); an older node's
+  inbound 127.0.0.1 peer is labelled "local or Tor".
 
 ## 1.3.0 (2026-10-30)
 

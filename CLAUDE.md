@@ -39,6 +39,13 @@ require breaking one, stop and ask.
    hover focus. It paints inside the boxes `computeLayout` reserves and moves
    nothing; label text may grow only while it still fits those boxes (the
    page's labels use at most about 94% of the plate width at 40 peers).
+   Two label changes were decided by the maintainer (Oct 2026): a ping under
+   1 ms reads `<1ms`, and a peer that cannot be messaged says so in its
+   sub-label instead of its implementation (`reachOf`: `via Tor` for an
+   inbound onion peer, which shows as 127.0.0.1; `this machine` for another
+   loopback address; `via I2P`; `local network` for a private address, which
+   stays messageable). Its tooltip and conversation explain why, and it gets
+   no "add as contact". Click still opens its conversation.
 10. The web console is this machine's only (decided Oct 2026): it binds
    127.0.0.1 and nothing else (`--bind` applies to the peer port only),
    accepts Host `localhost:<web-port>` / `127.0.0.1:<web-port>` only

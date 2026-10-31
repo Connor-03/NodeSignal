@@ -242,6 +242,8 @@
   .chip.none{background:var(--bg);color:var(--ink-faint);border-color:var(--line)}
   .chip.cap{color:var(--ink-dim);border-color:var(--line-strong);background:rgba(255,255,255,.03)}
   .tip .hint{margin-top:10px;font-size:var(--fs-xs);color:var(--ink-faint);border-top:1px solid var(--line);padding-top:8px}
+  .tip .reach{margin-top:9px;font-size:var(--fs-xs);line-height:1.45;color:#7fdcff}
+  .tip .reach.no{color:#ffd60a}
 
   /* ---------- messages ---------- */
   #view-msgs{flex-direction:row}
@@ -338,6 +340,10 @@
   .lockstrip{display:flex;align-items:center;gap:10px;flex-wrap:wrap;align-self:stretch;margin-bottom:var(--s3);padding:10px 14px;border-radius:var(--r);
     background:rgba(247,147,26,.06);border:1px solid rgba(247,147,26,.3);color:var(--btc-bright);font-size:var(--fs-sm)}
   .lockstrip span{flex:1;min-width:180px}
+  .reachcard{align-self:stretch;margin-bottom:var(--s3);padding:12px 14px;border-radius:var(--r);background:rgba(77,210,255,.05);
+    border:1px solid rgba(77,210,255,.3);color:var(--ink-dim);font-size:var(--fs-sm);line-height:1.5}
+  .reachcard.no{background:rgba(255,214,10,.05);border-color:rgba(255,214,10,.35)}
+  .reachcard b{display:block;color:var(--ink);font-family:var(--display);font-weight:600;margin-bottom:2px}
   .keycard{align-self:stretch;margin-bottom:var(--s3);padding:14px 16px;border-radius:var(--r-lg);background:rgba(255,69,58,.06);
     border:1px solid rgba(255,69,58,.35);color:var(--ink-dim);font-size:var(--fs-sm);line-height:1.55}
   .keycard b{display:block;color:#ff8078;font-family:var(--display);font-weight:600;font-size:var(--fs-md);margin-bottom:4px}
@@ -670,6 +676,28 @@ function hostOf(addr){                       // "1.2.3.4:8333" or "[2001:db8::1]
   return i>0&&addr.indexOf(':')===i?addr.slice(0,i):addr;
 }
 const implShort=p=>p.impl==='Unknown'?'unknown':p.impl.split(' ').pop();
+/* Map peers that are not another operator you can message. A peer that came
+   in through Tor shows as 127.0.0.1: Tor hands the connection over locally
+   and hides the real address (bitcoind says network "onion"). Any other
+   loopback address is a program on this machine (an indexer, a wallet
+   backend), and NodeSignal cannot dial I2P. A private address is on your own
+   network: usually a program too (a Docker container), sometimes a second
+   node, so it stays messageable. Contacts and peers advertising NodeSignal
+   are never marked. */
+const isLoopback=h=>/^127\./.test(h)||h==='::1';
+const isPrivate=h=>/^(10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h)||/^(f[cd][0-9a-f]{2}|fe[89ab][0-9a-f]):/i.test(h);
+function reachOf(p){
+  if(p.kind==='contact'||p.ns)return null;
+  const h=String(p.host||'').toLowerCase();
+  if(p.inbound&&(p.net==='onion'||(!p.net&&isLoopback(h))))
+    return p.net==='onion'
+      ?{key:'tor',short:'via Tor',canMsg:false,why:'It reached your node through Tor, which hides its real address, so it cannot be messaged from here.'}
+      :{key:'tor',short:'local or Tor',canMsg:false,why:'It connected from 127.0.0.1: a program on this computer, or a peer that came in through Tor, which hides its real address. Either way it cannot be messaged from here.'};
+  if(isLoopback(h))return {key:'local',short:'this machine',canMsg:false,why:'A program on this computer (an indexer or a wallet backend, for example), not another operator.'};
+  if(p.net==='i2p'||/\.i2p$/.test(h))return {key:'i2p',short:'via I2P',canMsg:false,why:'It reached your node over I2P, which NodeSignal cannot dial.'};
+  if(isPrivate(h))return {key:'lan',short:'local network',canMsg:true,why:'An address on your own network: usually a program such as a Docker container or a wallet backend, sometimes a second node.'};
+  return null;
+}
 state.everOpen=false;          // has this page ever reached the daemon?
 
 /* ===================== WEBSOCKET ===================== */
@@ -835,7 +863,7 @@ function rebuild(nodePeers, contacts){
     next.push({
       id:uid(), kind:'peer', host, addr:np.addr, port:(np.nodesignal&&np.nodesignal.port)||8788, ns:np.nodesignal||null,
       nick:'', impl:np.impl||'Unknown', version:np.version||'', ua:np.ua||null,
-      declared:np.declared||[], supports:[], services:[], network:null,
+      declared:np.declared||[], supports:[], services:[], network:null, net:np.net||null,
       height:np.height??null, latency:np.latency??null, unmeasured:np.latency==null,
       inbound:!!np.inbound, isNodePeer:true,
       hasPin:false, unread:0, msgs:[], online:false, established:false, lastSeen:0,
@@ -984,14 +1012,16 @@ function computeLayout(){
 // or LAN (under half a millisecond) arrives as 0, which reads like no value
 const msText=ms=>ms<1?'<1 ms':ms+' ms';
 function subLabel(p){
+  const lat=(!p.unmeasured&&p.latency!=null)?(p.latency<1?'<1ms':p.latency+'ms'):null;
   if(p.kind==='contact'){
     const bits=[p.impl==='Unknown'?'contact':implShort(p)];
     if(p.online)bits.push('online');
-    if(!p.unmeasured&&p.latency!=null)bits.push(p.latency+'ms');
+    if(lat)bits.push(lat);
     return bits.join(' · ');
   }
-  const bits=[p.impl==='Unknown'?'peer':implShort(p)];
-  if(!p.unmeasured&&p.latency!=null)bits.push(p.latency+'ms');
+  const r=reachOf(p);
+  const bits=[r?r.short:p.impl==='Unknown'?'peer':implShort(p)];
+  if(lat)bits.push(lat);
   return bits.join(' · ');
 }
 function ensureLayout(){
@@ -1283,6 +1313,8 @@ function showTip(p,g){
     rows.push(['link',p.online?'online now':p.established?'established, offline':'not yet replied']);
   }
   if(p.ns)rows.push(['NodeSignal','advertised in user agent']);
+  const reach=reachOf(p);
+  if(reach)rows.push(['reached', reach.short]);
 
   const dec=p.declared||[],sup=p.supports||[];
   let chips=`<div class="row"><span class="k">signaling</span></div>
@@ -1296,7 +1328,8 @@ function showTip(p,g){
     ${rows.map(([k,v])=>`<div class="row"><span class="k">${k}</span><span class="v">${esc(v)}</span></div>`).join('')}
     ${p.ua?`<div class="ua">${esc(p.ua)}</div>`:''}
     ${chips}
-    <div class="hint">${p.kind==='contact'?'click to open chat':'click to message this operator'}${p.unread?' · '+p.unread+' unread':''}</div>
+    ${reach?`<div class="reach ${reach.canMsg?'':'no'}">${esc(reach.why)}</div>`:''}
+    <div class="hint">${p.kind==='contact'?'click to open chat':reach&&!reach.canMsg?'cannot be messaged':'click to message this operator'}${p.unread?' · '+p.unread+' unread':''}</div>
   </div>`;
   tip.classList.add('show');
   // Beside the peer when there is room (right, then left), so the card never
@@ -1408,6 +1441,7 @@ function renderThread(){
   const acts=p.kind==='contact'
     ? `<button class="actbtn opt" onclick="doIdentify('${p.id}')" title="Re-read their node over :8333">identify</button>
        <button class="actbtn danger" onclick="doRemove('${p.id}')">remove</button>`
+    : reachOf(p)&&!reachOf(p).canMsg?''
     : `<button class="actbtn primary" onclick="doAddPeer('${p.id}')" title="Save as a NodeSignal contact">add as contact</button>`;
   const hasPending=p.msgs.some(m=>m.from==='me'&&m.status==='pending');
 
@@ -1433,6 +1467,8 @@ function renderThread(){
 
   const all=threadMsgs(p);
   let body='',prevDay='',prev=null;
+  const reach=reachOf(p);
+  if(reach)body+=`<div class="reachcard ${reach.canMsg?'':'no'}"><b>${reach.canMsg?'On your local network':'This peer cannot be messaged'}</b>${esc(reach.why)}</div>`;
   if(p.pendingFp)body+=`<div class="keycard"><b>This contact presented a different identity key</b>
     The connection was rejected. Either the operator reinstalled NodeSignal, or someone else is answering at this address.
     <div class="fps"><span>pinned</span><code>${esc(fpGroups(p.peerFp||''))}</code><span>presented</span><code class="new">${esc(fpGroups(p.pendingFp.got))}</code>
@@ -1463,7 +1499,9 @@ function renderThread(){
   }
 
   if(!all.length){
-    body = p.kind==='contact'
+    body = reach
+      ? `<div class="intro"><b>${reach.canMsg?'On your local network':'This peer cannot be messaged'}</b>${esc(reach.why)}${reach.canMsg?' A message only arrives if it runs nodesignald on port 8788.':''}<br><span class="where">${esc(p.addr||p.host)}</span></div>`
+      : p.kind==='contact'
       ? `<div class="intro"><b>Say hello</b>Messages go straight to this operator's daemon, end to end encrypted. No server in between.<br><span class="where">${esc(p.host)}:${esc(p.port)}</span></div>`
       : p.ns
       ? `<div class="intro"><b>This peer advertises NodeSignal</b>Its user agent carries the nodesignal comment, so its operator says they run nodesignald. That's self-declared. Your message goes straight to their daemon; if it isn't there, yours keeps retrying.<br><span class="where">${esc(p.host)}:${esc(p.port)}</span></div>`
@@ -1485,7 +1523,9 @@ function renderThread(){
       <input id="composer-in" placeholder="message ${esc(nameOf(p))}…" autocomplete="off" aria-label="Message"
              onkeydown="if(event.key==='Enter')sendMsg()">
       <button class="send" onclick="sendMsg()" title="Send" aria-label="Send">➤</button></div>
-      <div class="hint ${online?'':'q'}">${online?'enter to send · delivered daemon to daemon over :8788':'daemon offline · messages are queued and sent when it reconnects'}</div></div>`;
+      <div class="hint ${online?'':'q'}">${!online?'daemon offline · messages are queued and sent when it reconnects'
+        :reach&&!reach.canMsg?'this peer cannot be messaged · a message sent here fails and says why'
+        :'enter to send · delivered daemon to daemon over :8788'}</div></div>`;
 
   const nb=document.getElementById('msgs');
   nb.scrollTop=(!same||atBottom)?nb.scrollHeight:oldTop;

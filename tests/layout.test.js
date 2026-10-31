@@ -79,7 +79,17 @@ const SCENES = {
   '30 node peers and 10 contacts with long nicks, some unmeasured': () => [
     Array.from({ length: 30 }, (_, i) => nodePeer(i, i % 6 === 5 ? null : 20 + i * 23)),
     Array.from({ length: 10 }, (_, i) => contact(i, ['satoshi-fan', 'knots-operator-eu', 'relay-policy-nerd', 'x', 'node-in-a-closet', 'mempool-watcher', 'op', 'pleb-node-03', 'quiet-node-in-the-alps', 'ab'][i], i % 3 ? 30 + i * 70 : null))],
+  // the peers a real node also has: Tor inbound (127.0.0.1, network onion),
+  // a local program, a Docker container, an I2P peer
+  '35 node peers plus Tor, local, LAN and I2P peers': () => [[...Array.from({ length: 35 }, (_, i) => nodePeer(i, typical(i))), ...SPECIAL()], []],
 };
+const SPECIAL = () => [
+  { addr: '127.0.0.1:30123', ua: '/Satoshi:28.1.0/Knots:20250305/', impl: 'Bitcoin Knots', version: 'v28.1', declared: [], latency: 379, inbound: true, height: 950000, nodesignal: null, net: 'onion' },
+  { addr: '[::1]:30456', ua: '/electrs:0.10/', impl: 'Unknown', version: '', declared: [], latency: 0, inbound: true, height: null, nodesignal: null, net: 'not_publicly_routable' },
+  { addr: '172.19.0.7:31789', ua: '/NBXplorer:2.5/', impl: 'Unknown', version: '', declared: [], latency: 0, inbound: true, height: null, nodesignal: null, net: 'ipv4' },
+  { addr: '10.0.0.5:8333', ua: '/Satoshi:29.0.0/', impl: 'Bitcoin Core', version: 'v29', declared: [], latency: 2, inbound: false, height: 950000, nodesignal: null, net: 'ipv4' },
+  { addr: 'ukeu3k5oycgaauneqgtnvselmt4yemvoilkln7jpvamvfx7dnkdq.b32.i2p:0', ua: '/Satoshi:29.0.0/', impl: 'Bitcoin Core', version: 'v29', declared: [], latency: 900, inbound: false, height: 950000, nodesignal: null, net: 'i2p' },
+];
 // Degenerate crowds: all 40 in one narrow band. The frozen layout cannot always
 // separate these (its radial clamp keeps each node within 1.7 node radii of its
 // latency ring), so here only the frame is asserted and overlaps are reported
@@ -200,6 +210,23 @@ t('more than 40 peers: the chat you have open stays on the map', () => {
   const { L } = layoutOf(5, np, cs, host);
   assert.strictEqual(L.nodes.length, 40);
   assert(L.nodes.some((nd) => nd.p.host === host), 'drawn while its chat is open');
+});
+
+t('map labels: peers that cannot be messaged say why, and a ping under 1 ms reads <1ms', () => {
+  const np = [...SPECIAL(), nodePeer(0, 0), nodePeer(1, 42)];
+  np[5].addr = '198.51.100.200:8333';                       // a public peer that happens to answer in under 0.5 ms
+  const { L } = layoutOf(7, np, []);
+  const sub = Object.fromEntries(L.nodes.map((nd) => [nd.p.host, nd.sub]));
+  assert.strictEqual(sub['127.0.0.1'], 'via Tor · 379ms');
+  assert.strictEqual(sub['::1'], 'this machine · <1ms');
+  assert.strictEqual(sub['172.19.0.7'], 'local network · <1ms');
+  assert.strictEqual(sub['10.0.0.5'], 'local network · 2ms');
+  assert.match(sub['ukeu3k5oycgaauneqgtnvselmt4yemvoilkln7jpvamvfx7dnkdq.b32.i2p'], /^via I2P/);
+  assert.strictEqual(sub['198.51.100.200'], 'Core · <1ms', 'a public peer keeps its implementation');
+  assert.match(sub['203.0.113.11'], /· 42ms$/);
+  // an inbound 127.0.0.1 peer from a node too old to say "onion" is either
+  const old = layoutOf(7, [{ ...SPECIAL()[0], net: null }], []);
+  assert.strictEqual(old.L.nodes[0].sub, 'local or Tor · 379ms');
 });
 
 t('latency rings keep their even radial spacing and ordering at 40 peers', () => {
