@@ -324,13 +324,15 @@ t('termStyle: plain mode is ASCII with no escapes; colour mode uses only WGL4 sy
 });
 
 t('cli setup (the .deb postinst step): nodesignal user, rpcauth, never the cookie', async () => {
-  const { r } = fakeRoot('deb', { conf: 'server=1\nrpcport=18555\n' });
+  const { r, uid } = fakeRoot('deb', { conf: 'server=1\nrpcport=18555\n' });
   const confFile = path.join(r, 'home/alice/.bitcoin/bitcoin.conf');
   const origConf = fs.readFileSync(confFile, 'utf8');
   write(path.join(r, 'home/alice/.bitcoin/.cookie'), '__cookie__:abc');
-  // an older 1.3 pre-release: drop-in running as the node owner, state in her home
+  // an older 1.3 pre-release: drop-in running as the node owner, state in her
+  // home (hers: that daemon ran as her)
   write(path.join(r, 'etc/systemd/system/nodesignal.service.d/10-user.conf'), '# Written by nodesignal setup. Re-detect with: sudo nodesignal setup --redetect\n[Service]\nUser=alice\n');
   write(path.join(r, 'home/alice/.nodesignal/state.json'), '{"old":true}');
+  if (asRoot) ownTree(path.join(r, 'home/alice/.nodesignal'), uid);
   write(path.join(r, 'etc/nodesignal/config.json'), JSON.stringify({ nick: 'kept', data: '/home/alice/.nodesignal', 'rpc-cookie': '/home/alice/.bitcoin/.cookie' }));
   const run = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r, ...a], { encoding: 'utf8', timeout: 30000 });
   const out = run();
@@ -369,10 +371,11 @@ t('cli setup (the .deb postinst step): nodesignal user, rpcauth, never the cooki
 
 t('cli setup carries a 1.2 from-source unit over: its history, never its RPC password', async () => {
   // 1.2 kept everything on the ExecStart line and history in ~/.nodesignal of User=
-  const { r } = fakeRoot('deb12', { conf: 'server=1\nrpcuser=pool\nrpcpassword=poolsecret\n' });
+  const { r, uid } = fakeRoot('deb12', { conf: 'server=1\nrpcuser=pool\nrpcpassword=poolsecret\n' });
   const unit = '/etc/systemd/system/nodesignal.service';
   write(path.join(r, unit), '[Service]\nUser=alice\nExecStart=/usr/bin/node /opt/ns/nodesignald.js --nick oldbox --web-port 8789 --rpc-user pool --rpc-pass poolsecret\n');
   write(path.join(r, 'home/alice/.nodesignal/state.json'), '{"v12":true}');
+  if (asRoot) ownTree(path.join(r, 'home/alice/.nodesignal'), uid);   // the unit ran as alice
   const out = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r, '--migrate-unit', unit], { encoding: 'utf8', timeout: 30000 });
   assert.strictEqual(out.status, 0, out.stdout + out.stderr);
   assert(/Copied your identity and history from \/home\/alice\/\.nodesignal/.test(out.stdout), out.stdout);
@@ -688,6 +691,80 @@ t('purge (postrm) rewrites bitcoin.conf as its owner, and leaves a root-owned on
   assert.strictEqual(out.status, 0, out.stdout + out.stderr);
   assert.match(out.stdout, /Left .* alone: an account other than root can change a folder above/);
   assert(fs.readFileSync(conf2, 'utf8').includes(core.RPC_BEGIN));
+});
+
+/* ---------------------------------------------------------- the old state folder (setup, as root)
+   Root cause (Oct 2026 final review): setup copied an older install's state
+   folder with fs.cpSync as root. Its path is the "data" of a config the
+   nodesignal account can write, and cpSync followed a link that account had
+   left in /var/lib/nodesignal, so root wrote files of its choosing anywhere. */
+const runSetup = (r, ...a) => spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r, ...a], { encoding: 'utf8', timeout: 30000 });
+
+t('setup refuses an old state folder inside /var/lib/nodesignal and never writes through a link there (final review poc2)', () => {
+  const { r } = fakeRoot('fr1', { conf: 'server=1\n' });
+  const sd = path.join(r, 'var/lib/nodesignal'), target = path.join(tmp, 'fr1-target');
+  fs.mkdirSync(target, { mode: 0o700 });
+  // the nodesignal account: a folder of its own holding state.json and
+  // evil/payload, a link named evil beside it, no state.json of its own, and
+  // "data" in the config pointing at that folder
+  write(path.join(sd, 'sub/state.json'), '{}');
+  write(path.join(sd, 'sub/evil/payload'), 'planted\n');
+  fs.symlinkSync(target, path.join(sd, 'evil'));
+  if (asRoot) { fs.chownSync(sd, 999, 999); ownTree(path.join(sd, 'sub'), 999); fs.lchownSync(path.join(sd, 'evil'), 999, 999); }
+  write(path.join(r, 'etc/nodesignal/config.json'), JSON.stringify({ nick: 'x', data: '/var/lib/nodesignal/sub' }));
+  const out = runSetup(r);
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.deepStrictEqual(fs.readdirSync(target), [], 'nothing written through the link');
+  assert.match(out.stdout, /Did not copy \/var\/lib\/nodesignal\/sub to \/var\/lib\/nodesignal: .* is inside /);
+  assert(!fs.existsSync(path.join(sd, 'state.json')));
+});
+
+t('setup copies an old state folder as its owner: links on either side and FIFOs are skipped, never followed', () => {
+  const { r, uid } = fakeRoot('fr2', { conf: 'server=1\n' });
+  const old = path.join(r, 'home/alice/.nodesignal'), sd = path.join(r, 'var/lib/nodesignal');
+  const target = path.join(tmp, 'fr2-target'), secret = path.join(tmp, 'fr2-secret.json');
+  fs.mkdirSync(target, { mode: 0o700 });
+  fs.writeFileSync(secret, '{"only":"root"}', { mode: 0o600 });
+  write(path.join(old, 'state.json'), '{"old":true}');
+  write(path.join(old, 'social.json'), '{"posts":[]}');
+  write(path.join(old, 'sub/x.json'), '{"x":1}');
+  fs.symlinkSync(secret, path.join(old, 'leak.json'));        // the old folder's owner links a file only root may read
+  spawnSync('mkfifo', [path.join(old, 'fifo')]);
+  if (asRoot) { ownTree(path.join(old, 'sub'), uid); for (const f of ['', 'state.json', 'social.json']) fs.chownSync(path.join(old, f), uid, uid); fs.lchownSync(path.join(old, 'leak.json'), uid, uid); }
+  fs.mkdirSync(sd, { recursive: true });
+  fs.symlinkSync(target, path.join(sd, 'sub'));               // and the nodesignal account plants a link
+  if (asRoot) { fs.chownSync(sd, 999, 999); fs.lchownSync(path.join(sd, 'sub'), 999, 999); }
+  write(path.join(r, 'etc/nodesignal/config.json'), JSON.stringify({ nick: 'x', data: '/home/alice/.nodesignal' }));
+  const out = runSetup(r);
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /Copied your identity and history from \/home\/alice\/\.nodesignal/);
+  assert.match(out.stdout, /Not copied: .*fifo \(not a plain file\)/);
+  assert.match(out.stdout, /Not copied: .*leak\.json \(a symbolic link\)/);
+  assert.strictEqual(fs.readFileSync(path.join(sd, 'state.json'), 'utf8'), '{"old":true}');
+  assert.strictEqual(fs.readFileSync(path.join(sd, 'social.json'), 'utf8'), '{"posts":[]}');
+  assert(!fs.existsSync(path.join(sd, 'leak.json')), 'a link is not copied');
+  assert.deepStrictEqual(fs.readdirSync(target), [], 'nothing written through the planted link');
+  if (asRoot) for (const f of ['state.json', 'social.json']) assert.strictEqual(fs.lstatSync(path.join(sd, f)).uid, 999, f + ' written by the service user');
+  assert.strictEqual(fs.readFileSync(path.join(old, 'state.json'), 'utf8'), '{"old":true}', 'the original stays');
+});
+
+t('copyStateTree refuses a folder that holds the destination, a link, one over the size cap, and a root-owned one another account can change', () => {
+  const base = path.join(tmp, 'cst'), src = path.join(base, 'old'), dst = path.join(base, 'new');
+  write(path.join(src, 'big.bin'), Buffer.alloc(2048));
+  write(path.join(src, 'state.json'), '{}');
+  fs.mkdirSync(dst);
+  assert.throws(() => core.copyStateTree(base, dst), /is inside/);
+  assert.throws(() => core.copyStateTree(src, dst, { maxBytes: 1024 }), /holds more than 1024 bytes/);
+  assert.deepStrictEqual(fs.readdirSync(dst), [], 'a refused source writes nothing');
+  fs.symlinkSync(src, path.join(base, 'old-link'));
+  assert.throws(() => core.copyStateTree(path.join(base, 'old-link'), dst), /not a plain folder/);
+  if (asRoot) {
+    const theirs = path.join(base, 'theirs');
+    write(path.join(theirs, 'ns/state.json'), '{}');
+    fs.chownSync(theirs, NODE_UID, NODE_UID);
+    assert.throws(() => core.copyStateTree(path.join(theirs, 'ns'), dst), /belongs to root, but .*theirs can be changed by an account other than root/);
+  }
+  assert.strictEqual(core.copyStateTree(src, dst).files, 2);
 });
 
 (async () => {

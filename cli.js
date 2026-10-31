@@ -60,6 +60,18 @@ function restartHint() {
   if (IS_WIN) return 'Restart NodeSignal: nodesignal.exe restart (or sign out and back in).';
   return 'Restart NodeSignal: sudo systemctl restart nodesignal';
 }
+/* Text another account chose goes on the terminal (root's, with sudo): what
+   /health says (whoever listens on the web port: NodeSignal, or another
+   account's program while NodeSignal is stopped), a path from the config the
+   nodesignal account can write, names of files in its folders. Such text is
+   printed without control characters (C0, DEL, C1, and the bidirectional and
+   line-separator marks), which could otherwise move the cursor, retitle the
+   window or hide earlier lines, and at most max characters of it. */
+const UNPRINTABLE = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+function printable(v, max = 200) {
+  if (v === undefined || v === null) return '';
+  return String(v).replace(UNPRINTABLE, '').slice(0, max);
+}
 
 /* ------------------------------------------------------------ status */
 async function cmdStatus(ctx) {
@@ -671,7 +683,7 @@ async function cmdUninstall(ctx) {
      2. /etc/nodesignal/config.json, 0600, owned by that user, holding
         NodeSignal's own RPC login (rpc-user nodesignal, a random rpc-pass)
      3. the state directory /var/lib/nodesignal (an older install's state is
-        copied in once; the original stays where it was)
+        copied in once, never as root; the original stays where it was)
      4. bitcoin.conf gets rpcauth=nodesignal:<salt>$<hash> plus an
         rpcwhitelist of exactly the three methods the daemon calls; the node
         must be restarted to read them, and we say so instead of doing it
@@ -731,16 +743,17 @@ async function cmdSetup(ctx) {
   // a 1.2 from-source unit had no config file: its history sat in --data,
   // or in ~/.nodesignal of the unit's User= (root when it named none)
   const unitData = migrated && (migrated.data || oldUnitHome(core, root, migrated.user));
-  const oldData = [cfg.data, unitData].find((d) => d && d !== STATE_DIR) || null;
+  const oldData = [cfg.data, unitData].find((d) => typeof d === 'string' && d && path.posix.resolve(d) !== STATE_DIR) || null;
   cfg.data = STATE_DIR;
-  if (!fs.existsSync(P(STATE_DIR))) fs.mkdirSync(P(STATE_DIR), { recursive: true, mode: 0o700 });
+  if (!fs.existsSync(P(STATE_DIR))) {
+    fs.mkdirSync(path.dirname(P(STATE_DIR)), { recursive: true });   // parents keep the default mode
+    fs.mkdirSync(P(STATE_DIR), { mode: 0o700 });
+  }
   if (oldData && fs.existsSync(P(path.join(oldData, 'state.json')))) {
-    if (fs.existsSync(P(path.join(STATE_DIR, 'state.json')))) {
-      say(`Note: ${oldData} also holds NodeSignal state; ${STATE_DIR} already has its own, so it was left alone.`);
-    } else {
-      fs.cpSync(P(oldData), P(STATE_DIR), { recursive: true, force: false, errorOnExist: false });
-      say(`Copied your identity and history from ${oldData} to ${STATE_DIR}. The original stays where it was.`);
-    }
+    let has = true;
+    try { fs.lstatSync(P(path.join(STATE_DIR, 'state.json'))); } catch { has = false; }
+    if (has) say(`Note: ${printable(oldData, 300)} also holds NodeSignal state; ${STATE_DIR} already has its own, so it was left alone.`);
+    else migrateState(core, P, oldData, user);
   }
   chownTree(P(STATE_DIR), user);
   try { fs.chmodSync(P(STATE_DIR), 0o700); } catch { }
@@ -804,6 +817,28 @@ function chownTree(dir, user) {
   if (!isRoot()) return;
   try { execFileSync('chown', ['-R', '-P', '--no-dereference', '--from=0', `${user.uid}:${user.gid}`, dir], { stdio: 'ignore', timeout: 120000 }); }
   catch (e) { say(`Note: could not hand ${dir} to ${user.name} (${e.code || 'chown failed'}). Fix it with: sudo chown -R -P --from=0 ${user.name}: ${dir}`); }
+}
+/* An older install's state folder (the config's "data", or a 1.2 unit's)
+   into STATE_DIR. That path comes from a config the nodesignal account can
+   write, and both folders belong to other accounts, so root never copies as
+   root (core.copyStateTree reads as the old folder's owner and writes as the
+   new one's: the service user, to whom a folder root just made is handed
+   first). Anything refused is said, and the original is never touched. */
+function migrateState(core, P, oldData, user) {
+  const shown = printable(oldData, 300);   // from a config another account can write
+  if (!path.posix.isAbsolute(oldData)) { say(`Note: ${shown} (an older install's state folder) is not a full path, so it was not copied.`); return; }
+  if (isRoot()) {
+    try { const st = fs.lstatSync(P(STATE_DIR)); if (st.isDirectory() && st.uid === 0) fs.lchownSync(P(STATE_DIR), user.uid, user.gid); } catch { }
+  }
+  let r;
+  try { r = core.copyStateTree(P(oldData), P(STATE_DIR)); }
+  catch (e) {
+    say(`Did not copy ${shown} to ${STATE_DIR}: ${printable(e.message, 600)}.`);
+    say(`If it holds the identity you want to keep, copy its files into ${STATE_DIR} yourself and give them to ${user.name} (Linux, on the node: sudo chown -R ${user.name}: ${STATE_DIR}).`);
+    return;
+  }
+  say(`Copied your identity and history from ${shown} to ${STATE_DIR}. The original stays where it was.`);
+  if (r.skipped.length) say(`Not copied: ${printable(r.skipped.slice(0, 5).join(', '), 600)}${r.skipped.length > 5 ? ` and ${r.skipped.length - 5} more` : ''}.`);
 }
 function removeOldDropIn(P) {
   try {

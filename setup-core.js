@@ -211,6 +211,108 @@ function replaceFileSync(file, data, mode = 0o600) {
   try { fs.renameSync(tmp, file); } catch (e) { try { fs.unlinkSync(tmp); } catch { } throw e; }
 }
 
+/* copyStateTree(src, dst): an older install's state folder into the new
+   one (setup, as root). Both belong to other accounts, which can put links in
+   them or swap entries while root works, and the old folder's path comes
+   from a config the nodesignal account can write. So root never copies as
+   root: src is read as its owner, dst written as its owner (asOwner); only
+   real folders and plain files are copied (no links, FIFOs or devices),
+   COPY_MAX_BYTES in all; new files are made with O_EXCL (never through a
+   link) and anything already in dst is kept. Everything is read before
+   anything is written, so a refused source writes nothing. A root-owned src
+   is read as root only when no other account can change it or a folder
+   above it. Throws when src is not a real folder, when one folder holds the
+   other, when src is too big, or when its state.json cannot be read or
+   written. Returns { files, dirs, skipped }. */
+const COPY_MAX_BYTES = 64 * 1024 * 1024, COPY_MAX_ENTRIES = 10000, COPY_MAX_DEPTH = 16;
+function copyStateTree(src, dst, { maxBytes = COPY_MAX_BYTES } = {}) {
+  const C = fs.constants;
+  src = path.resolve(src); dst = path.resolve(dst);
+  const within = (a, b) => { const r = path.relative(b, a); return r === '' || (r !== '..' && !r.startsWith('..' + path.sep) && !path.isAbsolute(r)); };
+  const real = (p) => { try { return fs.realpathSync(p); } catch { return p; } };
+  for (const [a, b] of [[src, dst], [real(src), real(dst)]]) {
+    if (within(a, b)) throw new Error(`${src} is inside ${dst}`);
+    if (within(b, a)) throw new Error(`${dst} is inside ${src}`);
+  }
+  const root = canSwitchIds();
+  const owned = (p, what) => {
+    const st = fs.lstatSync(p);
+    if (!st.isDirectory()) throw new Error(`${p} is not a plain folder (a symbolic link?)`);
+    if (!root) return null;
+    if (st.uid !== 0) return ownerIdentity(st.uid, st.gid);
+    const bad = unsafeFolder(p);
+    if (bad) throw new Error(`${what} ${p} belongs to root, but ${bad.dir} can be changed by an account other than root (${bad.why})`);
+    return null;
+  };
+  const srcId = owned(src, 'the old state folder');
+  const dstId = owned(dst, 'the state folder');
+  const items = [], skipped = [];
+  let total = 0, count = 0;
+  // read, as src's owner (as root: folders another account controls are skipped)
+  asOwner(srcId, () => {
+    const walk = (rel, depth) => {
+      let names;
+      try { names = fs.readdirSync(rel ? path.join(src, rel) : src).sort(); }
+      catch (e) { if (!rel) throw e; skipped.push(`${rel} (${e.code || e.message})`); return; }
+      for (const name of names) {
+        const r = rel ? path.join(rel, name) : name, p = path.join(src, r);
+        if (++count > COPY_MAX_ENTRIES) throw new Error(`${src} holds more than ${COPY_MAX_ENTRIES} entries`);
+        let st;
+        try { st = fs.lstatSync(p); } catch (e) { skipped.push(`${r} (${e.code || e.message})`); continue; }
+        if (st.isDirectory()) {
+          if (depth >= COPY_MAX_DEPTH) { skipped.push(`${r} (too deep)`); continue; }
+          if (root && !srcId && (st.uid !== 0 || ((st.mode & 0o022) && !(st.mode & 0o1000)))) { skipped.push(`${r} (another account can change it)`); continue; }
+          items.push({ rel: r, dir: true });
+          walk(r, depth + 1);
+        } else if (st.isFile()) {
+          let buf;
+          try { buf = readPlainFileSync(p, maxBytes - total); }
+          catch (e) {
+            if (e.code === 'ETOOBIG') throw new Error(`${src} holds more than ${maxBytes >= 1048576 ? Math.round(maxBytes / 1048576) + ' MiB' : maxBytes + ' bytes'}`);
+            skipped.push(`${r} (${e.code === 'ELOOP' ? 'a symbolic link' : e.code === 'ENOTPLAIN' ? 'not a plain file' : e.code || e.message})`);
+            continue;
+          }
+          total += buf.length;
+          items.push({ rel: r, data: buf });
+        } else skipped.push(`${r} (${st.isSymbolicLink() ? 'a symbolic link' : 'not a plain file'})`);
+      }
+    };
+    walk('', 0);
+  });
+  if (!items.some((it) => it.rel === 'state.json' && it.data)) throw new Error(`${path.join(src, 'state.json')} could not be read as a plain file`);
+  // write, as dst's owner
+  let files = 0, dirs = 0, wroteState = false;
+  const blocked = [];
+  asOwner(dstId, () => {
+    for (const it of items) {
+      if (blocked.some((b) => it.rel.startsWith(b + path.sep))) continue;
+      const p = path.join(dst, it.rel);
+      if (it.dir) {
+        try { fs.mkdirSync(p, { mode: 0o700 }); dirs++; continue; }
+        catch (e) {
+          let st = null;
+          if (e.code === 'EEXIST') { try { st = fs.lstatSync(p); } catch { } }
+          if (st && st.isDirectory()) continue;   // already there: fill it in
+          blocked.push(it.rel);
+          skipped.push(`${it.rel} (${st ? 'something that is not a folder is already there' : e.code || e.message})`);
+        }
+        continue;
+      }
+      let fd;
+      try { fd = fs.openSync(p, C.O_WRONLY | C.O_CREAT | C.O_EXCL | (C.O_NOFOLLOW || 0), 0o600); }
+      catch (e) { skipped.push(`${it.rel} (${e.code === 'EEXIST' ? 'already there, kept' : e.code || e.message})`); continue; }
+      try {
+        let off = 0;
+        while (off < it.data.length) off += fs.writeSync(fd, it.data, off, it.data.length - off);
+      } finally { fs.closeSync(fd); }
+      files++;
+      if (it.rel === 'state.json') wroteState = true;
+    }
+  });
+  if (!wroteState) throw new Error(`state.json could not be written in ${dst} (${(skipped.find((s) => s.startsWith('state.json (')) || '').slice(12, -1) || 'unknown'})`);
+  return { files, dirs, skipped };
+}
+
 /* Where an edit of bitcoin.conf really lands. A symlinked bitcoin.conf is
    followed to the real file (operators do that on purpose); the edit then
    runs as that file's owner (a new file: as the owner of the folder it goes
@@ -1271,6 +1373,7 @@ module.exports = {
   findRpcAuth, rpcCall, rpcCheck, checkNode, rpcHint,
   portFree, tailscaleAddr, httpGetJson, waitForHealth, webUrl,
   defaultConfigPath, createPrompter, termStyle, uaCommentFor,
+  copyStateTree,
 };
 
 /* ------------------------------------------------------------ direct use */
