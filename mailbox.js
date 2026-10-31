@@ -75,9 +75,12 @@ const pubOf = (priv) => Buffer.from(crypto.createPublicKey(privObj(priv)).export
 // OpenSSL refuses an all-zero result (a low-order public key) by throwing.
 const dh = (priv, pub) => crypto.diffieHellman({ privateKey: privObj(priv), publicKey: pubObj(pub) });
 const hkdf = (ikm, salt, info) => Buffer.from(crypto.hkdfSync('sha256', ikm, salt, info, 32));
+// From random bytes, not generateKeyPairSync, which can deadlock on Node 18
+// when its key is exported (see freshX25519 in noise.js).
 function ephemeral() {
-  const jwk = crypto.generateKeyPairSync('x25519').privateKey.export({ format: 'jwk' });
-  return { priv: Buffer.from(jwk.d, 'base64url'), pub: Buffer.from(jwk.x, 'base64url') };
+  const priv = crypto.randomBytes(32);
+  priv[0] &= 248; priv[31] &= 127; priv[31] |= 64;
+  return { priv, pub: pubOf(priv) };
 }
 const senderMac = (macKey, ePub, rPub, body) => crypto.createHmac('sha256', macKey).update(ePub).update(rPub).update(body).digest();
 

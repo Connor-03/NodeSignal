@@ -40,8 +40,12 @@ const ONION_RE = /^[a-z2-7]{56}\.onion$/;
 const HOST_RE = /^[A-Za-z0-9.:\-[\]]{1,255}$/;
 
 /* ---- keys ---- */
+// From a random seed, not generateKeyPairSync, which can deadlock on Node 18
+// when its key is exported (see freshX25519 in noise.js).
+const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
 function newSigningKey() {
-  const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+  const privateKey = crypto.createPrivateKey({ key: Buffer.concat([PKCS8_ED25519_PREFIX, crypto.randomBytes(32)]), format: 'der', type: 'pkcs8' });
+  const publicKey = crypto.createPublicKey(privateKey);
   return {
     priv: privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'),
     pub: rawPub(publicKey).toString('base64'),

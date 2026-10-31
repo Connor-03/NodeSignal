@@ -256,13 +256,15 @@ t('v2 legacy reproduces the pre-v3 golden vector byte for byte', () => {
     });
   };
   const GA = idFrom(G.static_bytes.initiator), GB = idFrom(G.static_bytes.responder);
-  const real = crypto.generateKeyPairSync;
+  // ephemeral keys come from 32 random bytes (freshX25519 in noise.js), so the
+  // golden ones are fed in there; clamping does not change an X25519 key's use
+  const real = crypto.randomBytes;
   const queue = [G.ephemeral_bytes.initiator, G.ephemeral_bytes.responder];
-  crypto.generateKeyPairSync = (type, ...rest) => (queue.length ? keyFrom(queue.shift()) : real(type, ...rest));
+  crypto.randomBytes = (n, ...rest) => (n === 32 && queue.length ? Buffer.alloc(32, parseInt(queue.shift(), 16)) : real(n, ...rest));
   let s, r, f, g;
   try {
     s = legacy.initStart(GA); r = legacy.respond(GB, s.msg1); f = legacy.initFinish(s, r.msg2); g = r._finish(f.msg3);
-  } finally { crypto.generateKeyPairSync = real; }
+  } finally { crypto.randomBytes = real; }
   eqHex(s.msg1, G.msg1, 'msg1'); eqHex(r.msg2, G.msg2, 'msg2'); eqHex(f.msg3, G.msg3, 'msg3');
   eqHex(f.tx, G.tx, 'tx'); eqHex(f.rx, G.rx, 'rx');
   assert.strictEqual(g.peerFp, G.fpA); assert.strictEqual(f.peerFp, G.fpB);
@@ -271,6 +273,17 @@ t('v2 legacy reproduces the pre-v3 golden vector byte for byte', () => {
 });
 
 /* ---- house rules ------------------------------------------------------- */
+t('no runtime module makes keys with generateKeyPairSync (it can deadlock on Node 18 when exported)', () => {
+  const ROOT = path.join(__dirname, '..');
+  const files = ['noise.js', 'mailbox.js', 'store.js', 'social.js', 'backup.js', 'nodesignald.js', 'cli.js', 'setup-core.js', 'updater.js', 'torcontrol.js', 'tools/release-key.js'];
+  const bad = files.filter((f) => /generateKeyPair(Sync)?\(/.test(fs.readFileSync(path.join(ROOT, f), 'utf8').replace(/^\s*\/\/.*$/gm, '')));
+  assert.deepStrictEqual(bad, []);
+});
+t('thousands of fresh keys made and exported on every runtime path finish (Node 18 deadlocked in 9 of 12 such runs)', () => {
+  const r = require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'keygen-stress.js'), '4000'], { encoding: 'utf8', timeout: 90000 });
+  assert.strictEqual(r.status, 0, r.error ? 'did not finish in 90 s: ' + r.error.code : r.stdout + r.stderr);
+  assert.match(r.stdout, /^ok 4000/);
+});
 t('no em dashes in noise.js or this test', () => {
   const dash = String.fromCharCode(0x2014);
   assert(!fs.readFileSync(path.join(__dirname, '..', 'noise.js'), 'utf8').includes(dash));

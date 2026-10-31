@@ -54,9 +54,21 @@ function fingerprintRaw(pubRaw) {
   return fingerprint(Buffer.concat([SPKI_X25519_PREFIX, pubRaw]));
 }
 const rawToDer = (pubRaw) => Buffer.concat([SPKI_X25519_PREFIX, pubRaw]);
+// Fresh keys are made from 32 random bytes and imported, never with
+// crypto.generateKeyPairSync: on Node 18, exporting a key that call made can
+// deadlock the process. The call leaves a key-generation job behind; if the
+// garbage collector finalizes that job during the export, its destructor waits
+// for the key's lock, which the export holds. Fixed in later Node; Debian 12
+// still ships Node 18.
+function freshX25519() {
+  const d = crypto.randomBytes(32);
+  d[0] &= 248; d[31] &= 127; d[31] |= 64;            // clamped, as OpenSSL's own generator does
+  const privateKey = crypto.createPrivateKey({ key: Buffer.concat([PKCS8_X25519_PREFIX, d]), format: 'der', type: 'pkcs8' });
+  return { privateKey, publicKey: crypto.createPublicKey(privateKey) };
+}
 
 function newIdentity() {
-  const kp = crypto.generateKeyPairSync('x25519');
+  const kp = freshX25519();
   return {
     priv: kp.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('base64'),
     pub: kp.publicKey.export({ type: 'spki', format: 'der' }).toString('base64'),
@@ -90,7 +102,7 @@ function pubKeyObject(pubRaw) {
   return crypto.createPublicKey({ key: { kty: 'OKP', crv: 'X25519', x: b64u(pubRaw) }, format: 'jwk' });
 }
 function generateKeypair() {
-  const jwk = crypto.generateKeyPairSync('x25519').privateKey.export({ format: 'jwk' });
+  const jwk = freshX25519().privateKey.export({ format: 'jwk' });
   return { priv: Buffer.from(jwk.d, 'base64url'), pub: Buffer.from(jwk.x, 'base64url') };
 }
 // DH(key_pair, public_key). OpenSSL refuses an all-zero result (low-order
@@ -330,7 +342,7 @@ const v3 = {
 const PROLOGUE = Buffer.from('NodeSignal-noise-v1');
 const legacyHKDF = (salt, ikm, info, n = 32) => Buffer.from(crypto.hkdfSync('sha256', ikm, salt, info, n));
 const dh = (priv, pub) => crypto.diffieHellman({ privateKey: priv, publicKey: pub });
-const genEph = () => crypto.generateKeyPairSync('x25519');
+const genEph = () => freshX25519();
 const rawPub = (k) => k.export({ type: 'spki', format: 'der' });          // 44 bytes
 function legacyImpPub(b) { return crypto.createPublicKey({ key: b, format: 'der', type: 'spki' }); }
 const impPub = legacyImpPub;

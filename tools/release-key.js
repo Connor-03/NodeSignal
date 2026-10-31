@@ -57,7 +57,8 @@ function readPrivateKey(file) {
 function cmdNew(file) {
   const abs = path.resolve(file);
   if (fs.existsSync(abs)) die(`${abs} already exists; refusing to overwrite it. Pick a new file name, or use "pub" to show the key it holds.`);
-  const { privateKey } = crypto.generateKeyPairSync('ed25519');
+  // a random seed imported, not generateKeyPairSync (can deadlock on Node 18 when exported)
+  const privateKey = crypto.createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), crypto.randomBytes(32)]), format: 'der', type: 'pkcs8' });
   const pem = privateKey.export({ type: 'pkcs8', format: 'pem' });
   let fd;
   try { fd = fs.openSync(abs, 'wx', 0o600); }

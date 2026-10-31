@@ -204,6 +204,12 @@ code. What they found and what changed:
   root-owned file; `advertise on` trusted whatever answered on the console
   port for the onion it publishes; `update-apply` copied the package before
   checking the signature; the IPv6 rate limit did not group a /64.
+- **On Node 18 the daemon could freeze for good**, at random, a few times
+  per ten thousand handshakes: Node 18 deadlocks when a key made by
+  `generateKeyPairSync` is exported while the garbage collector finalizes
+  the call that made it. NodeSignal no longer uses that call. The .deb and
+  the Windows installer bundle Node 22 and were not affected; installs
+  from source on Debian 12 (Node 18) were.
 - What you may notice: a bitcoin.conf with `includeconf` (Umbrel-style
   setups use it), a whitelist in a section or `-rpcwhitelist` on bitcoind's
   command line gets "add these lines by hand" instead of an automatic edit,
