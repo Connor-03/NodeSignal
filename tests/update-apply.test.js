@@ -195,6 +195,30 @@ t('an updates folder owned by the daemon\'s user is read and written only as tha
   } finally { fs.chmodSync(TMP, 0o700); ownTree(UPD, 0); }
 });
 
+/* Root cause (Oct 2026 final review): update-apply copied the package (up to
+   300 MB) into /var/tmp as root before it checked the manifest's signature,
+   so whatever the daemon's account left there cost root disk and time
+   before anything was verified. The manifest, its signature, the version and
+   the package's entry are checked first now; a FIFO in place of the package
+   shows the order (reading it first would fail with "not a plain file"). */
+t('the signature, version and manifest entry are checked before the package is read', () => {
+  const fifo = () => { fs.rmSync(path.join(UPD, asset)); execFileSync('mkfifo', [path.join(UPD, asset)]); };
+  stage({ signWith: other }); fifo();
+  let r = apply({ timeout: 20000 });
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.result.error, /^refused: /);
+  assert.doesNotMatch(r.result.error, /not a plain file/);
+  stage({ version: '1.4.0' }); fifo();
+  r = apply({ timeout: 20000 });
+  assert.match(r.result.error, /not newer/);
+  // a signed release: only then is the package read, and no more than its signed size
+  stage(); fs.appendFileSync(path.join(UPD, asset), Buffer.alloc(1));
+  r = apply();
+  assert.strictEqual(r.code, 1, r.out);
+  assert.match(r.result.error, /does not match the signed manifest \(it is larger than the signed size\)/);
+  assert(!fs.existsSync(path.join(UPD, asset)), 'cleaned up');
+});
+
 t('no request: nothing happens', () => {
   for (const f of fs.readdirSync(UPD)) fs.rmSync(path.join(UPD, f), { force: true });
   const r = apply();

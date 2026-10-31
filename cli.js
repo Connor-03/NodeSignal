@@ -462,10 +462,13 @@ function loadSibling(name) {
    nodesignal update install    (Linux .deb, root) download, check and install
    nodesignal update-apply      (root, run by nodesignal-update.service) install
                                 what the console asked for
-   Whatever the daemon wrote is untrusted here: the package, the manifest and
-   its signature are copied into a directory only root can write, and checked
-   there against release-keys.json from /opt/nodesignal (owned by root).
-   apt-get gets --no-remove: an update never removes another package. */
+   Whatever the daemon wrote is untrusted here. The release manifest and its
+   signature are read first and checked against release-keys.json from
+   /opt/nodesignal (owned by root), with the version (newer than this one)
+   and the package's entry in the manifest; only then is the package read
+   (no more than its signed size) into a directory only root can write, and
+   checked there. apt-get gets --no-remove: an update never removes another
+   package. */
 // NODESIGNAL_UPDATE_DIR / NODESIGNAL_UPDATE_DRY_RUN: tests only (root's
 // systemd unit sets neither); the dry run stops before the package manager.
 const UPDATE_DIR = process.env.NODESIGNAL_UPDATE_DIR || '/var/lib/nodesignal/updates';
@@ -491,14 +494,14 @@ async function cmdUpdate(ctx, sub) {
   if (!r.verified) return 1;
   const asset = updater.platformAsset();
   if (!asset || !r.assets[asset] || !r.manifest.files[asset]) { say('This release has no package for this machine.'); return 1; }
+  const v = verifyRelease(updater, r.manifestBytes, r.sigBytes, r.version, asset);
+  if (!v.ok) { say(v.error); return 1; }
   const tmp = fs.mkdtempSync('/var/tmp/nodesignal-update-');
   try {
     const file = path.join(tmp, asset);
     say(`Downloading ${asset}...`);
-    await updater.downloadVerified({ url: r.assets[asset], sha256: r.manifest.files[asset].sha256, size: r.manifest.files[asset].size, dest: file });
-    fs.writeFileSync(path.join(tmp, updater.MANIFEST_NAME), r.manifestBytes);
-    fs.writeFileSync(path.join(tmp, updater.SIG_NAME), r.sigBytes);
-    return installVerifiedDeb(ctx, tmp, r.version, asset);
+    await updater.downloadVerified({ url: r.assets[asset], sha256: v.file.sha256, size: v.file.size, dest: file });
+    return installPackage(file, r.version, v.file);
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 }
 /* UPDATE_DIR belongs to the daemon's user, who can swap anything in it, the
@@ -506,9 +509,9 @@ async function cmdUpdate(ctx, sub) {
    there runs as that user (core.asOwner): a link it planted can only lead
    where it could write anyway. Its files are read into memory (no link
    followed, no FIFO waited on, plain files of a capped size) and root writes
-   its own copies into a folder only root can write. A root-owned UPDATE_DIR
-   (tests) is used as root only when no other account can change a folder
-   above it. */
+   its own copy of the package into a folder only root can write. A
+   root-owned UPDATE_DIR (tests) is used as root only when no other account
+   can change a folder above it. */
 const REQUEST_MAX = 4 * 1024;
 async function cmdUpdateApply(ctx) {
   if (IS_WIN || !isRoot()) { say('update-apply runs as root, from nodesignal-update.service'); return 2; }
@@ -546,39 +549,54 @@ async function cmdUpdateApply(ctx) {
   const version = typeof req.version === 'string' ? req.version : '', asset = updater.platformAsset();
   if (!asset || req.asset !== asset) { result({ ok: false, version, error: 'the request names a package for another machine' }); return 1; }
   const names = [asset, updater.MANIFEST_NAME, updater.SIG_NAME];
-  const tmp = fs.mkdtempSync('/var/tmp/nodesignal-update-');
+  const read = (name, max) => {
+    try { return inDir(() => core.readPlainFileSync(at(name), max)); }
+    catch (e) { throw new Error(`${name}: ${plainWhy(e)}`); }
+  };
+  let tmp = null;
   try {
-    for (const [name, max] of [[asset, updater.MAX_ASSET_BYTES], [updater.MANIFEST_NAME, updater.MAX_META_BYTES], [updater.SIG_NAME, updater.MAX_META_BYTES]]) {
-      let buf;
-      try { buf = inDir(() => core.readPlainFileSync(at(name), max)); }
-      catch (e) { throw new Error(`${name}: ${plainWhy(e)}`); }
-      fs.writeFileSync(path.join(tmp, name), buf, { mode: 0o600, flag: 'wx' });
+    // the signed manifest first: nothing of the package (up to 300 MB) is read
+    // or copied for a release that is unsigned, not newer or does not list it
+    const v = verifyRelease(updater, read(updater.MANIFEST_NAME, updater.MAX_META_BYTES), read(updater.SIG_NAME, updater.MAX_META_BYTES), version, asset);
+    if (!v.ok) { say(v.error); result({ ok: false, version, error: v.error }); return 1; }
+    let pkg;
+    try { pkg = inDir(() => core.readPlainFileSync(at(asset), v.file.size)); }
+    catch (e) {
+      if (e.code === 'ETOOBIG') throw new Error('refused: the package does not match the signed manifest (it is larger than the signed size)');
+      throw new Error(`${asset}: ${plainWhy(e)}`);
     }
-    const code = await installVerifiedDeb(ctx, tmp, version, asset);
+    tmp = fs.mkdtempSync('/var/tmp/nodesignal-update-');
+    fs.writeFileSync(path.join(tmp, asset), pkg, { mode: 0o600, flag: 'wx' });
+    const code = await installPackage(path.join(tmp, asset), version, v.file);
     result(code === 0 ? { ok: true, version } : { ok: false, version, error: lastApplyError || 'the install failed; see journalctl -u nodesignal-update' });
     return code;
   } catch (e) {
     result({ ok: false, version, error: e.message }); say(e.message); return 1;
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
     unlinkAll(names);
   }
 }
 let lastApplyError = '';
-// dir holds the package, the manifest and its signature, all written by root.
-async function installVerifiedDeb(ctx, dir, version, asset) {
-  const updater = loadSibling('updater.js');
-  const fail = (m) => { lastApplyError = m; say(m); return 1; };
+/* The release manifest and its signature, checked against the keys this copy
+   ships: signed by one of them, for the requested version, newer than the
+   installed one, listing asset. { ok, file } (file: the asset's signed size
+   and SHA-256) or { error }. */
+function verifyRelease(updater, manifestBytes, sigBytes, version, asset) {
   const keys = updater.loadTrustedKeys(path.join(__dirname, 'release-keys.json'));
-  const v = updater.verifyManifest({ manifestBytes: fs.readFileSync(path.join(dir, updater.MANIFEST_NAME)),
-    sigBytes: fs.readFileSync(path.join(dir, updater.SIG_NAME)), trustedKeys: keys });
-  if (!v.ok) return fail('refused: ' + v.error);
-  if (v.manifest.version !== version) return fail(`refused: the signed manifest is for ${v.manifest.version}, the request for ${version}`);
+  const v = updater.verifyManifest({ manifestBytes, sigBytes, trustedKeys: keys });
+  if (!v.ok) return { error: 'refused: ' + v.error };
+  if (v.manifest.version !== version) return { error: `refused: the signed manifest is for ${v.manifest.version}, the request for ${version}` };
   const current = installedVersion();
-  if (updater.compareVersions(version, current) <= 0) return fail(`refused: ${version} is not newer than the installed ${current}`);
+  if (updater.compareVersions(version, current) <= 0) return { error: `refused: ${version} is not newer than the installed ${current}` };
   const f = v.manifest.files[asset];
-  if (!f) return fail(`refused: the signed manifest does not list ${asset}`);
-  const deb = path.join(dir, asset), buf = fs.readFileSync(deb);
+  if (!f) return { error: `refused: the signed manifest does not list ${asset}` };
+  return { ok: true, file: f };
+}
+// deb: root's own copy of the package; f: its entry in the verified manifest.
+async function installPackage(deb, version, f) {
+  const fail = (m) => { lastApplyError = m; say(m); return 1; };
+  const buf = fs.readFileSync(deb);
   const sha = require('crypto').createHash('sha256').update(buf).digest('hex');
   if (buf.length !== f.size || sha !== f.sha256) return fail('refused: the package does not match the signed manifest');
   let fields;
