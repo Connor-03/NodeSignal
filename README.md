@@ -33,7 +33,7 @@ peers that send unknown data. NodeSignal is honest about the split:
   with QR codes that pin the key, opt-in introductions, and mailboxes that
   hold sealed mail for operators who cannot be reached (1.4)
 - Passphrase-sealed identity backup; signed in-app updates (1.4)
-- Tor, Tailscale, IPv4 and IPv6; opt-in router port mapping (UPnP / NAT-PMP)
+- Tor, Tailscale, IPv4 and IPv6 (inbound IPv6 needs `--bind ::`); opt-in router port mapping (UPnP / NAT-PMP)
 - **Zero runtime dependencies**: Node.js standard library only
 - Self-hosted web interface, one-download installers for Windows and Linux
 

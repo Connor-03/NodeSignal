@@ -46,9 +46,9 @@ on the publish job narrows that.
 
 The workflow refuses to publish unless these match (for 1.3.0):
 
-- `package.json` `"version": "1.3.0"`
-- `nodesignald.js` `const UA = '/NodeSignal:1.3/'` (major.minor of the release)
-- `CHANGELOG.md` has a `## 1.3.0` section. Its body becomes the "What
+- `package.json` `"version": "1.4.0"`
+- `nodesignald.js` `const UA = '/NodeSignal:1.4/'` (major.minor of the release)
+- `CHANGELOG.md` has a `## 1.4.0` section. Its body becomes the "What
   changed" part of the release notes.
 
 ## 2. Dry run (publishes nothing)

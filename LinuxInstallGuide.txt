@@ -79,7 +79,19 @@ What the package does:
      RPC password. An existing file keeps its settings and password.
   6. enables and starts the nodesignal service (hardened: read-only
      system, no access to /home, private /tmp, no new privileges, only
-     its state directory writable)
+     its state directory writable). The peer port listens on your
+     Tailscale address if you have one, otherwise on every interface;
+     behind a home router nobody can reach it unless you forward it.
+     `"bind": "127.0.0.1"` in the config keeps it to Tor only.
+  6b. gives the console a login token (sudo nodesignal web-token shows it)
+     and installs a root helper, nodesignal-update.path, that installs
+     an update only when the console asks and only if it is signed with
+     a release key this copy ships (1.4.0 ships none yet).
+  6c. apt also installs Tor (the package recommends it). NodeSignal then
+     makes its own onion address, so other operators can reach you
+     without port forwarding. If "nodesignal onion" shows none yet (Tor
+     was set up after NodeSignal), run: sudo nodesignal onion on.
+     sudo nodesignal onion off turns it off.
   7. checks the Bitcoin RPC and prints the result, the web address,
      and the two optional commands below
 

@@ -27,8 +27,8 @@
 // v2 (legacy): the earlier custom "XX-style" handshake (crypto.hkdfSync with
 // ad-hoc labels, DER-encoded keys on the wire, msg1 = 44 bytes). It is NOT
 // Noise-compliant and is kept, byte-for-byte unchanged, only so that peers
-// still running the previous release can talk to this one. It will be
-// removed in the next release. A responder can tell the two apart by msg1
+// still running 1.2 can talk to this one. 1.3's notes said it would go in
+// the next release; 1.4.0 still ships it, and it is removed in 1.5. A responder can tell the two apart by msg1
 // length: 32 bytes means v3, 44 bytes means v2.
 // ============================================================================
 'use strict';

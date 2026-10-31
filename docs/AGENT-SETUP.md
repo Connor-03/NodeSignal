@@ -74,10 +74,12 @@ find with evidence; do not soften a real problem and do not invent one.
    `cli.js` and `setup-core.js` (what setup changes), `updater.js` (in-app
    updates) and `packaging/deb/` (what the Linux package installs).
 4. Check the download: compare the installer's SHA-256 with `SHA256SUMS.txt`
-   from the same release. If the release has `nodesignal-release.json` and
+   from the same release. That proves the file is the one on the release
+   page, not who made it. If the release has `nodesignal-release.json` and
    `nodesignal-release.json.sig`, check the signature with
    `node tools/release-manifest.js verify nodesignal-release.json release-keys.json`
-   from your clone.
+   from your clone. 1.4.0 ships no release key yet, so for 1.4.0 that check
+   cannot pass and the checksum is all there is; say so in your report.
 
 ### 2. Install
 
@@ -99,10 +101,15 @@ fine). The installers refuse to continue without one.
    `rpcauth` line. Then check `nodesignal status` shows the node connected.
 2. If anything else on the machine uses the node's RPC (mempool, electrs, a
    wallet backend, BTCPay), check it still works. NodeSignal's block adds
-   `rpcwhitelistdefault=0` only when `bitcoin.conf` had no whitelist of its
-   own, so other users keep their access.
-3. Tor gives NodeSignal its own onion address with no port forwarding. If Tor
-   is not installed, offer to install it (Linux: `sudo apt install tor`, then
+   `rpcwhitelistdefault=0` only when `bitcoin.conf` has no whitelist of its
+   own, so other users keep their access. When whitelists could be set
+   somewhere it cannot see in full (an `includeconf` file, bitcoind's command
+   line, a `[section]`), setup does not edit the file and prints the lines
+   to add by hand; check those cases with the operator.
+3. Tor gives NodeSignal its own onion address with no port forwarding. On
+   Linux `apt install` of the .deb also installs Tor (a recommended
+   package) unless recommends are off; then the onion is on by default. If
+   Tor is not installed, offer to install it (Linux: `sudo apt install tor`, then
    `sudo nodesignal onion on`, which adds `nodesignal` to the debian-tor group
    and restarts it). `nodesignal onion` shows the address.
 4. Tell the operator how to open the console: it only answers on this machine
@@ -117,7 +124,12 @@ To check that what is installed is exactly the released code: the program
 files are in `/opt/nodesignal` (Linux) or `%LOCALAPPDATA%\NodeSignal\app`
 (Windows). Compare each file named in `packaging/files.json` with the same file
 in your clone at the matching tag (`nodesignal version` gives it); they should
-be byte-identical. On Linux, `dpkg -V nodesignal` also lists changed files.
+be byte-identical. On Linux, `dpkg -V nodesignal` checks every other file
+the package installed too (the bundled `/opt/nodesignal/node`, the systemd
+units, `/usr/bin/nodesignal`) against the package's own checksums. The
+maintainer scripts that ran as root are in `/var/lib/dpkg/info/nodesignal.*`;
+compare them with `dpkg-deb -e nodesignal-linux-<arch>.deb <dir>` of the
+downloaded package.
 
 ### 5. Report
 
@@ -159,15 +171,21 @@ described; do not report them as hidden behaviour.
   account can change is refused. Seeing `setegid`/`seteuid` calls in
   `setup-core.js` and `cli.js` is expected.
 - **A daily HTTPS request to `api.github.com`** (and downloads from GitHub's
-  release hosts when the operator installs an update), through Tor when Tor
-  is present. No telemetry, no other servers. `nodesignal updates off` stops
-  it.
+  release hosts when the operator installs an update), through Tor while
+  NodeSignal's own onion service is up, otherwise directly (also for the
+  first check, a few minutes after start, before the onion is up). No
+  telemetry, no other servers. `nodesignal updates off` stops it.
 - **Network:** listens on TCP 8788 for other NodeSignal daemons (Noise XX,
-  authenticated and encrypted), serves the console on 127.0.0.1:8789 only, and
-  connects to peers' port 8333 for a read-only `version` handshake that
-  identifies their node. It never sends Bitcoin P2P messages beyond that. The
-  console page asks no other server for anything: its fonts are inside it,
-  and its Content-Security-Policy lets it reach only this daemon.
+  authenticated and encrypted): on the Tailscale address when there is one,
+  otherwise on every interface, so on a public IP it is reachable (behind a
+  home router only if forwarded); `"bind": "127.0.0.1"` keeps it to Tor.
+  Serves the console on 127.0.0.1:8789 only. Connects to peers' port 8333 for
+  a read-only `version` handshake that identifies their node, and sends
+  `/NodeSignal:1.4/` as its user agent there, so a node it identifies learns
+  that this IP runs NodeSignal even with `advertise` off. It never sends
+  Bitcoin P2P messages beyond that. The console page asks no other server
+  for anything: its fonts are inside it, and its Content-Security-Policy
+  lets it fetch only from this daemon.
 - **The console's `/health` answers without the login token.** It shows the
   nick, version, fingerprint, onion address, peer and contact counts and
   whether RPC works, never a credential; `nodesignal status` reads it. The
@@ -178,7 +196,24 @@ described; do not report them as hidden behaviour.
   page is one self-contained file with inline handlers. Every string a peer
   chose is escaped before it reaches the page; `tests/console-hostile.e2e.js`
   renders every view with hostile strings in every such field and fails if
-  anything runs.
+  anything runs. It needs Playwright, so neither `run-all.js` nor CI runs it:
+  run it yourself if Playwright is available. The policy limits fetches,
+  not navigation, and injected code could use the page's action token, so
+  escaping is the real defence.
+- **A message to someone whose key is not pinned yet goes to the first
+  NodeSignal that proves a key at that address.** Writing to a map peer, or
+  a contact added without a fingerprint, is trust on first use: whoever
+  answers on that IP's port 8788, or connects in from that IP, gets the
+  key pinned and the waiting messages. Behind a shared IP (carrier-grade or
+  campus NAT) that can be someone else. A contact link or QR code pins the
+  key first; use one for anything sensitive.
+- **Still answers the 1.2 handshake.** The earlier custom handshake (not
+  Noise) is still answered and tried as a fallback when dialling, for 1.2
+  peers. It goes in 1.5.
+- **Other things in the code that look odd:** `--impersonate` (a demo and
+  test flag; peers are told it is `simulated`), and reading
+  `rpcuser`/`rpcpassword` from a bitcoin.conf when NodeSignal has no RPC
+  login of its own (older from-source installs; the .deb always sets one).
 - **Tor's control port:** on Linux NodeSignal uses only Tor's control socket
   (`/run/tor/control`) unless the operator names a TCP port, so another local
   account cannot pose as Tor and be handed the onion key.

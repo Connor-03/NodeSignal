@@ -39,9 +39,9 @@
 | No forward secrecy | **[FIXED]**: ephemeral keys per session |
 | No peer authentication / MITM | **[FIXED]**: mutual static-key auth + TOFU pinning |
 | Unauthenticated disk-exhaustion DoS | **[FIXED]**: no persisted state before a completed handshake (`tests/dos.test.js`: a flood of handshake-less connections leaves state.json untouched) |
-| IPv6 spray defeats per-IP limits | **[FIXED]**: rate limit per /64 source block |
+| IPv6 spray defeats per-IP limits | **[FIXED]**: rate limit per /64 source block. Until the 1.4 final review the /64 was taken from Node's compressed address text, so a /64 with a zero group was not grouped at all; fixed and tested (`tests/peerabuse.test.js`) |
 | No connection cap | **[FIXED]**: `--max-conns`, default 128 |
-| Clearnet-exposed by default | **[MITIGATED]**: binds to Tailscale/localhost by default |
+| Clearnet-exposed by default | **[PARTLY MITIGATED]**: the console is loopback-only. The peer port binds the Tailscale address when there is one; otherwise every interface, so on a public IP it is reachable, behind a home router only if forwarded. `"bind": "127.0.0.1"` keeps it to Tor. (Corrected in the 1.4 final review: this row used to say Tailscale or localhost by default.) |
 | Plaintext at rest | **[MITIGATED in v1.3]**: with a passphrase, message text is sealed (scrypt + X25519 sealed boxes) and the daemon still receives while locked. Without one it is still plaintext. Metadata, and the identity key (needed unattended), stay readable by the daemon's user |
 | 66-package supply chain | **[FIXED]**: express and ws removed; zero dependencies |
 | Identity ↔ node-IP linkage | **[OPEN by design]**: inherent to the concept |

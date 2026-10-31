@@ -442,7 +442,8 @@ status table. Keep it current whenever security changes.
 5. **[DONE v1.3]** Retire the legacy v1 PIN code path.
 6. **[DONE v1.3]** Reinstall flow for TOFU ("accept new key" with both
    fingerprints shown).
-6b. **Next release:** drop `noise.legacy` and the v2 dial/answer branches.
+6b. **1.5:** drop `noise.legacy` and the v2 dial/answer branches (promised for
+   1.4 in 1.3's notes; 1.4.0 still answers v1.2 and its CHANGELOG says so).
 6c. **Outside review** of `nodesignald.js` + `noise.js` before calling it
    reviewed anywhere.
 7. **[DONE v1.3, stronger than planned]** The installers now write
