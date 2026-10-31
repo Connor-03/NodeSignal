@@ -489,8 +489,16 @@ function uaEdit(confPath, buf, on, value) {
    user bitcoin-cli relies on, Electrs, mempool...) an empty whitelist,
    locking them out. So when bitcoin.conf has no whitelist settings of its
    own we also write rpcwhitelistdefault=0, which keeps every other user
-   exactly as before. If the operator already uses whitelists, their
-   rpcwhitelistdefault choice is left alone. */
+   exactly as before. If the operator already uses whitelists at the top
+   level, their rpcwhitelistdefault choice is left alone.
+   bitcoind's rule is rpcwhitelistdefault = (is any rpcwhitelist set), over
+   bitcoin.conf, its includeconf files and its command line, per chain. So
+   when whitelists may be set where this file does not show them (an
+   includeconf line, an -rpcwhitelist option of the running bitcoind) or for
+   one chain only (a [section], or a "main." prefix), either choice can be
+   wrong: rpcwhitelistdefault=0 would give unlisted users every method, and
+   leaving it out would lock them out of a chain. Then nothing is written
+   and the operator adds the lines by hand. */
 const crypto = require('crypto');
 function generateRpcPassword() { return crypto.randomBytes(32).toString('base64url'); }
 function makeRpcAuth(user, password, salt = crypto.randomBytes(16).toString('hex')) {
@@ -530,12 +538,13 @@ function rpcAccessState(confPath) {
    bitcoind restart. Everything outside the block is preserved byte for byte;
    the first change keeps a one-time backup. A file we cannot parse with
    confidence is refused (throws), as is a whitelist we would weaken. As
-   root, the edit runs as the file's owner (editConf).
+   root, the edit runs as the file's owner (editConf). opts.cmdlineWhitelist:
+   the running bitcoind has an -rpcwhitelist* option (refused, see above).
    Returns { changed, created, path, on, backup, lines }. */
 function setRpcAccess(confPath, password, opts = {}) {
-  return editConf(confPath, (buf) => rpcEdit(confPath, buf, password), opts);
+  return editConf(confPath, (buf) => rpcEdit(confPath, buf, password, opts), opts);
 }
-function rpcEdit(confPath, buf, password) {
+function rpcEdit(confPath, buf, password, rpcOpts = {}) {
   const on = password != null;
   const a = buf === null ? { ok: true, text: '', lines: [], eol: IS_WIN ? '\r\n' : '\n' } : analyzeConf(buf);
   if (!a.ok) throw new Error(`refusing to edit ${confPath}: ${a.error}. Add the NodeSignal lines by hand (nodesignal rpc-access show).`);
@@ -552,7 +561,26 @@ function rpcEdit(confPath, buf, password) {
   let block = '';
   let inner = [];
   if (on) {
-    const theirWhitelist = outside.some((l) => l.kind === 'kv' && /^\s*-?rpcwhitelist(default)?\s*=/i.test(l.body));
+    // Each of their lines: its option name (a "main." style chain prefix
+    // and a "no" negation taken off) and whether it applies to one chain only.
+    let inSection = false;
+    const theirs = [];
+    a.lines.forEach((l, i) => {
+      if (l.kind === 'section') inSection = true;
+      if (l.kind !== 'kv' || (blk && i >= blk.begin && i <= blk.end)) return;
+      const key = KV_RE.exec(l.body)[1].toLowerCase();
+      const dot = key.lastIndexOf('.');
+      theirs.push({ name: key.slice(dot + 1).replace(/^no(?=rpcwhitelist|includeconf)/, ''), oneChain: inSection || dot >= 0 });
+    });
+    const isWl = (o) => o.name === 'rpcwhitelist' || o.name === 'rpcwhitelistdefault';
+    const why = [];
+    if (theirs.some((o) => o.name === 'includeconf')) why.push('it reads other files (includeconf), which may set rpcwhitelist');
+    if (theirs.some((o) => isWl(o) && o.oneChain)) why.push('it sets rpcwhitelist or rpcwhitelistdefault for one chain only (in a [section])');
+    if (rpcOpts.cmdlineWhitelist) why.push('the running bitcoind has an -rpcwhitelist option on its command line');
+    if (why.length) {
+      throw new Error(`refusing to edit ${confPath}: ${why.join('; ')}. NodeSignal's rpcwhitelist line changes what every other RPC user may call unless rpcwhitelistdefault is set to match, and NodeSignal cannot see or place that setting safely here. Add the NodeSignal lines by hand.`);
+    }
+    const theirWhitelist = theirs.some(isWl);
     inner = [makeRpcAuth(RPC_USER, password), `rpcwhitelist=${RPC_USER}:${RPC_METHODS.join(',')}`];
     if (!theirWhitelist) inner.push('rpcwhitelistdefault=0');
     block = [RPC_BEGIN, ...inner, RPC_END].join(a.eol) + a.eol;
@@ -607,10 +635,14 @@ function writeRpcRecord(cfgPath, confPath) {
    rpc-access add" and the Windows installer. Ensures NodeSignal's login in
    cfg (the caller writes cfg when cfgChanged), writes the matching block into
    confPath and records which file holds it. P maps a real path to a test
-   root. Returns { cfgChanged, result } (result from setRpcAccess). */
-function installRpcAccess({ cfg, cfgPath, confPath, owner = null, P = (x) => x }) {
+   root. cmdlineWhitelist: whether the running bitcoind has an -rpcwhitelist*
+   option (detectBitcoinNode's rpcWhitelistOnCmdline); when the caller does
+   not say, Linux looks at the running bitcoind itself.
+   Returns { cfgChanged, result } (result from setRpcAccess). */
+function installRpcAccess({ cfg, cfgPath, confPath, owner = null, P = (x) => x, cmdlineWhitelist = null }) {
   const cfgChanged = ensureRpcLogin(cfg);
-  const result = setRpcAccess(P(confPath), cfg['rpc-pass'], { owner });
+  if (cmdlineWhitelist === null) cmdlineWhitelist = process.platform === 'linux' && linuxProcesses().some((p) => p.rpcWhitelistArgs);
+  const result = setRpcAccess(P(confPath), cfg['rpc-pass'], { owner, cmdlineWhitelist });
   writeRpcRecord(P(cfgPath), confPath);
   return { cfgChanged, result };
 }
@@ -801,7 +833,10 @@ function linuxProcesses(root = '') {
       const st = fs.statSync(path.join(procDir, pid, 'exe'));
       exeTrusted = st.isFile() && st.uid === 0 && !(st.mode & 0o022);
     } catch (e) { if (e.code !== 'EACCES' && e.code !== 'EPERM' && e.code !== 'ENOENT') exeTrusted = false; }
-    out.push({ pid: Number(pid), name: comm, uid, exeTrusted, datadir: argValue(args, 'datadir'), conf: argValue(args, 'conf') });
+    // -rpcwhitelist, -rpcwhitelistdefault and their -no forms: setRpcAccess
+    // cannot tell from bitcoin.conf alone what rpcwhitelistdefault will be
+    const rpcWhitelistArgs = args.slice(1).some((a) => /^--?(no)?rpcwhitelist/i.test(a));
+    out.push({ pid: Number(pid), name: comm, uid, exeTrusted, datadir: argValue(args, 'datadir'), conf: argValue(args, 'conf'), rpcWhitelistArgs });
   }
   return out;
 }
@@ -1000,6 +1035,7 @@ async function detectBitcoinNode(opts = {}) {
     installed: !!(datadirs.length || confPath || binaries.length || processes.length),
     datadirs, datadir, confPath, cookiePath, chain, rpcUrl, rpcUrlNeeded, owner,
     running: processes.length > 0, processes, binaries, how,
+    rpcWhitelistOnCmdline: processes.some((p) => p.rpcWhitelistArgs),
   };
 }
 
@@ -1374,6 +1410,7 @@ module.exports = {
   portFree, tailscaleAddr, httpGetJson, waitForHealth, webUrl,
   defaultConfigPath, createPrompter, termStyle, uaCommentFor,
   copyStateTree,
+  linuxProcesses,
 };
 
 /* ------------------------------------------------------------ direct use */

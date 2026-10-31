@@ -767,6 +767,61 @@ t('copyStateTree refuses a folder that holds the destination, a link, one over t
   assert.strictEqual(core.copyStateTree(src, dst).files, 2);
 });
 
+/* ---------------------------------------------------------- rpcwhitelistdefault
+   Root cause (Oct 2026 final review): setRpcAccess decided whether to add
+   rpcwhitelistdefault=0 from the top level of bitcoin.conf alone. bitcoind
+   makes the default "is any rpcwhitelist set", counting includeconf files
+   and its command line, per chain: a whitelist kept in an included file gave
+   every other RPC user (the cookie user too) every method, and one in a
+   [section] locked them out of the other chains. */
+t('setRpcAccess refuses when whitelists may be set where bitcoin.conf does not show them (final review poc5)', () => {
+  const cases = [
+    ['includeconf', 'server=1\nincludeconf=rpc-users.conf\n', {}, /includeconf/],
+    ['includeconf in a section', 'server=1\n[main]\nincludeconf=rpc-users.conf\n', {}, /includeconf/],
+    ['section', 'server=1\n\n[test]\nrpcwhitelist=tester:getblockcount\n', {}, /one chain only/],
+    ['chain prefix', 'server=1\nmain.rpcwhitelist=electrs:getblock\n', {}, /one chain only/],
+    ['negated default in a section', 'server=1\n[main]\nnorpcwhitelistdefault=1\n', {}, /one chain only/],
+    ['command line', 'server=1\n', { cmdlineWhitelist: true }, /command line/],
+  ];
+  for (const [name, text, opts, re] of cases) {
+    const f = path.join(tmp, 'wl-' + name.replace(/ /g, '-'), 'bitcoin.conf');
+    write(f, text);
+    write(path.join(path.dirname(f), 'rpc-users.conf'), 'rpcwhitelist=electrs:getblock\n');
+    assert.throws(() => core.setRpcAccess(f, 'pw', opts), (e) => re.test(e.message) && /Add the NodeSignal lines by hand/.test(e.message), name);
+    assert.strictEqual(fs.readFileSync(f, 'utf8'), text, name + ': unchanged');
+    assert(!fs.existsSync(f + core.BACKUP_SUFFIX), name + ': no backup');
+  }
+  // a block already there: the same password stays (upgrades), a new one is
+  // refused, removing it always works and restores the file
+  const f = path.join(tmp, 'wl-existing', 'bitcoin.conf');
+  write(f, 'server=1\n');
+  core.setRpcAccess(f, 'pw');
+  fs.appendFileSync(f, 'includeconf=more.conf\n');
+  assert.strictEqual(core.setRpcAccess(f, 'pw').changed, false);
+  assert.throws(() => core.setRpcAccess(f, 'pw2'), /includeconf/);
+  assert(core.setRpcAccess(f, null).changed);
+  assert.strictEqual(fs.readFileSync(f, 'utf8'), 'server=1\nincludeconf=more.conf\n');
+});
+
+t('setup leaves bitcoin.conf alone, and prints the lines, when the running bitcoind has -rpcwhitelist on its command line', async () => {
+  const { r, uid } = fakeRoot('wlcmd', { conf: 'server=1\n', proc: false });
+  fakeProc(r, 4242, { uid, args: ['-daemon', '-rpcwhitelist=electrs:getblock'] });
+  const conf = path.join(r, 'home/alice/.bitcoin/bitcoin.conf');
+  const d = await core.detectBitcoinNode({ root: r, platform: 'linux' });
+  assert.strictEqual(d.rpcWhitelistOnCmdline, true);
+  const out = runSetup(r);
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.strictEqual(fs.readFileSync(conf, 'utf8'), 'server=1\n');
+  assert.match(out.stdout, /command line\..*Add the NodeSignal lines by hand/);
+  assert.match(out.stdout, /^ {2}rpcauth=nodesignal:[0-9a-f]+\$[0-9a-f]{64}$/m, 'the lines to add by hand');
+  assert.match(out.stdout, /rpcwhitelistdefault=0 +\(only if nothing else sets rpcwhitelist/);
+  // without the option, as before
+  write(path.join(r, 'proc/4242/cmdline'), 'bitcoind\0-daemon\0');
+  assert.strictEqual(runSetup(r).status, 0);
+  assert(core.rpcAccessState(conf).on);
+  assert(/^rpcwhitelistdefault=0$/m.test(fs.readFileSync(conf, 'utf8')));
+});
+
 (async () => {
   for (const [name, fn] of tests) {
     try {

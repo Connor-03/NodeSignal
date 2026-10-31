@@ -763,7 +763,7 @@ async function cmdSetup(ctx) {
   let access = null;
   if (confPath) {
     try {
-      access = core.installRpcAccess({ cfg, cfgPath, confPath, owner: det.owner, P });
+      access = core.installRpcAccess({ cfg, cfgPath, confPath, owner: det.owner, P, cmdlineWhitelist: !!det.rpcWhitelistOnCmdline });
     } catch (e) {
       core.ensureRpcLogin(cfg);
       say(e.message);
@@ -806,7 +806,8 @@ async function cmdSetup(ctx) {
 function printManualLines(core, cfg) {
   say('  ' + core.makeRpcAuth(core.RPC_USER, cfg['rpc-pass']));
   say(`  rpcwhitelist=${core.RPC_USER}:${core.RPC_METHODS.join(',')}`);
-  say('  rpcwhitelistdefault=0      (only if bitcoin.conf has no rpcwhitelist lines of its own)');
+  say('  rpcwhitelistdefault=0      (only if nothing else sets rpcwhitelist or rpcwhitelistdefault:');
+  say('                              not bitcoin.conf, its includeconf files, a [section] or bitcoind\'s command line)');
 }
 /* Hands what root put in the state folder to the service user. The folder
    is that user's, so it can swap entries while this runs: GNU chown -R -P
@@ -894,7 +895,7 @@ async function cmdRpcAccess(ctx, sub) {
   if (!det) det = await core.detectBitcoinNode();
   let access;
   try {
-    access = core.installRpcAccess({ cfg, cfgPath, confPath, owner: det.owner });
+    access = core.installRpcAccess({ cfg, cfgPath, confPath, owner: det.owner, cmdlineWhitelist: !!det.rpcWhitelistOnCmdline });
     if (access.cfgChanged) core.writeConfig(cfgPath, cfg);
   } catch (e) {
     say(e.message);
