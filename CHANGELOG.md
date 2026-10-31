@@ -48,7 +48,8 @@ RPC methods.
   contact's mailbox you use.
 - Several operators reaching you through Tor at once used to look like one
   peer at 127.0.0.1 changing its key, and all but the first were refused.
-  They are now told apart by key and by the onion they name.
+  Each is now its own contact, told apart by key; the onion it names is
+  only where NodeSignal dials it back, through Tor.
 
 ### Posts, rooms, introductions
 
@@ -138,6 +139,26 @@ code. What they found and what changed:
   operator's chosen name not escaped, so a hostile name ran in the
   console's page, which can act as you. Fixed, and a new test renders every
   view with hostile text in every field a peer chooses.
+- **Strangers could take over your conversations.** Several holes let a
+  peer get its own key pinned to an address you had written to, and so
+  receive the messages waiting for that person: a peer arriving over Tor
+  named that address in its hello; a room member entry or a mailbox named
+  it with the attacker's key; a room link with the host `__proto__`
+  poisoned every unpinned contact at once. A peer now never chooses where
+  it is filed: Tor peers are kept by key, and records made from someone
+  else's word are kept by key with the named address only as a place to
+  check. Only what you add yourself is filed under an address.
+- **Floods and memory.** A peer that never read could grow the daemon by
+  hundreds of megabytes; a post flood over one link kept the daemon busy
+  for about half a minute and pushed out the posts of people you follow; four large mailbox
+  deposits could break a mailbox for good. Each request is now answered
+  one at a time per link and a link with over 1 MB waiting is dropped,
+  posts are capped per link and checked for duplicates first, and large
+  answers are split.
+- **Strangers get less.** One unsolicited message no longer earns
+  introductions (which let anyone collect operators' addresses), an
+  automatic follow or check-ins: those need someone you added or wrote to,
+  who wrote back. A peer can no longer claim someone else's signing key.
 - **The console now loads nothing from the internet.** It used to fetch its
   fonts from Google Fonts each time it opened; they are now inside the page
   (`LICENSE-fonts.txt`). A Content-Security-Policy lets the page talk to
@@ -204,7 +225,9 @@ code. What they found and what changed:
 
 - Still no outside review of the daemon. 1.4 adds several new pieces
   (posts, rooms, mailboxes, the Tor control client, the updater); the
-  self-review is in `SECURITY-CRITIQUE.md` section 9.
+  self-review is in `SECURITY-CRITIQUE.md` section 9, and the pre-release
+  review above, with what it left open, in section 10. Those reviewers
+  were AI agents run by the project, not an outside auditor.
 - Posts and room messages are public to everyone they reach, and a signing
   key says nothing about who holds it. One person can run many nodes and
   many keys.

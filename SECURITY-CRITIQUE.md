@@ -49,12 +49,13 @@
 | User-agent advertising (`uacomment=nodesignal`) | **[NEW, opt-in]**: tells every peer of your node that you run NodeSignal. Makes enumeration trivial for anyone connected to you; off by default |
 | Router port mapping (UPnP / NAT-PMP) | **[NEW, opt-in]**: opens the peer port to the internet and publishes your IP to every contact; off by default, never needed on Tailscale or Tor |
 | No independent review | **[OPEN]**: the vector tests prove `noise.js` computes the Noise spec correctly; they say nothing about the daemon around it. Nobody outside the project has audited it yet |
-| Inbound Tor peers indistinguishable (all from 127.0.0.1) | **[FIXED in v1.4]**: told apart by key and the onion their hello names; the second Tor peer is no longer refused as a "key change" of the first (`tests/network.test.js`) |
+| Inbound Tor peers indistinguishable (all from 127.0.0.1) | **[FIXED in v1.4]**: each is its own contact, filed by key (`tor:<fp>`); the onion its hello names is only where we dial it back, through Tor. The second Tor peer is no longer refused as a "key change" of the first (`tests/network.test.js`) |
 | Reaching operators behind NAT needed port forwarding | **[FIXED in v1.4]**: NodeSignal's own onion service through Tor's control port; costs control of the local Tor (section 9) |
-| Tor control access (debian-tor group) | **[NEW in v1.4]**: needed to create the onion; it lets the daemon's user reconfigure the local Tor. `onion off` declines it (section 9) |
+| Tor control access (debian-tor group) | **[NEW in v1.4]**: needed to create the onion; it lets the daemon's user reconfigure the local Tor. `onion off` takes the account out of the group again; on Linux only Tor's control socket is used unless a TCP port is named (section 9) |
 | Public posts and rooms | **[NEW in v1.4]**: signed and bounded, but public to everyone they reach and as Sybil-prone as any key-based identity (section 9) |
 | Mailbox metadata | **[NEW in v1.4, opt-in]**: a mailbox cannot read mail but sees who writes to whom, when and how much (section 9) |
-| Update supply chain | **[NEW in v1.4]**: in-app installs need a release manifest signed with a key shipped in the app; root re-checks everything; no downgrades. A key kept as a GitHub Actions secret means a compromised GitHub account can sign (section 9) |
+| Update supply chain | **[NEW in v1.4]**: in-app installs need a release manifest signed with a key shipped in the app; root re-checks everything, working as the daemon's account in its folder; no downgrades. Only a published release is signed. A key kept as a GitHub Actions secret means a compromised GitHub account can sign (section 9) |
+| Pre-release review of 1.4 (four reviewers, AI agents run by the project) | **[FIXED in v1.4]**: a stored XSS in the console, root escalations through links in folders other accounts own, peers choosing their contact key or pinning keys for others, prototype pollution, a Tor control impostor, floods and memory growth. Each is in section 10 with its test and what is still open. Not an outside review |
 
 ---
 
@@ -413,16 +414,83 @@ exposes and what keeps it in check. Tests named in brackets.
 
 | # | Surface | What an attacker gets | What bounds it |
 |---|---|---|---|
-| 1 | Tor control port | The daemon's user can reconfigure the local Tor (on Debian, any member of debian-tor can) | Setup adds the group only when Tor is installed, and says so; `nodesignal onion off` declines it. The onion key is kept in state.json (0600) beside the identity key [torcontrol] |
-| 2 | Inbound over Tor | Every onion peer arrives from 127.0.0.1 | Contacts from loopback are matched by key only; a new key from loopback is a new contact, not a key change; the 127.0.0.1 rate-limit bucket is eight times larger, MAX_CONNS still caps it [network] |
-| 3 | Posts | Anyone you or your contacts talk to can send signed posts | Ed25519 signature over a canonical body, unknown fields refused, 1000 characters, 30 posts per author per day, 200 per author, 2000 in total (own posts never dropped), 30-day window, at most two hops; a stranger may pass on only its own posts. Public by design [social, network] |
+| 1 | Tor control port | The daemon's user can reconfigure the local Tor (on Debian, any member of debian-tor can) | Setup adds the group only when Tor is installed and the onion is not off, and says so; `nodesignal onion off` removes it again. On Linux only Tor's control socket is used unless the operator names a TCP port, so no other account can pose as Tor and be handed the onion key. The onion key is kept in state.json (0600) beside the identity key [torcontrol, setup-core] |
+| 2 | Inbound over Tor | Every onion peer arrives from 127.0.0.1 | Filed by key only (`tor:<fp>`), never under an address or onion the peer names; the onion is kept only as where to dial it, through Tor, where the pinned key must answer. Such a contact is never identified over :8333. The 127.0.0.1 rate-limit bucket is eight times larger, MAX_CONNS still caps it [network, peerabuse] |
+| 3 | Posts | Anyone you or your contacts talk to can send signed posts | Ed25519 signature over a canonical body, unknown fields refused, small-order keys refused, 1000 characters, 30 posts per author per day, 200 per author, 2000 in total (own and followed authors' posts kept first), 30-day window, at most two hops, 200 posts looked at per link with duplicates answered before any signature check; only a contact you added or wrote to may pass on others' posts. Public by design [social, network, peerabuse] |
 | 4 | Rooms | Anyone with a room link can join and read from then on | Room ids bind creator, name and nonce; membership entries and messages are signed; non-members' messages refused; 20 rooms, 100 members, 1000 messages each [social, network] |
-| 5 | Names | A post or room message names a nick and fingerprint it chose | Shown as "your contact" only when the signing key matches the one that contact announced over its own authenticated link; otherwise "name not verified" with the key id |
-| 6 | Mailboxes | The mailbox sees recipient and sender fingerprints, sizes and times | Opt-in on both sides; sealed with X25519 + ChaCha20-Poly1305, the sender authenticated to the recipient by static-static DH; 16 KiB per item, 200 per recipient, 256 recipients, 32 MiB, 7 days; register, fetch and ack answer only the fingerprint proven in the handshake; deposit ids are random. No forward secrecy for held mail [mailbox, network] |
-| 7 | Introductions | Your opted-in contacts' addresses and keys reach your other opted-in contacts | Both sides must opt in, only established contacts who opted in themselves are shared, 100 per answer, 300 kept [network] |
+| 5 | Names | A post or room message names a nick and fingerprint it chose | Shown as "your contact" only when the signing key matches the one that contact announced over its own authenticated link, with a signature by that key binding it to the link's Noise key (`skp`), so nobody can claim another member's signing key; otherwise "name not verified" with the key id [peerabuse] |
+| 6 | Mailboxes | The mailbox sees recipient and sender fingerprints, sizes and times | Opt-in on both sides; sealed with X25519 + ChaCha20-Poly1305, the sender authenticated to the recipient by static-static DH; 16 KiB per item, 200 per recipient, 256 recipients, 32 MiB, 7 days; register, fetch and ack answer only the fingerprint proven in the handshake, and only a contact you added or wrote to may register; deposit ids are random; answers are cut into frames under the Noise limit, one fetch at a time per link; mail is never left for a key that does not match the pinned one. No forward secrecy for held mail [mailbox, network, peerabuse] |
+| 7 | Introductions | Your opted-in contacts' addresses and keys reach your other opted-in contacts | Both sides must opt in; answered only to, and accepted only from, a contact you added or wrote to, and only as the answer to our own request on that link; another introducer's entry is never rewritten; 100 per answer, 300 kept [network, peerabuse] |
 | 8 | Contact and room links | Whoever has the link learns the address in it | The key in a contact link is pinned before the first connection, so a wrong key is held for review instead of trusted [network] |
 | 9 | Identity backup | The file plus the passphrase is your identity | scrypt (N=2^17) + ChaCha20-Poly1305; import refuses KDF parameters that would exhaust memory; no message history in it [backup] |
 | 10 | Update check | GitHub (or a Tor exit) learns that a NodeSignal copy checks daily | Through Tor when available, jittered; `nodesignal updates off` |
-| 11 | Update install | A malicious package would run as root on the node | Only a manifest signed by a key in release-keys.json; the daemon (no root) downloads and checks, then root copies the files with O_NOFOLLOW into a root-only directory and checks signature, version (strictly newer), size, SHA-256 and the package name itself before calling apt. Release keys can be rotated. Open: the signing key is a GitHub Actions secret, so a compromised GitHub account can sign; an Actions environment with required reviewers, or signing offline, narrows that [updater, update-apply] |
-| 12 | Same onion | The badge could be faked if the proof were weak | Only set after we dialled the onion ourselves and it answered with the pinned key, and the same onion is a Bitcoin node (a peer of our node, or it answered the :8333 handshake) |
+| 11 | Update install | A malicious package would run as root on the node | Only a manifest signed by a key in release-keys.json; the daemon (no root) downloads and checks, then root reads its files as the daemon's own account (never through a link, regular files only, size-capped), writes its own copies into a root-only directory and checks signature, version (strictly newer), size, SHA-256 and the package name itself before calling apt. Release keys can be rotated. Open: the signing key is a GitHub Actions secret, so a compromised GitHub account can sign; an Actions environment with required reviewers, or signing offline, narrows that [updater, update-apply] |
+| 12 | Same onion | The badge could be faked if the proof were weak | Only set after we dialled the onion ourselves and it answered with the pinned key, and the same onion is a Bitcoin node (a peer of our node, or it answered the :8333 handshake). A peer that merely names an onion gets nothing (the identify path no longer sets it) [network] |
 
+
+---
+
+## 10. v1.4 pre-release review: what was found and fixed
+
+Before 1.4.0 was released, four reviewers each attacked one area: the peer
+protocol, the console and its WebSocket API, the root-run install and update
+paths, and the cryptography and parsers. They were AI agents run by the
+project, told to prove what they claimed with working code where they could,
+and most findings below were reproduced before they were fixed. This is not
+the outside review the status table still lists as open.
+
+Severity is the reviewer's. Tests named in brackets fail on the code before
+the fix (except where noted) and pass after it.
+
+| # | Severity | Finding | Fix |
+|---|---|---|---|
+| 1 | High | **Stored XSS in the console.** A message waiting at a mailbox showed "held at <nick>" with the mailbox operator's chosen nick in innerHTML unescaped; script in the console can read the action token and do anything the operator can | The status text is escaped; `esc()` escapes single quotes too. A Content-Security-Policy now lets the page reach only its own daemon. [console-hostile.e2e renders every view with hostile text in every peer-chosen field, websecurity] |
+| 2 | Medium | The console fetched its fonts from Google on every open, and had no policy limiting what injected code could reach | Fonts embedded (SIL OFL, `LICENSE-fonts.txt`); `default-src 'none'`, `connect-src` to its own /ws only [websecurity] |
+| 3 | Critical | **Root escalation through `update-apply`.** Root wrote and chowned `result.json` in the nodesignal-owned updates folder, following a link the daemon planted, with text the daemon partly chose; the daemon can trigger the unit itself | Every read, write and unlink there runs as the folder's owner; a linked folder is refused; reads are regular files only, size-capped, non-blocking; `apt-get --no-remove` [update-apply] |
+| 4 | High | **Root escalation through `restore`.** Same pattern with `state.json.tmp` in the state folder | State-folder work runs as its owner; new files `O_EXCL` then renamed; a restore without a terminal needs `--yes` [backup-cli] |
+| 5 | High | **Root escalation through bitcoin.conf.** The one-time backup and the in-place rewrite followed links in the node user's folder (and purge did the same in shell); node detection trusted any process named bitcoind, so any local account could steer setup to its own config | Edits run as the real file's owner through one descriptor; a root-owned file in a folder another account can change is refused; purge uses `setpriv` as the owner; detection prefers a root-owned program and ignores configs owned by neither root nor the process's user [setup-core] |
+| 6 | Low | Config writes used a predictable temp name, followed by root under a from-source config folder | Random `O_EXCL` temp name, owner and mode set on the descriptor [setup-core] |
+| 7 | Low-Medium | `chownTree` walked the nodesignal-owned state folder as root, racy against a swap | `chown -R -P --from=0` (no link following) [setup-core; the old walk did not follow links either, so this test also passes on the old code] |
+| 8 | Medium | Dry runs of the release workflow signed manifests, and every job had a write token | Signing only when publishing; `contents: read` except the publishing job |
+| 9 | Medium | The Windows build fetched postject through npx, whose dependency is a version range, with install scripts on | postject 1.0.0-alpha.6 and commander 9.5.0 at exact versions, `--ignore-scripts` [winexe] |
+| 10 | Medium-Low | Setup added nodesignal to debian-tor even with the onion off, and `onion off` never removed it | Both follow the setting [setup-core] |
+| 11 | Low | Backup and restore passphrases were echoed back when piped | Read without echo [backup-cli] |
+| 12 | Medium | **Tor control impostor.** With the control socket missing, the daemon tried TCP 9051/9151, where any local account could listen and receive the onion key (SAFECOOKIE proved nothing: the impostor names its own cookie file) | On Linux only Tor's control socket, unless the operator names a TCP port |
+| 13 | High | **A Tor peer chose its contact key.** A peer from 127.0.0.1 was filed under the onion or public host its hello named, so it could take over a contact the operator had written to and receive the queued messages, squat addresses, get its claimed host dialled directly (revealing an onion-only operator's IP) and collect the "same onion" proof | Filed as `tor:<fp>`; the onion is only a dial target through Tor; `pub` files nothing; claimed hosts are never identified; the identify path no longer sets the same-onion proof [network, peerabuse] |
+| 14 | High | **Others could pin keys onto your contacts.** Room member entries, a contact's advertised mailboxes and mail from a new key pinned a key onto an existing unpinned contact, or onto an address with no contact yet, so a later message to that address went to the attacker | Records from someone else's word are `peer:<fp>` or `mbox:<fp>`, never under an address, capped at 256; sealing checks the key against the pinned fingerprint; no mail is left at a mailbox after a key mismatch [peerabuse; its `--tor-all` routing check also passes on the old code, which already used SOCKS there] |
+| 15 | High | **Prototype pollution.** A room link with host `__proto__` wrote the attacker's key onto `Object.prototype`, so every unpinned contact inherited it and its queued messages went to the attacker | Room-link hosts follow the contact-link charset; `__proto__`, `constructor`, `prototype` refused; contacts and introductions are null-prototype, also after loading [peerabuse] |
+| 16 | Medium-High | A posts flood cost about 0.74 ms of CPU per post (verify, scan, full sort) and evicted followed authors' posts | 200 posts looked at per link, duplicates answered before verifying, batched trimming, followed authors kept [social, peerabuse] |
+| 17 | Medium-High | Replies ignored backpressure: a peer that never read grew the daemon from 58 MB to 455 MB on one link | One request of each kind answered at a time per link; over 1 MB waiting drops the link (now about 3.5 MB for the same attack) [peerabuse] |
+| 18 | Medium | Batches over the 65519-byte Noise limit killed the link, so four 16 KiB deposits jammed a mailbox for good | Batches cut at 60 KB; oversized frames refused, not thrown [peerabuse] |
+| 19 | Medium | One unsolicited message made a stranger "established", which earned it introductions (anyone could crawl operator addresses), auto-follow and check-ins | Those need a contact the operator added or wrote to, with a two-way exchange [peerabuse] |
+| 20 | Medium-Low | Unasked `who` answers were accepted from anyone and could rewrite another introducer's entry | Accepted only as the answer to our own request, from such a contact; entries never rewritten [peerabuse] |
+| 21 | Low-Medium | A hello's signing key had no proof of possession | `skp`: a signature by the signing key binding it to the link's Noise key [peerabuse] |
+| 22 | Low-Medium | Anyone could register mailbox slots; mailbox.json was rewritten about once a second under churn; every hello saved state | Registration only for such contacts; mailbox.json at most every 30 s, social.json every 5 s; a hello saves only on change [peerabuse] |
+| 23 | Low | The rate limiter sorted 4096 buckets on each new source | Least-recently-used eviction by insertion order [peerabuse] |
+| 24 | Low | `social.verify` accepted small-order author keys (a signature that verifies any message) and threw on kinds named like `toString` | Small-order points refused in every encoding; own-property lookups [social] |
+| 25 | Low | Mid-body cut-offs could leave a test waiting forever (CI waited 25 minutes once) | Every harness wait ends within 5 s; each suite has a time limit (`tests/run-all.js`, `tests/harness.js`; not reproduced locally) |
+
+**Still open after the review, in honest terms**
+
+- The console still allows inline script (it is one file with onclick
+  handlers). Escaping plus the hostile-render test are what keep peer text
+  from running; the policy only limits what injected code could reach.
+- `/health` answers without the login token. It shows the nick,
+  fingerprint and onion (what every contact sees), never a credential.
+- A room member's claimed address is dialled outside Tor unless it is an
+  onion or `--tor-all` is on, so someone in a shared room can make your
+  daemon connect to a host of their choosing (up to 256 records).
+- A trusted introducer can pair any address with any key, and adding it
+  pins that key.
+- Windows has no Tor control socket; the Tor Expert Bundle's TCP control
+  port can still be impersonated by another account on the same machine.
+- The Linux config is owned by the `nodesignal` account (locked decision
+  11); root reads `data`, `web-port` and `rpc-url` from it. The service's
+  sandbox keeps the daemon from writing it.
+- An installed copy trusts a signed release forever: there is no freshness
+  check or key revocation, so it can be offered a signed but older-than-
+  latest release that is still newer than itself.
+- The .deb build checks the Node.js tarball against SHA256SUMS.txt from the
+  same host, not its GPG signature.
+- `asOwner` relies on glibc applying `seteuid` to every thread; none of
+  its call sites have asynchronous work in flight.

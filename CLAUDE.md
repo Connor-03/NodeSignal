@@ -220,7 +220,33 @@ caps list them (older daemons ignore unknown frames): `feed-req`/`posts`,
 `mb-reg`/`mb-reg-ok`/`mb-reg-err`, `mb-put`/`mb-put-ok`/`mb-put-err`,
 `mb-get`/`mb-items`/`mb-ack`. Once both hellos are exchanged, `afterHello`
 syncs whatever both sides support; the console's refresh (`sync.now`) runs
-it again on demand. Either side of a link may
+it again on demand. Rules from the pre-release review (keep them):
+- `sk` counts only with `skp`, an Ed25519 signature by `sk` over the bytes
+  `NodeSignal signing key of <sender's own 32-hex Noise fp> v1`, checked
+  against the link's key; who entries and a sealed mail's return address
+  carry `skp` too.
+- A peer never chooses its contact key. A link from 127.0.0.1 (Tor) is
+  filed as `tor:<fp>`; mail from a new key as `mbox:<fp>`; a record made
+  from someone else's word (a room member, a mailbox, an introduction) as
+  `peer:<fp>`, with the named address kept as `c.addr`, a dial target where
+  the pinned key must answer. All use the full 32-hex fingerprint. `onion`
+  is kept as `c.onion` and dialled through Tor; `pub` files nothing. Only
+  the operator's own actions (contact.add, a room link, an accepted
+  introduction) file a contact under an address. Never pin a key onto an
+  existing record, never identify (:8333) a host a peer merely claimed.
+- Peer-keyed maps (`state.contacts`, introductions) are null-prototype,
+  and `__proto__`, `constructor` and `prototype` are refused as hosts.
+- 1.4 extras (who answers, auto-follow, passing on others' posts,
+  check-ins, mb-reg) need a contact the operator added or wrote to, with a
+  two-way exchange; one unsolicited msg from a stranger earns none of it.
+  `who` is accepted only as the answer to our who-req on that link.
+- Per link: at most 200 posts looked at, one feed-req, room-req (per room),
+  mb-get and who-req answered at a time, and the link is dropped with over
+  1 MB waiting to be sent. Batches are cut at 60 KB (Noise frames hold
+  65519 bytes); `who` and `mb-items` carry `more: true` on all but the last
+  frame, and `room-state` may hold only some members, the rest following
+  as `room-items`.
+Either side of a link may
 send `msg`; the dialling side hangs up when idle. Outgoing message status:
 `sending` -> `delivered`, or `pending` (retrying, with `error` and
 `nextTry`) -> `failed` (gave up or cancelled). The console adds its own
@@ -339,6 +365,15 @@ status table. Keep it current whenever security changes.
   `/health` and the login routes only: no static files from the program
   folder, where a from-source install keeps `nodesignal-config.json`.
 
+- Pre-release review (v1.4): four reviewers (AI agents told to attack one
+  area each: peer protocol, console, root-run install and update paths,
+  crypto and parsers) found a stored XSS, root escalations through links in
+  folders other accounts own, peers choosing their own contact key or
+  pinning keys for others, prototype pollution, a Tor control impostor and
+  floods; all fixed with tests. `SECURITY-CRITIQUE.md` section 10 lists
+  every finding and what is still open. This is not the outside review
+  below: the reviewers were agents run by the project.
+
 **Still open, in honest terms**
 - Without a passphrase, messages are stored in the clear in `state.json`;
   with one, metadata and the identity key are still readable by the daemon's
@@ -449,6 +484,13 @@ Still open:
 - Mailbox deposits reveal the sender's key to the mailbox; a throwaway
   identity for deposits would hide it.
 - Several Tor peers still share one map dot (127.0.0.1); they are separate
+  contacts (`tor:<fp>`).
+- From the pre-release review, still open: a room member's claimed address
+  is dialled outside Tor unless it is an onion or `--tor-all` is on (up to
+  256 such records); a trusted introducer can pair any address with any
+  key, and "add" pins it; one key can have a `tor:` conversation and one
+  under an address until the operator adds it by link; records written by
+  earlier 1.4 builds are not migrated (1.4 was unreleased).
   contacts.
 
 ### Open questions for the maintainer (from the v1.3 installer work)
