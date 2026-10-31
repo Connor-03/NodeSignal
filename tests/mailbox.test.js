@@ -28,7 +28,9 @@ const rawDH = (priv, pub) => crypto.diffieHellman({
   publicKey: crypto.createPublicKey({ key: { kty: 'OKP', crv: 'X25519', x: pub.toString('base64url') }, format: 'jwk' }),
 });
 function referenceSeal({ macPriv, claimedPub, recipientPub, body }) {
-  const jwk = crypto.generateKeyPairSync('x25519').privateKey.export({ format: 'jwk' });
+  // from random bytes, not generateKeyPairSync (it can deadlock on Node 18 when exported; see noise.js)
+  const ephKey = crypto.createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b656e04220420', 'hex'), crypto.randomBytes(32)]), format: 'der', type: 'pkcs8' });
+  const jwk = ephKey.export({ format: 'jwk' });
   const eph = { priv: Buffer.from(jwk.d, 'base64url'), pub: Buffer.from(jwk.x, 'base64url') };
   const k1 = Buffer.from(crypto.hkdfSync('sha256', rawDH(eph.priv, recipientPub), Buffer.concat([eph.pub, recipientPub]), 'NodeSignal mailbox v1 outer', 32));
   const macKey = Buffer.from(crypto.hkdfSync('sha256', rawDH(macPriv, recipientPub), eph.pub, 'NodeSignal mailbox v1 sender', 32));

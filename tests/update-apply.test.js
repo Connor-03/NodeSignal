@@ -29,7 +29,9 @@ for (const f of ['cli.js', 'setup-core.js', 'updater.js', 'backup.js']) fs.copyF
 fs.writeFileSync(path.join(APP, 'VERSION'), '1.4.0\n');
 
 // the release key the "shipped" copy trusts, and another one it does not
-const key = crypto.generateKeyPairSync('ed25519'), other = crypto.generateKeyPairSync('ed25519');
+// from random seeds, not generateKeyPairSync (it can deadlock on Node 18 when exported; see noise.js)
+const ed25519Key = () => { const privateKey = crypto.createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), crypto.randomBytes(32)]), format: 'der', type: 'pkcs8' }); return { privateKey, publicKey: crypto.createPublicKey(privateKey) }; };
+const key = ed25519Key(), other = ed25519Key();
 const raw = (k) => k.publicKey.export({ type: 'spki', format: 'der' }).subarray(12);
 fs.writeFileSync(path.join(APP, 'release-keys.json'), JSON.stringify({ keys: [{ id: updater.keyIdOf(raw(key)), publicKey: raw(key).toString('base64') }] }));
 

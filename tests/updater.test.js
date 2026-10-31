@@ -34,8 +34,10 @@ const listen = (srv, port) => new Promise((resolve, reject) => { srv.once('error
 const drain = async (s) => { for await (const _ of s) { /* read it all */ } };
 const files = (d) => fs.readdirSync(d).sort();
 
+// from random seeds, not generateKeyPairSync (it can deadlock on Node 18 when exported; see noise.js)
+const ed25519Key = () => { const privateKey = crypto.createPrivateKey({ key: Buffer.concat([Buffer.from('302e020100300506032b657004220420', 'hex'), crypto.randomBytes(32)]), format: 'der', type: 'pkcs8' }); return { privateKey, publicKey: crypto.createPublicKey(privateKey) }; };
 function newKey(note = 'test key') {
-  const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+  const { privateKey, publicKey } = ed25519Key();
   const raw = U.rawPublicKey(publicKey), id = U.keyIdOf(raw);
   return { privateKey, raw, id, entry: { id, publicKey: raw.toString('base64'), added: '2026-10-31', note } };
 }
