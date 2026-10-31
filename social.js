@@ -55,12 +55,46 @@ function loadSigningKey(k) {
   return { priv, pubRaw, pub: pubRaw.toString('base64'), id: keyId(pubRaw) };
 }
 const keyId = (pubRaw) => crypto.createHash('sha256').update(pubRaw).digest('hex').slice(0, 16);
+/* Ed25519 points of small order, as libsodium lists them. The sign bit is
+   ignored, so each line covers two encodings, the non-canonical ones (y >= p)
+   included; together they hold all eight points of order 1, 2, 4 and 8. A
+   "key" like this verifies a forged signature for any message (with
+   R = identity and S = 0, for one), so it is never an author key. */
+const SMALL_ORDER = [
+  '0000000000000000000000000000000000000000000000000000000000000000',   // order 4
+  '0100000000000000000000000000000000000000000000000000000000000000',   // order 1, the identity
+  '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',   // order 8
+  'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',   // order 8
+  'ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',   // p-1, order 2
+  'edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',   // p (= 0), order 4
+  'eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f',   // p+1 (= 1), order 1
+].map((h) => Buffer.from(h, 'hex'));
+function smallOrder(raw) {
+  const y = Buffer.from(raw); y[31] &= 0x7f;
+  return SMALL_ORDER.some((b) => b.equals(y));
+}
 function pubKeyObj(pubB64) {
   const raw = Buffer.from(String(pubB64 || ''), 'base64');
-  if (raw.length !== 32) return null;
+  if (raw.length !== 32 || smallOrder(raw)) return null;
   try { return crypto.createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, raw]), format: 'der', type: 'spki' }); } catch { return null; }
 }
-const isPub = (s) => typeof s === 'string' && s.length === 44 && Buffer.from(s, 'base64').length === 32 && Buffer.from(s, 'base64').toString('base64') === s;
+const isPub = (s) => typeof s === 'string' && s.length === 44 && Buffer.from(s, 'base64').length === 32
+  && Buffer.from(s, 'base64').toString('base64') === s && !smallOrder(Buffer.from(s, 'base64'));
+
+/* A signing key belongs to one Noise identity: its holder signs this label
+   with the fingerprint in it, and a hello (sealed mail, an introduction)
+   carries the signature. Without it anyone could announce another
+   operator's signing key as their own, and be shown as that author or let
+   into that member's rooms. The label is not JSON, so it can never be read
+   as a post or any other signed item. */
+const bindLabel = (fp) => Buffer.from(`NodeSignal signing key of ${fp} v1`);
+const bindKey = (key, fp) => crypto.sign(null, bindLabel(fp), key.priv).toString('base64');
+function checkBinding(pub, sig, fp) {
+  if (!isPub(pub) || typeof fp !== 'string' || !FP_RE.test(fp) || typeof sig !== 'string' || sig.length !== 88) return false;
+  const k = pubKeyObj(pub), s = Buffer.from(sig, 'base64');
+  if (!k || s.length !== 64) return false;
+  try { return crypto.verify(null, bindLabel(fp), k, s); } catch { return false; }
+}
 
 /* ---- canonical JSON: sorted keys, no whitespace ---- */
 function canonical(v) {
@@ -113,10 +147,13 @@ const ALLOWED = {
   member: ['k', 'v', 'a', 'ts', 'sig', 'room', 'fp', 'nick', 'host', 'port', 'left'],
   roommsg: ['k', 'v', 'a', 'ts', 'sig', 'room', 'fp', 'nick', 'text'],
 };
+// Own properties only: a kind such as "__proto__", "constructor" or
+// "toString" would otherwise find something on Object.prototype.
+const has = (obj, k) => typeof k === 'string' && Object.prototype.hasOwnProperty.call(obj, k);
 function verify(o, now = Date.now(), { keepMs = KEEP_MS } = {}) {
   if (!o || typeof o !== 'object' || Array.isArray(o)) return { ok: false, error: 'not an object' };
+  if (!has(ALLOWED, o.k) || !has(KINDS, o.k)) return { ok: false, error: 'unknown kind' };
   const allowed = ALLOWED[o.k];
-  if (!allowed) return { ok: false, error: 'unknown kind' };
   for (const key of Object.keys(o)) if (!allowed.includes(key)) return { ok: false, error: 'unexpected field ' + key.slice(0, 20) };
   if (o.v !== 1) return { ok: false, error: 'unsupported version' };
   if (!isPub(o.a)) return { ok: false, error: 'bad author key' };
@@ -154,32 +191,71 @@ function createStore(opts = {}) {
     maxMembers: 100, keepMs: KEEP_MS,
   }, opts);
   const posts = new Map();
+  const byAuthor = new Map();          // author key -> Set of post ids, so nothing scans every post
+  // Ids dropped to make room. A replay of one is not new: without this, a
+  // peer could send the same evicted posts again and again, each costing a
+  // signature check and a trim.
+  const evicted = new Set();
   const rooms = new Map();
 
-  function addPost(o, { via = null, hops = 0, now = Date.now(), mine = false } = {}) {
+  function put(id, entry) {
+    posts.set(id, entry);
+    let s = byAuthor.get(entry.o.a);
+    if (!s) byAuthor.set(entry.o.a, (s = new Set()));
+    s.add(id);
+  }
+  function drop(id, remember = true) {
+    const p = posts.get(id);
+    if (!p) return;
+    posts.delete(id);
+    const s = byAuthor.get(p.o.a);
+    if (s) { s.delete(id); if (!s.size) byAuthor.delete(p.o.a); }
+    if (remember) {
+      evicted.add(id);
+      if (evicted.size > L.maxPosts * 5) evicted.delete(evicted.values().next().value);   // 10,000 ids, about 1 MB
+    }
+  }
+  // keepAuthors: signing keys whose posts go last when the store is full
+  // (the daemon passes the people it follows).
+  function addPost(o, { via = null, hops = 0, now = Date.now(), mine = false, keepAuthors = null } = {}) {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return { status: 'rejected', error: 'not an object' };
+    // The cheap checks first: a post we hold, or dropped for room, costs no
+    // signature check. The id covers the whole signed body.
+    let id;
+    try { id = idOf(o); } catch { return { status: 'rejected', error: 'not an object' }; }
+    if (posts.has(id) || evicted.has(id)) return { status: 'dup', id };
     const v = verify(o, now, L);
     if (!v.ok) return { status: 'rejected', error: v.error };
     if (o.k !== 'post') return { status: 'rejected', error: 'not a post' };
-    if (posts.has(v.id)) return { status: 'dup', id: v.id };
-    const byAuthor = [...posts.values()].filter((p) => p.o.a === o.a);
-    if (!mine && byAuthor.filter((p) => p.o.ts > o.ts - 864e5 && p.o.ts <= o.ts + 864e5).length >= L.maxPerAuthorDay)
+    const theirs = [...(byAuthor.get(o.a) || [])].map((x) => [x, posts.get(x)]);
+    if (!mine && theirs.filter(([, p]) => p.o.ts > o.ts - 864e5 && p.o.ts <= o.ts + 864e5).length >= L.maxPerAuthorDay)
       return { status: 'rejected', error: 'too many posts from this author in a day' };
-    posts.set(v.id, { o, at: now, via, hops: Math.max(0, Math.min(9, hops | 0)) });
+    put(v.id, { o, at: now, via, hops: Math.max(0, Math.min(9, hops | 0)) });
     // per author: oldest first out
-    if (byAuthor.length + 1 > L.maxPerAuthor) {
-      const old = byAuthor.sort((x, y) => x.o.ts - y.o.ts)[0];
-      if (old) posts.delete(idOf(old.o));
+    if (theirs.length + 1 > L.maxPerAuthor) {
+      let old = null;
+      for (const [x, p] of theirs) if (!old || p.o.ts < old[1].o.ts) old = [x, p];
+      if (old) drop(old[0]);
     }
-    if (posts.size > L.maxPosts) trimPosts();
+    if (posts.size > L.maxPosts) trimPosts(keepAuthors);
     return { status: 'new', id: v.id };
   }
+  /* Over the cap: drop the oldest forwarded posts, never our own. In
+     batches, down to 90% of the cap, so one sort serves the next couple of
+     hundred posts instead of every one. Posts by keepAuthors go only if the
+     others are not enough to get back under the cap. */
   function trimPosts(keepAuthors = null) {
-    const all = [...posts.entries()].sort((x, y) => x[1].o.ts - y[1].o.ts);
+    if (posts.size <= L.maxPosts) return;
+    const all = [...posts.entries()].filter(([, p]) => p.via !== null).sort((x, y) => x[1].o.ts - y[1].o.ts);
+    const target = Math.floor(L.maxPosts * 0.9);
     for (const [id, p] of all) {
-      if (posts.size <= L.maxPosts) break;
-      if (p.via === null) continue;                 // never drop our own
+      if (posts.size <= target) return;
       if (keepAuthors && keepAuthors.has(p.o.a)) continue;
-      posts.delete(id);
+      drop(id);
+    }
+    for (const [id] of all) {
+      if (posts.size <= L.maxPosts) return;
+      drop(id);
     }
   }
   // newest first; filter is (entry) => bool
@@ -191,7 +267,7 @@ function createStore(opts = {}) {
     return [...posts.entries()].filter(([, p]) => p.o.ts > since && (!filter || filter(p)))
       .sort((x, y) => x[1].o.ts - y[1].o.ts).slice(-limit).map(([id, p]) => Object.assign({ id }, p));
   }
-  function removeAuthor(a) { for (const [id, p] of posts) if (p.o.a === a && p.via !== null) posts.delete(id); }
+  function removeAuthor(a) { for (const id of [...(byAuthor.get(a) || [])]) if (posts.get(id).via !== null) drop(id, false); }
 
   /* rooms */
   function addRoom(def, { joined = false, now = Date.now() } = {}) {
@@ -244,7 +320,7 @@ function createStore(opts = {}) {
   const leaveRoom = (id) => rooms.delete(id);
 
   function prune(now = Date.now()) {
-    for (const [id, p] of posts) if (p.via !== null && p.o.ts < now - L.keepMs) posts.delete(id);
+    for (const [id, p] of posts) if (p.via !== null && p.o.ts < now - L.keepMs) drop(id, false);
     for (const r of rooms.values()) for (const [id, m] of r.msgs) if (m.o.ts < now - L.keepMs) r.msgs.delete(id);
   }
 
@@ -264,7 +340,7 @@ function createStore(opts = {}) {
     if (!j || typeof j !== 'object') return;
     for (const p of Array.isArray(j.posts) ? j.posts : []) {
       if (!p || !p.o || p.o.k !== 'post' || !isPub(p.o.a) || !KINDS.post(p.o)) continue;
-      posts.set(idOf(p.o), { o: p.o, at: Number(p.at) || 0, via: typeof p.via === 'string' && FP_RE.test(p.via) ? p.via : (p.via === null ? null : 'unknown'), hops: Number(p.hops) || 0 });
+      put(idOf(p.o), { o: p.o, at: Number(p.at) || 0, via: typeof p.via === 'string' && FP_RE.test(p.via) ? p.via : (p.via === null ? null : 'unknown'), hops: Number(p.hops) || 0 });
     }
     for (const r of Array.isArray(j.rooms) ? j.rooms : []) {
       if (!r || !r.def || r.def.k !== 'roomdef' || !isPub(r.def.a) || !KINDS.roomdef(r.def)) continue;
@@ -283,7 +359,7 @@ function createStore(opts = {}) {
 }
 
 module.exports = {
-  newSigningKey, loadSigningKey, keyId, canonical, idOf, verify, sign, roomIdOf, isPub,
+  newSigningKey, loadSigningKey, keyId, canonical, idOf, verify, sign, roomIdOf, isPub, bindKey, checkBinding,
   makePost, makeRoom, makeMember, makeRoomMsg, createStore, cleanText, cleanLine,
   POST_MAX, ROOM_MSG_MAX, ROOM_NAME_MAX, KEEP_MS, ONION_RE, FP_RE, ID_RE,
 };

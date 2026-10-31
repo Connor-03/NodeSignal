@@ -107,5 +107,107 @@ t('canonical JSON sorts keys at every level and skips undefined', () => {
   assert.strictEqual(S.canonical({ b: 1, a: { d: [2, { y: 1, x: 2 }], c: undefined } }), '{"a":{"d":[2,{"x":2,"y":1}]},"b":1}');
 });
 
+/* Ed25519 on BigInt, just enough to find the points of small order without
+   trusting a list: L * (a random point) lands in the 8-torsion. */
+const ED = (() => {
+  const p = 2n ** 255n - 19n, L = 2n ** 252n + 27742317777372353535851937790883648493n;
+  const mod = (a) => ((a % p) + p) % p;
+  const pow = (b, e) => { let r = 1n; b = mod(b); while (e > 0n) { if (e & 1n) r = r * b % p; b = b * b % p; e >>= 1n; } return r; };
+  const inv = (a) => pow(a, p - 2n), d = mod(-121665n * inv(121666n)), I = pow(2n, (p - 1n) / 4n);
+  const decode = (buf) => {
+    let y = 0n; for (let i = 31; i >= 0; i--) y = (y << 8n) | BigInt(buf[i] & (i === 31 ? 0x7f : 0xff));
+    y = mod(y);
+    const u = mod(y * y - 1n), v = mod(d * y * y + 1n);
+    let x = mod(u * pow(v, 3n) * pow(u * pow(v, 7n), (p - 5n) / 8n));
+    if (mod(v * x * x) !== u) { x = mod(x * I); if (mod(v * x * x) !== u) return null; }
+    if (Number(x & 1n) !== buf[31] >> 7) x = mod(-x);
+    return [x, y];
+  };
+  const encode = ([x, y]) => { const b = Buffer.alloc(32); let t = y; for (let i = 0; i < 32; i++) { b[i] = Number(t & 0xffn); t >>= 8n; } if (x & 1n) b[31] |= 0x80; return b; };
+  const add = ([x1, y1], [x2, y2]) => { const t = mod(d * x1 * x2 * y1 * y2); return [mod((x1 * y2 + x2 * y1) * inv(1n + t)), mod((y1 * y2 + x1 * x2) * inv(1n - t))]; };
+  const mul = (k, P) => { let R = [0n, 1n], Q = P; while (k > 0n) { if (k & 1n) R = add(R, Q); Q = add(Q, Q); k >>= 1n; } return R; };
+  const isId = (P) => P[0] === 0n && P[1] === 1n;
+  function torsion() {
+    for (;;) {
+      const P = decode(require('crypto').randomBytes(32));
+      if (!P) continue;
+      const T = mul(L, P);
+      if (!isId(mul(4n, T))) return Array.from({ length: 8 }, (_, k) => encode(mul(BigInt(k), T)));
+    }
+  }
+  return { torsion, p };
+})();
+
+t('small-order author keys are refused (a forged signature for any text would verify)', () => {
+  const pts = ED.torsion();
+  assert.strictEqual(new Set(pts.map((b) => b.toString('hex'))).size, 8, 'eight distinct points of order 1, 2, 4, 8');
+  // each with the sign bit flipped too, and the non-canonical encodings y = p, p + 1 (y = 0 and 1 again)
+  const extra = [ED.p, ED.p + 1n].map((y) => { const b = Buffer.alloc(32); let t = y; for (let i = 0; i < 32; i++) { b[i] = Number(t & 0xffn); t >>= 8n; } return b; });
+  for (const raw of [...pts, ...extra]) for (const sign of [0, 0x80]) {
+    const b = Buffer.from(raw); b[31] = (b[31] & 0x7f) | sign;
+    assert.strictEqual(S.isPub(b.toString('base64')), false, 'accepted as a key: ' + b.toString('hex'));
+  }
+  // the forgery itself: identity key, R = identity, S = 0
+  const ident = Buffer.alloc(32); ident[0] = 1;
+  const body = { k: 'post', v: 1, a: ident.toString('base64'), ts: NOW, fp: FP_A, nick: 'anyone', text: 'forged by anyone' };
+  const r = S.verify(Object.assign({}, body, { sig: Buffer.concat([ident, Buffer.alloc(32)]).toString('base64') }), NOW);
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error, 'bad author key');
+  assert(S.isPub(alice.pub) && S.isPub(bob.pub), 'real keys still pass');
+});
+
+t('a kind named after an Object.prototype property is refused, not thrown on', () => {
+  for (const k of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+    const o = JSON.parse(`{"k":"${k}","v":1}`);
+    assert.deepStrictEqual(S.verify(o, NOW), { ok: false, error: 'unknown kind' }, k);
+    const st = S.createStore();
+    assert.strictEqual(st.addPost(o, { now: NOW }).status, 'rejected', k);
+    st.addRoom(Object.assign({}, o)); st.addMember(Object.assign({}, o)); st.addRoomMsg(Object.assign({}, o));
+  }
+});
+
+t('store under a flood: a held or evicted id costs no signature check, and followed authors go last', () => {
+  const st = S.createStore({ maxPosts: 50, maxPerAuthor: 100, maxPerAuthorDay: 100 });
+  // the followed author's posts are the oldest in the store
+  const mine = Array.from({ length: 10 }, (_, i) => S.makePost(alice, { fp: FP_A, nick: 'alice', text: 'a' + i, ts: NOW - 20 * 864e5 + i }));
+  for (const p of mine) assert.strictEqual(st.addPost(p, { via: FP_A, hops: 1, now: NOW }).status, 'new');
+  const keep = new Set([alice.pub]);
+  const flood = [];
+  for (let i = 0; i < 200; i++) {
+    const k = i % 2 ? bob : S.loadSigningKey(S.newSigningKey());
+    flood.push(S.makePost(k, { fp: FP_B, nick: 'f', text: 'flood ' + i, ts: NOW - 10 * 864e5 + i }));
+  }
+  for (const p of flood) st.addPost(p, { via: FP_B, hops: 1, now: NOW, keepAuthors: keep });
+  assert(st.size <= 50, 'over the cap: ' + st.size);
+  assert.strictEqual(st.feed({ filter: (x) => x.o.a === alice.pub, limit: 100 }).length, 10, 'a flood evicted a followed author\'s posts');
+  // without keepAuthors the oldest go first: the cap still holds
+  const st2 = S.createStore({ maxPosts: 50, maxPerAuthor: 100, maxPerAuthorDay: 100 });
+  for (const p of [...mine, ...flood]) st2.addPost(p, { via: FP_B, hops: 1, now: NOW });
+  assert(st2.size <= 50);
+  // evicted and held ids are duplicates, answered before any signature check:
+  // a copy with its signature broken still reads as a duplicate, never as new
+  const evictedOne = flood.find((p) => !st.feed({ limit: 1000 }).some((x) => x.id === S.idOf(p)));
+  assert(evictedOne, 'something was evicted');
+  assert.strictEqual(st.addPost(evictedOne, { via: FP_B, hops: 1, now: NOW, keepAuthors: keep }).status, 'dup', 'a replayed evicted post counted as new');
+  const broken = Object.assign({}, mine[0], { sig: Buffer.alloc(64).toString('base64') });
+  assert.strictEqual(st.addPost(broken, { via: FP_B, now: NOW }).status, 'dup');
+  const size = st.size;
+  for (let i = 0; i < 5; i++) st.addPost(evictedOne, { via: FP_B, now: NOW });
+  assert.strictEqual(st.size, size);
+});
+
+t('a signing key is bound to one Noise fingerprint by its holder', () => {
+  const sig = S.bindKey(alice, FP_A);
+  assert.strictEqual(S.checkBinding(alice.pub, sig, FP_A), true);
+  assert.strictEqual(S.checkBinding(alice.pub, sig, FP_B), false, 'the same proof for another fingerprint');
+  assert.strictEqual(S.checkBinding(bob.pub, sig, FP_A), false, 'alice\'s proof for bob\'s key');
+  assert.strictEqual(S.checkBinding(bob.pub, S.bindKey(alice, FP_B), FP_B), false, 'signed by someone else');
+  assert.strictEqual(S.checkBinding(alice.pub, undefined, FP_A), false);
+  assert.strictEqual(S.checkBinding(alice.pub, 'x'.repeat(88), FP_A), false);
+  // the proof is no post: it never verifies as one
+  const asPost = { k: 'post', v: 1, a: alice.pub, ts: NOW, fp: FP_A, nick: 'a', text: 'x', sig };
+  assert.strictEqual(S.verify(asPost, NOW).ok, false);
+});
+
 console.log(failed ? `\n${failed} failed, ${passed} passed` : `\nall passed (${passed})`);
 process.exit(failed ? 1 : 0);
