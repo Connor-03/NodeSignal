@@ -1638,7 +1638,7 @@ function renderThread(){
     (p.nodeProof?`<span class="pill ok" title="${esc('Its NodeSignal answered on the onion address of a Bitcoin node ('+p.nodeProof.how+'). Only the holder of that onion key can run both.')}">⛓ runs the node at ${esc(p.nodeProof.onion.slice(0,10))}…</span>`:'')+
     (p.pinnedBy&&p.pinnedBy!=='backup'?`<span class="pill" title="${esc('The key was pinned before the first connection, from '+(p.pinnedBy==='link'?'their contact link':p.pinnedBy==='typed'?'a fingerprint you entered':'an introduction'))}">🔑 key from ${esc(p.pinnedBy==='link'?'their link':p.pinnedBy==='typed'?'you':'an introduction')}</span>`:'')+
     (p.unmeasured||p.latency==null?'':`<span class="pill">${esc(msText(p.latency))}</span>`)+
-    (hasPending?`<button class="actbtn" style="margin-left:auto" onclick="send({type:'chat.retry',host:'${esc(p.host)}'})&&toast('retrying now')">retry now</button>`:'');
+    (hasPending?`<button class="actbtn" style="margin-left:auto" data-host="${esc(p.host)}" onclick="send({type:'chat.retry',host:this.dataset.host})&&toast('retrying now')">retry now</button>`:'');
 
   const head=`<div class="thread-head" style="--accent:${c}">
     <button class="icon-btn back" onclick="closeChat()" aria-label="Back to conversations">←</button>

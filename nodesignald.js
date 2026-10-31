@@ -780,12 +780,23 @@ const RL_REFILL_MS = Number(arg('rl-refill-ms', 1500));
 const RL_MAX_BLOCKS = 4096;                    // cap the limiter's own memory
 const rlBuckets = new Map();                   // sourceBlock -> { tokens, ts }
 function sourceBlock(host) {
-  if (host.includes(':')) {                    // IPv6 -> /64 = first 4 hextets
-    const h = host.split('%')[0].split(':');
-    return 'v6:' + h.slice(0, 4).join(':');
-  }
-  const p = host.split('.');                   // IPv4 -> /24 is generous; use full /32
-  return 'v4:' + p.join('.');
+  host = String(host).split('%')[0];
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(host);
+  if (mapped) host = mapped[1];
+  // IPv6 -> /64: the first four groups, written out. Node hands us the
+  // compressed form (2001:db8::1:2:3:4), so splitting on ':' alone put every
+  // address of a /64 with a zero group in its own block.
+  if (host.includes(':')) return 'v6:' + v6Groups(host).slice(0, 4).join(':');
+  return 'v4:' + host;                         // IPv4 -> /24 is generous; use full /32
+}
+function v6Groups(h) {
+  const v4 = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h);   // a dotted IPv4 tail is two groups
+  if (v4) h = h.slice(0, v4.index) + ((v4[1] << 8) | v4[2]).toString(16) + ':' + ((v4[3] << 8) | v4[4]).toString(16);
+  const cut = h.indexOf('::');
+  const head = (cut < 0 ? h : h.slice(0, cut)).split(':').filter(Boolean);
+  const tail = cut < 0 ? [] : h.slice(cut + 2).split(':').filter(Boolean);
+  const zeros = cut < 0 ? [] : Array(Math.max(0, 8 - head.length - tail.length)).fill('0');
+  return [...head, ...zeros, ...tail].map((g) => (parseInt(g, 16) || 0).toString(16));
 }
 function rateOk(host) {
   const key = sourceBlock(host);
@@ -809,14 +820,15 @@ function rateOk(host) {
   b.tokens--; return true;
 }
 
-/* ---- privacy: choose a safe default bind ------------------------------
-   The old default (0.0.0.0) exposed both ports on every interface, including
-   clearnet. Now:
-     · if a Tailscale interface exists, bind to its address by default: the
-       intended deployment, reachable by peers on the tailnet and nobody else
-     · otherwise bind the WEB UI to localhost (operate via SSH tunnel), and
-       the PEER port to 0.0.0.0 only if the operator opts in
-   --bind still overrides everything for advanced setups (e.g. an onion HS). */
+/* ---- where the ports listen ---------------------------------------------
+     · the WEB console: always 127.0.0.1 (reach it from elsewhere through an
+       SSH tunnel)
+     · the PEER port: the Tailscale address when there is one (plus
+       127.0.0.1, where Tor hands onion peers over); otherwise every
+       interface (0.0.0.0), so a peer can reach it on a public address or
+       through a forwarded router port. Behind a home router nothing forwards
+       it unless the operator turns on port mapping or forwards it by hand.
+       --bind 127.0.0.1 keeps it to Tor (and this machine) only. */
 function tailscaleAddr() {
   try {
     const ifaces = os.networkInterfaces();
@@ -2205,9 +2217,11 @@ const ALLOWED_ORIGINS = new Set([`http://localhost:${CFG.webPort}`, `http://127.
 const hostOk = (req) => ALLOWED_HOSTS.has(String(req.headers.host || '').toLowerCase());
 const originOk = (req) => req.headers.origin === undefined || ALLOWED_ORIGINS.has(String(req.headers.origin).toLowerCase());
 // The console is one self-contained page (its fonts included), so the policy
-// lets it reach nothing but this daemon: if a peer's text ever slipped past
-// esc(), the injected code could not load more code or send anything away.
-// Inline script stays allowed because the page is one file with onclick handlers.
+// lets it fetch from nothing but this daemon: if a peer's text ever slipped
+// past esc(), the injected code could not load more code or fetch from or
+// post to another server. It could still navigate the page away or use the
+// action token through /ws, so escaping stays the real defence. Inline script
+// stays allowed because the page is one file with onclick handlers.
 const CSP = ["default-src 'none'", "script-src 'unsafe-inline'", "style-src 'unsafe-inline'", 'font-src data:', 'img-src data:',
   `connect-src 'self' ws://localhost:${CFG.webPort} ws://127.0.0.1:${CFG.webPort}`, "base-uri 'none'", "form-action 'self'",
   "frame-ancestors 'none'"].join('; ');

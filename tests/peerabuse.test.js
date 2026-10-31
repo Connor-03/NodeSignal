@@ -397,6 +397,22 @@ async function countEvents(u, pred, quietMs = 1500) {
     const ms = Date.now() - t0;
     assert(ms < 1000, `5000 new source blocks took ${ms} ms`);
   });
+  await t('rate limiter: one IPv6 /64 is one block however Node writes the address (final review)', () => {
+    const src = fs.readFileSync(path.join(H.ROOT, 'nodesignald.js'), 'utf8');
+    const code = src.slice(src.indexOf('const MAX_CONNS'), src.indexOf('/* ---- privacy:'));
+    const L = vm.runInNewContext(code + '\n;({ sourceBlock })', { arg: (n, d) => d, Date, Math, Map, Number });
+    const net = require('net');
+    // the compressed form Node gives a socket, for 5000 addresses in 2001:db8:0:0::/64
+    const keys = new Set();
+    for (let i = 1; i <= 5000; i++) keys.add(L.sourceBlock(new net.SocketAddress({ address: `2001:db8:0:0:${i.toString(16)}:1:2:3`, family: 'ipv6' }).address));
+    assert.deepStrictEqual([...keys], ['v6:2001:db8:0:0']);
+    assert.strictEqual(L.sourceBlock('2001:db8::1'), 'v6:2001:db8:0:0');
+    assert.strictEqual(L.sourceBlock('2001:db8:1:2::5%eth0'), 'v6:2001:db8:1:2');
+    assert.strictEqual(L.sourceBlock('::1'), 'v6:0:0:0:0');
+    assert.strictEqual(L.sourceBlock('::ffff:198.51.100.7'), 'v4:198.51.100.7');
+    assert.strictEqual(L.sourceBlock('64:ff9b::198.51.100.7'), 'v6:64:ff9b:0:0');
+    assert.notStrictEqual(L.sourceBlock('2001:db8:0:1::1'), L.sourceBlock('2001:db8:0:2::1'), 'different /64s stay apart');
+  });
 
   uv.close();
   await S.finish();

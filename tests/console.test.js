@@ -34,6 +34,12 @@ t('peer-supplied strings go through esc() in templates', () => {
     .filter((x) => !/^\$\{\w+\.\w+\?(`|')/.test(x));
   assert.deepStrictEqual(raw, [], 'unescaped: ' + raw.join(', '));
 });
+t('no peer value inside a quoted JS string in an inline handler (entities are decoded before the JS runs)', () => {
+  // onclick="f('${esc(x)}')": the browser turns &#39; back into ' before the
+  // handler is parsed, so esc() cannot protect a value there; use data-*.
+  const bad = [...script.matchAll(/on\w+="[^"]*'\$\{(?!p\.id\}|changed\.id\}|k\})[^}]*\}/g)].map((m) => m[0]);
+  assert.deepStrictEqual(bad, [], 'use a data-* attribute: ' + bad.join(' | '));
+});
 t('v1.3 features are wired: history passphrase, key review, retry, advertised peers', () => {
   for (const op of ['vault.set', 'vault.unlock', 'vault.lock', 'vault.change', 'contact.acceptKey', 'contact.dismissKey', 'chat.retry', 'chat.cancel'])
     assert(script.includes(`'${op}'`), op + ' not sent anywhere');
