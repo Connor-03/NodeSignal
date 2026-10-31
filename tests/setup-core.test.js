@@ -9,6 +9,10 @@ const { rpcServer } = require('./mock-node.js');
 
 const ROOT = path.join(__dirname, '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-setup-test-'));
+// As root, bitcoin.conf is edited as its owner (alice, uid 1000 below), who
+// must be able to reach her own files, as on a real machine.
+fs.chmodSync(tmp, 0o755);
+const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 let failed = 0;
 const tests = [];
 const t = (name, fn) => tests.push([name, fn]);
@@ -434,9 +438,234 @@ t('agent-brief warns about secrets and never contains one; rpc-access rotate mak
   assert.strictEqual(cfg2['web-token'], cfg['web-token'], 'rotate leaves everything else alone');
 });
 
+/* ---------------------------------------------------------- root and other accounts' files
+   Root edits bitcoin.conf, NodeSignal's state folder and the update folder,
+   all of which other accounts control. Root cause of the escalations these
+   guard (Oct 2026 review): root followed links those accounts planted (the
+   one-time backup, a dangling link, a swapped file) and wrote or chowned
+   whatever they pointed at. Root now works there as the owner. */
+// cli.js in a child process with the service hooks stubbed (no test ever runs
+// systemctl) and a /health that never answers
+function cliHooked(args, { input = '', env = {} } = {}) {
+  const code = `const core = Object.assign({}, require(${JSON.stringify(path.join(ROOT, 'setup-core.js'))}), { httpGetJson: async () => ({ ok: false, error: 'test' }) });
+require(${JSON.stringify(path.join(ROOT, 'cli.js'))}).main(JSON.parse(process.env.NS_ARGS), { core, hooks: { restart: async () => 0, stop: async () => {}, start: async () => {} } }).then((c) => process.exit(c || 0));`;
+  return spawnSync(process.execPath, ['-e', code], { input, encoding: 'utf8', timeout: 60000, env: Object.assign({}, process.env, env, { NS_ARGS: JSON.stringify(args) }) });
+}
+const NODE_UID = 4243, OTHER_UID = 4244;   // unused accounts in the test machine
+function ownTree(p, uid) { fs.chownSync(p, uid, uid); if (fs.lstatSync(p).isDirectory()) for (const e of fs.readdirSync(p)) ownTree(path.join(p, e), uid); }
+
+t('as root, bitcoin.conf is edited as its owner: a link planted as the backup is never written through', () => {
+  if (!asRoot) return 'skip needs root (CI runs this suite as a normal user)';
+  const base = path.join(tmp, 'own'), node = path.join(base, 'node'), safe = path.join(base, 'rootonly');
+  fs.mkdirSync(node, { recursive: true }); fs.mkdirSync(safe, { mode: 0o700 });
+  const victim = path.join(safe, 'victim.sh'), never = path.join(safe, 'never-created');
+  fs.writeFileSync(victim, 'root only\n', { mode: 0o600 });
+  const conf = path.join(node, 'bitcoin.conf');
+  fs.writeFileSync(conf, 'server=1\n', { mode: 0o600 });
+  ownTree(node, NODE_UID);
+  // the node's user plants the one-time backup as a link to a root file
+  fs.symlinkSync(victim, conf + core.BACKUP_SUFFIX);
+  const r = core.setRpcAccess(conf, 'pw');
+  assert(r.changed && r.backup === null, 'no backup through the link');
+  assert.strictEqual(fs.readFileSync(victim, 'utf8'), 'root only\n', 'the link target is untouched');
+  assert.strictEqual(fs.statSync(victim).uid, 0, 'and still root\'s');
+  assert(core.rpcAccessState(conf).on);
+  assert.strictEqual(fs.statSync(conf).uid, NODE_UID, 'bitcoin.conf keeps its owner');
+  // a dangling link as the backup: nothing is created through it
+  fs.unlinkSync(conf + core.BACKUP_SUFFIX); fs.symlinkSync(never, conf + core.BACKUP_SUFFIX);
+  assert(core.setRpcAccess(conf, null).changed);
+  assert(!fs.existsSync(never), 'nothing created at the dangling link\'s target');
+  // the backup is made by the owner, not by root
+  fs.unlinkSync(conf + core.BACKUP_SUFFIX);
+  assert(core.setUaComment(conf, true).backup);
+  assert.strictEqual(fs.lstatSync(conf + core.BACKUP_SUFFIX).uid, NODE_UID, 'the backup was created by the owner');
+  // root's own rights are never used: a file its owner may not write stays as it is
+  fs.chmodSync(conf, 0o400);
+  const before = fs.readFileSync(conf, 'utf8');
+  assert.throws(() => core.setUaComment(conf, false), /cannot write .*EACCES/);
+  assert.strictEqual(fs.readFileSync(conf, 'utf8'), before);
+  assert.strictEqual(process.geteuid(), 0, 'back to root afterwards');
+});
+
+t('as root, a symlinked bitcoin.conf is followed and edited as the real file\'s owner; a new one as its folder\'s owner', () => {
+  if (!asRoot) return 'skip needs root (CI runs this suite as a normal user)';
+  const base = path.join(tmp, 'own2'), disk = path.join(base, 'disk'), node = path.join(base, 'node');
+  fs.mkdirSync(disk, { recursive: true }); fs.mkdirSync(node);
+  const real = path.join(disk, 'bitcoin.conf');
+  fs.writeFileSync(real, 'server=1\n', { mode: 0o600 });
+  ownTree(disk, OTHER_UID); ownTree(node, NODE_UID);
+  const link = path.join(node, 'bitcoin.conf');
+  fs.symlinkSync(real, link);
+  const r = core.setRpcAccess(link, 'pw');
+  assert(r.changed && fs.lstatSync(link).isSymbolicLink(), 'the link stays a link');
+  assert(core.rpcAccessState(real).on, 'the real file got the block');
+  assert.strictEqual(r.backup, real + core.BACKUP_SUFFIX, 'the backup sits beside the real file');
+  assert.strictEqual(fs.statSync(r.backup).uid, OTHER_UID, 'made as the real file\'s owner');
+  // a missing bitcoin.conf (and folder) in the node's folder: made by its owner
+  const fresh = path.join(node, 'sub', 'bitcoin.conf');
+  assert(core.setUaComment(fresh, true).created);
+  assert.deepStrictEqual([fs.statSync(fresh).uid, fs.statSync(path.dirname(fresh)).uid], [NODE_UID, NODE_UID]);
+  assert.strictEqual(fs.statSync(fresh).mode & 0o777, 0o600);
+  // the node's file in a root-owned folder (/etc/bitcoin): edited as its owner,
+  // who cannot add a backup beside it, and that is reported, not hidden
+  const etc = path.join(base, 'etc-bitcoin'), own = path.join(etc, 'bitcoin.conf');
+  fs.mkdirSync(etc); fs.writeFileSync(own, 'server=1\n', { mode: 0o600 }); fs.chownSync(own, NODE_UID, NODE_UID);
+  const r2 = core.setUaComment(own, true);
+  assert(r2.changed && core.uaCommentState(own).on);
+  assert.deepStrictEqual([r2.backup, r2.backupError], [null, 'EACCES']);
+});
+
+t('as root, a root-owned bitcoin.conf is refused when another account can change a folder above it', () => {
+  if (!asRoot) return 'skip needs root (CI runs this suite as a normal user)';
+  const base = path.join(tmp, 'own3');
+  const mk = (name, mode, uid) => {
+    const d = path.join(base, name); fs.mkdirSync(d, { recursive: true }); fs.chmodSync(d, mode); fs.chownSync(d, uid, uid);
+    const f = path.join(d, 'bitcoin.conf'); fs.writeFileSync(f, 'server=1\n'); fs.chownSync(f, 0, 0); return f;
+  };
+  const theirs = mk('theirs', 0o755, NODE_UID), open = mk('open', 0o777, 0), sticky = mk('sticky', 0o1777, 0);
+  assert.throws(() => core.setRpcAccess(theirs, 'pw'), /refusing to edit .* as root: .*theirs can be changed by an account other than root \(it belongs to uid 4243\)\. Add the lines by hand/);
+  assert.throws(() => core.setUaComment(open, true), /refusing to edit .* as root: .*open can be changed .*accounts other than root can write to it/);
+  for (const f of [theirs, open]) { assert.strictEqual(fs.readFileSync(f, 'utf8'), 'server=1\n'); assert(!fs.existsSync(f + core.BACKUP_SUFFIX)); }
+  assert(core.setRpcAccess(sticky, 'pw').changed, 'a sticky folder (like /tmp) is fine');
+  // the CLI says so and how to do it by hand
+  write(path.join(base, 'config.json'), '{}');
+  const out = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'rpc-access', 'add', '--bitcoin-conf', theirs, '--config', path.join(base, 'config.json')], { encoding: 'utf8', timeout: 30000 });
+  assert.notStrictEqual(out.status, 0); assert.match(out.stdout, /Add the lines by hand/);
+});
+
+// a root-owned program that only root can change, for a "trusted" node
+const ROOT_BIN = ['/bin/sh', '/usr/bin/env', '/bin/ls'].find((b) => { try { const s = fs.statSync(b); return s.uid === 0 && !(s.mode & 0o022); } catch { return false; } });
+function fakeProc(r, pid, { uid, args, exe }) {
+  write(path.join(r, `proc/${pid}/comm`), 'bitcoind\n');
+  write(path.join(r, `proc/${pid}/cmdline`), ['bitcoind', ...args].join('\0') + '\0');
+  write(path.join(r, `proc/${pid}/status`), `Name:\tbitcoind\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`);
+  if (exe) fs.symlinkSync(exe, path.join(r, `proc/${pid}/exe`));
+}
+
+t('detectBitcoinNode: a bitcoind another account runs from its own program is ignored when a root-installed one runs', async () => {
+  if (!ROOT_BIN) return 'skip no root-owned program to stand in for bitcoind';
+  const { r, uid } = fakeRoot('trust', { conf: 'server=1\n', proc: false });
+  fakeProc(r, 4242, { uid, args: ['-daemon'], exe: ROOT_BIN });
+  // another local account: its own "bitcoind", its own conf and datadir
+  write(path.join(r, 'home/mal/bitcoind'), '#!/bin/sh\n');
+  write(path.join(r, 'home/mal/evil.conf'), 'rpcport=19999\nrpcconnect=203.0.113.9\n');
+  fs.mkdirSync(path.join(r, 'home/mal/dd/blocks'), { recursive: true });
+  if (asRoot) ownTree(path.join(r, 'home/mal'), OTHER_UID);
+  fakeProc(r, 4250, { uid: asRoot ? OTHER_UID : uid, args: ['-conf=/home/mal/evil.conf', '-datadir=/home/mal/dd'], exe: path.join(r, 'home/mal/bitcoind') });
+  const d = await core.detectBitcoinNode({ root: r, platform: 'linux' });
+  assert.deepStrictEqual(d.processes.map((p) => p.pid), [4242]);
+  assert.strictEqual(d.datadir, '/home/alice/.bitcoin');
+  assert.strictEqual(d.confPath, '/home/alice/.bitcoin/bitcoin.conf');
+  assert.strictEqual(d.rpcUrl, 'http://127.0.0.1:8332');
+  assert(d.how.some((h) => /^ignored bitcoind \(pid 4250\): its program is not a root-owned file/.test(h)), d.how.join(' | '));
+  // with no root-installed node running, nothing is ignored (as before)
+  fs.unlinkSync(path.join(r, 'proc/4242/exe'));
+  const d2 = await core.detectBitcoinNode({ root: r, platform: 'linux' });
+  assert.deepStrictEqual(d2.processes.map((p) => p.pid).sort(), [4242, 4250]);
+});
+
+t('detectBitcoinNode: a -conf or -datadir owned by neither root nor the node\'s user is ignored', async () => {
+  if (!asRoot) return 'skip needs root to make files of another account';
+  if (!ROOT_BIN) return 'skip no root-owned program to stand in for bitcoind';
+  const { r, uid } = fakeRoot('trust2', { conf: 'server=1\n', proc: false });
+  write(path.join(r, 'home/mal/evil.conf'), 'rpcport=19999\n');
+  fs.mkdirSync(path.join(r, 'home/mal/dd/blocks'), { recursive: true });
+  ownTree(path.join(r, 'home/mal'), OTHER_UID);
+  fakeProc(r, 4242, { uid, args: ['-conf=/home/mal/evil.conf', '-datadir=/home/mal/dd'], exe: ROOT_BIN });
+  const d = await core.detectBitcoinNode({ root: r, platform: 'linux' });
+  assert.strictEqual(d.confPath, '/home/alice/.bitcoin/bitcoin.conf', 'the other account\'s conf is not used');
+  assert.strictEqual(d.datadir, '/home/alice/.bitcoin');
+  assert(d.how.some((h) => /^ignored -conf=\/home\/mal\/evil\.conf of bitcoind \(pid 4242\): it belongs to uid 4244/.test(h)), d.how.join(' | '));
+  assert(d.how.some((h) => /^ignored -datadir=\/home\/mal\/dd/.test(h)));
+  // the node's own (or root's) files are used as before
+  ownTree(path.join(r, 'home/mal'), uid);
+  const d2 = await core.detectBitcoinNode({ root: r, platform: 'linux' });
+  assert.strictEqual(d2.confPath, '/home/mal/evil.conf');
+});
+
+t('Tor group: setup adds nodesignal unless "onion": "off"; onion off removes it, onion on adds it back', async () => {
+  const { r } = fakeRoot('tor', { conf: 'server=1\n' });
+  fs.appendFileSync(path.join(r, 'etc/group'), 'debian-tor:x:120:\n');
+  const cfgFile = path.join(r, 'etc/nodesignal/config.json');
+  const members = () => fs.readFileSync(path.join(r, 'etc/group'), 'utf8').match(/^debian-tor:x:120:(.*)$/m)[1];
+  const setup = () => spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r], { encoding: 'utf8', timeout: 30000 });
+  let out = setup();
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.strictEqual(members(), 'nodesignal');
+  assert.match(out.stdout, /Tor: added nodesignal to the debian-tor group/);
+  // the service user, as the .deb makes it
+  fs.appendFileSync(path.join(r, 'etc/passwd'), 'nodesignal:x:999:999::/var/lib/nodesignal:/usr/sbin/nologin\n');
+  out = cliHooked(['onion', 'off', '--config', cfgFile], { env: { NODESIGNAL_TEST_ROOT: r } });
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.strictEqual(members(), '', 'onion off takes the membership away');
+  assert.match(out.stdout, /Tor: removed nodesignal from the debian-tor group/);
+  // an upgrade (setup again) keeps the operator's "off"
+  out = setup();
+  assert.strictEqual(members(), '');
+  assert.match(out.stdout, /onion is off in the config, so nodesignal stays out of the debian-tor group/);
+  out = cliHooked(['onion', 'on', '--config', cfgFile], { env: { NODESIGNAL_TEST_ROOT: r } });
+  assert.strictEqual(members(), 'nodesignal');
+  assert.match(out.stdout, /Tor: added nodesignal to the debian-tor group/);
+  // "off" written into the config by hand: setup takes the membership away too
+  const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8')); cfg.onion = 'off'; fs.writeFileSync(cfgFile, JSON.stringify(cfg));
+  out = setup();
+  assert.strictEqual(members(), '');
+  assert.match(out.stdout, /removed nodesignal from the debian-tor group \(onion is off in the config\)/);
+});
+
+t('setup hands the state folder to nodesignal without following a link planted in it', () => {
+  if (!asRoot) return 'skip needs root (chown)';
+  const { r } = fakeRoot('chown', { conf: 'server=1\n' });
+  const victim = path.join(tmp, 'chown-victim');
+  fs.writeFileSync(victim, 'root only\n', { mode: 0o600 });
+  write(path.join(r, 'var/lib/nodesignal/state.json'), '{}');
+  write(path.join(r, 'var/lib/nodesignal/deep/x.json'), '{}');
+  fs.symlinkSync(victim, path.join(r, 'var/lib/nodesignal/planted'));
+  fs.symlinkSync(tmp, path.join(r, 'var/lib/nodesignal/planted-dir'));
+  const out = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r], { encoding: 'utf8', timeout: 30000 });
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  for (const f of ['', 'state.json', 'deep', 'deep/x.json']) assert.strictEqual(fs.lstatSync(path.join(r, 'var/lib/nodesignal', f)).uid, 999, f || 'the folder');
+  assert.strictEqual(fs.statSync(victim).uid, 0, 'the link target stays root\'s');
+  assert.strictEqual(fs.statSync(tmp).uid, 0, 'so does a linked folder');
+});
+
+t('purge (postrm) rewrites bitcoin.conf as its owner, and leaves a root-owned one in another account\'s folder alone', () => {
+  if (!asRoot) return 'skip needs root (setpriv)';
+  const block = `${core.RPC_BEGIN}\nrpcauth=nodesignal:00$${'0'.repeat(64)}\n${core.RPC_END}\n`;
+  const purge = (r) => spawnSync('sh', [path.join(ROOT, 'packaging/deb/postrm'), 'purge'], { encoding: 'utf8', env: Object.assign({}, process.env, { NODESIGNAL_TEST_ROOT: r }) });
+  // the owner may not write it (0400): root would, the owner cannot, so it stays
+  const { r } = fakeRoot('purge-owner', { conf: 'server=1\n' + block });
+  const conf = path.join(r, 'home/alice/.bitcoin/bitcoin.conf');
+  ownTree(path.join(r, 'home/alice'), NODE_UID);
+  fs.chmodSync(conf, 0o400);
+  write(path.join(r, 'etc/nodesignal/bitcoin-conf'), '/home/alice/.bitcoin/bitcoin.conf\n');
+  let out = purge(r);
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /Could not rewrite .* as its owner/);
+  assert(fs.readFileSync(conf, 'utf8').includes(core.RPC_BEGIN), 'not written with root\'s rights');
+  // writable by its owner: the block goes, the owner and mode stay
+  fs.chmodSync(conf, 0o600);
+  write(path.join(r, 'etc/nodesignal/bitcoin-conf'), '/home/alice/.bitcoin/bitcoin.conf\n');
+  out = purge(r);
+  assert.strictEqual(fs.readFileSync(conf, 'utf8'), 'server=1\n', out.stdout + out.stderr);
+  assert.deepStrictEqual([fs.statSync(conf).uid, fs.statSync(conf).mode & 0o777], [NODE_UID, 0o600]);
+  // a root-owned bitcoin.conf in a folder another account controls
+  const { r: r2 } = fakeRoot('purge-root', { conf: 'server=1\n' + block });
+  const conf2 = path.join(r2, 'home/alice/.bitcoin/bitcoin.conf');
+  ownTree(path.join(r2, 'home/alice'), NODE_UID); fs.chownSync(conf2, 0, 0);
+  write(path.join(r2, 'etc/nodesignal/bitcoin-conf'), '/home/alice/.bitcoin/bitcoin.conf\n');
+  out = purge(r2);
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert.match(out.stdout, /Left .* alone: an account other than root can change a folder above/);
+  assert(fs.readFileSync(conf2, 'utf8').includes(core.RPC_BEGIN));
+});
+
 (async () => {
   for (const [name, fn] of tests) {
-    try { await fn(); console.log('  ok   ' + name); }
+    try {
+      const r = await fn();
+      console.log(typeof r === 'string' && r.startsWith('skip') ? `  skip ${name}: ${r.slice(5)}` : '  ok   ' + name);
+    }
     catch (e) { failed++; console.log('  FAIL ' + name + '\n       ' + (e && e.message)); }
   }
   fs.rmSync(tmp, { recursive: true, force: true });

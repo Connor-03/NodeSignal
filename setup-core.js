@@ -126,25 +126,212 @@ function uaCommentState(confPath) {
   return { exists: true, on, inSection, value };
 }
 
+/* ------------------------------------------------------------ editing as the file's owner
+   bitcoin.conf, NodeSignal's state folder and its update folder belong to
+   other accounts (the node's user, the nodesignal user), and those accounts
+   can put links in them or swap them while root works there. So root never
+   follows a path through them as root: it takes the owner's identity for the
+   file work (asOwner) and goes back to root afterwards. A root-owned file is
+   only worked on as root when no other account can change a folder above it
+   (unsafeFolder). Linux; elsewhere, and when not root, nothing switches. */
+const canSwitchIds = () => !IS_WIN && typeof process.geteuid === 'function' && process.geteuid() === 0
+  && typeof process.seteuid === 'function';
+// The identity for a file owned by uid (group gid): the user's own primary
+// group when /etc/passwd knows the user, else the file's group. Root's group
+// is never lent to another account.
+function ownerIdentity(uid, gid) {
+  const u = userByUid(uid);
+  const g = u ? u.gid : gid;
+  if (uid !== 0 && g === 0) throw new Error(`refusing to act for uid ${uid} with root's group`);
+  return { uid, gid: g, name: u ? u.name : null };
+}
+// Run fn, synchronous file work only, with the effective uid and gid of id and
+// no other groups; always back to root afterwards (the saved uid stays 0, so
+// this can be undone). id null, or root, or not running as root: just fn().
+function asOwner(id, fn) {
+  if (!id || id.uid === 0 || !canSwitchIds()) return fn();
+  const groups = process.getgroups(), egid = process.getegid();
+  process.setgroups([id.gid]);
+  try {
+    process.setegid(id.gid);
+    try {
+      process.seteuid(id.uid);
+      try {
+        const r = fn();
+        if (r && typeof r.then === 'function') throw new Error('asOwner: synchronous work only');
+        return r;
+      } finally { process.seteuid(0); }
+    } finally { process.setegid(egid); }
+  } finally { process.setgroups(groups); }
+}
+// null when dir and every folder above it belong to root and no other
+// account can write to them (a sticky folder such as /tmp is fine); else the
+// first folder that fails, and why. A root-owned link on the way (such as
+// /bin -> usr/bin) is fine when what it points at passes too.
+function unsafeFolder(dir) {
+  let d = path.resolve(dir);
+  for (;;) {
+    let st;
+    try { st = fs.lstatSync(d); } catch (e) { return { dir: d, why: e.code || e.message }; }
+    if (st.isSymbolicLink()) {
+      if (st.uid !== 0) return { dir: d, why: 'it is a link another account owns' };
+      let target;
+      try { target = fs.realpathSync(d); } catch (e) { return { dir: d, why: e.code || e.message }; }
+      const bad = unsafeFolder(target);
+      if (bad) return bad;
+    } else if (st.uid !== 0) { const u = userByUid(st.uid); return { dir: d, why: `it belongs to ${u ? u.name : 'uid ' + st.uid}` }; }
+    else if ((st.mode & 0o022) && !(st.mode & 0o1000)) return { dir: d, why: 'accounts other than root can write to it' };
+    const up = path.dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
+}
+// A file read without following a link at its name, without waiting on a
+// FIFO, and only if it is a regular file of at most max bytes.
+function readPlainFileSync(file, max) {
+  const C = fs.constants;
+  const fd = fs.openSync(file, C.O_RDONLY | (C.O_NOFOLLOW || 0) | (C.O_NONBLOCK || 0));
+  try { return readFd(fd, path.basename(file), max); } finally { fs.closeSync(fd); }
+}
+function readFd(fd, name, max) {
+  const st = fs.fstatSync(fd);
+  if (!st.isFile()) throw Object.assign(new Error(`${name} is not a plain file`), { code: 'ENOTPLAIN' });
+  if (st.size > max) throw Object.assign(new Error(`${name} is larger than ${max} bytes`), { code: 'ETOOBIG' });
+  const buf = Buffer.alloc(st.size);
+  let off = 0;
+  while (off < st.size) { const n = fs.readSync(fd, buf, off, st.size - off, off); if (!n) break; off += n; }
+  return buf.subarray(0, off);
+}
+// Replace file with new content without following a link at its name: a new
+// file (O_EXCL never follows a link) renamed over it (rename replaces the
+// name, never what a link points at).
+function replaceFileSync(file, data, mode = 0o600) {
+  const tmp = `${file}.${process.pid}-${crypto.randomBytes(6).toString('hex')}.tmp`;
+  fs.writeFileSync(tmp, data, { mode, flag: 'wx' });
+  try { fs.renameSync(tmp, file); } catch (e) { try { fs.unlinkSync(tmp); } catch { } throw e; }
+}
+
+/* Where an edit of bitcoin.conf really lands. A symlinked bitcoin.conf is
+   followed to the real file (operators do that on purpose); the edit then
+   runs as that file's owner (a new file: as the owner of the folder it goes
+   in), so a link planted by another account cannot aim root at a file of its
+   choosing. A root-owned file is edited as root only when no other account
+   can change a folder above it. */
+function confTarget(confPath) {
+  const abs = path.resolve(confPath);
+  let real = null, st = null;
+  try { real = fs.realpathSync(abs); st = fs.statSync(real); }
+  catch (e) {
+    if (e.code !== 'ENOENT') throw new Error(`cannot read ${confPath} (${e.code || e.message})`);
+    let link = false;
+    try { link = fs.lstatSync(abs).isSymbolicLink(); } catch { }
+    if (link) throw new Error(`refusing to edit ${confPath}: it is a link to a file that does not exist`);
+  }
+  if (st) {
+    if (!st.isFile()) throw new Error(`refusing to edit ${confPath}: it is not a regular file`);
+    return { real, exists: true, uid: st.uid, gid: st.gid, folder: path.dirname(real) };
+  }
+  // a new file: the nearest folder that exists decides
+  const rest = [path.basename(abs)];
+  let dir = path.dirname(abs);
+  for (;;) {
+    let rd = null, ds = null;
+    try { rd = fs.realpathSync(dir); ds = fs.statSync(rd); }
+    catch (e) { if (e.code !== 'ENOENT') throw new Error(`cannot create ${confPath} (${e.code || e.message})`); }
+    if (ds) {
+      if (!ds.isDirectory()) throw new Error(`cannot create ${confPath}: ${dir} is not a folder`);
+      return { real: path.join(rd, ...rest), exists: false, uid: ds.uid, gid: ds.gid, folder: rd };
+    }
+    rest.unshift(path.basename(dir));
+    const up = path.dirname(dir);
+    if (up === dir) throw new Error(`cannot create ${confPath}: no folder above it exists`);
+    dir = up;
+  }
+}
+/* editConf(confPath, compute, opts): the read-modify-write behind
+   setUaComment and setRpcAccess. compute(buf) gets the file's bytes (null
+   when there is no file) and returns { result } when nothing changes, or
+   { out, result } with the new text. The file is read and rewritten through
+   one descriptor, in place (it keeps its inode, owner, mode and ACLs), as its
+   owner. The first change keeps a one-time copy beside the real file
+   (created with O_EXCL, so never through a link). A new file is created 0600
+   (O_EXCL); when root creates it, it is handed to opts.owner. */
+function editConf(confPath, compute, opts = {}) {
+  const C = fs.constants;
+  const tgt = confTarget(confPath);
+  let fresh = null;
+  if (!tgt.exists) {
+    fresh = compute(null);
+    if (fresh.out == null) return fresh.result;
+  }
+  const root = canSwitchIds();
+  if (root && tgt.uid === 0) {
+    const bad = unsafeFolder(tgt.folder);
+    if (bad) throw new Error(`refusing to edit ${confPath} as root: ${bad.dir} can be changed by an account other than root (${bad.why}). Add the lines by hand.`);
+  }
+  const id = root && tgt.uid !== 0 ? ownerIdentity(tgt.uid, tgt.gid) : null;
+  return asOwner(id, () => {
+    if (!tgt.exists) {
+      const r = fresh;
+      fs.mkdirSync(path.dirname(tgt.real), { recursive: true });
+      let fd;
+      try { fd = fs.openSync(tgt.real, C.O_WRONLY | C.O_CREAT | C.O_EXCL | (C.O_NOFOLLOW || 0), 0o600); }
+      catch (e) { throw new Error(`cannot create ${confPath} (${e.code || e.message})`); }
+      try {
+        fs.writeSync(fd, r.out);
+        if (root && !id && opts.owner) { try { fs.fchownSync(fd, opts.owner.uid, opts.owner.gid); } catch { } }
+      } finally { fs.closeSync(fd); }
+      return r.result;
+    }
+    let fd, writeErr = null;
+    try { fd = fs.openSync(tgt.real, C.O_RDWR | (C.O_NOFOLLOW || 0) | (C.O_NONBLOCK || 0)); }
+    catch (e) {
+      if (!['EACCES', 'EPERM', 'EROFS', 'EBUSY'].includes(e.code)) throw new Error(`cannot read ${confPath} (${e.code || e.message})`);
+      writeErr = e;   // readable but not writable: fine while nothing changes
+      try { fd = fs.openSync(tgt.real, C.O_RDONLY | (C.O_NOFOLLOW || 0) | (C.O_NONBLOCK || 0)); }
+      catch (e2) { throw new Error(`cannot read ${confPath} (${e2.code || e2.message})`); }
+    }
+    try {
+      let buf;
+      try { buf = readFd(fd, path.basename(confPath), CONF_MAX_BYTES + 1); }
+      catch (e) {
+        if (e.code === 'ENOTPLAIN') throw new Error(`refusing to edit ${confPath}: it is not a regular file`);
+        if (e.code === 'ETOOBIG') throw new Error(`refusing to edit ${confPath}: it is larger than 1 MB. Add the lines by hand.`);
+        throw new Error(`cannot read ${confPath} (${e.code || e.message})`);
+      }
+      const r = compute(buf);
+      if (r.out == null) return r.result;
+      if (writeErr) throw new Error(`cannot write ${confPath} (${writeErr.code})`);
+      const backup = tgt.real + BACKUP_SUFFIX;
+      let madeBackup = false;
+      try { fs.writeFileSync(backup, buf, { mode: 0o600, flag: 'wx' }); madeBackup = true; }
+      catch (e) { if (e.code !== 'EEXIST') r.result.backupError = e.code || e.message; }   // EEXIST: kept once already
+      const out = Buffer.from(r.out, 'utf8');
+      fs.ftruncateSync(fd, 0);
+      let off = 0;
+      while (off < out.length) off += fs.writeSync(fd, out, off, out.length - off, off);
+      r.result.backup = madeBackup ? backup : null;
+      return r.result;
+    } finally { fs.closeSync(fd); }
+  });
+}
+
 /* setUaComment: add or remove a top-level `uacomment=nodesignal` line.
    - idempotent; everything else in the file is preserved byte for byte
    - the first change keeps a one-time copy as bitcoin.conf.nodesignal-backup
    - a file we cannot parse with confidence is left alone (throws)
    - never restarts bitcoind; the caller tells the operator to do it
-   opts.owner = { uid, gid } sets ownership of a newly created file (Linux, root). */
+   - as root, the edit runs as the file's owner (editConf)
+   opts.owner = { uid, gid } sets ownership of a file root creates (Linux). */
 function setUaComment(confPath, on, opts = {}) {
   const value = opts.value || UA_COMMENT;
-  let buf = null;
-  try { buf = fs.readFileSync(confPath); }
-  catch (e) { if (e.code !== 'ENOENT') throw new Error(`cannot read ${confPath} (${e.code || e.message})`); }
-
+  return editConf(confPath, (buf) => uaEdit(confPath, buf, on, value), opts);
+}
+function uaEdit(confPath, buf, on, value) {
   if (buf === null) {
-    if (!on) return { changed: false, created: false, path: confPath, on: false };
+    if (!on) return { result: { changed: false, created: false, path: confPath, on: false } };
     const eol = IS_WIN ? '\r\n' : '\n';
-    fs.mkdirSync(path.dirname(confPath), { recursive: true });
-    fs.writeFileSync(confPath, UA_MARKER + eol + 'uacomment=' + value + eol, { mode: 0o600, flag: 'wx' });
-    chownIfRoot(confPath, opts.owner);
-    return { changed: true, created: true, path: confPath, on: true };
+    return { out: UA_MARKER + eol + 'uacomment=' + value + eol, result: { changed: true, created: true, path: confPath, on: true } };
   }
 
   const a = analyzeConf(buf);
@@ -158,7 +345,7 @@ function setUaComment(confPath, on, opts = {}) {
   let out;
   if (on) {
     const mine = top.find(isOurUaLine);
-    if (mine && uaValueOf(mine) === value) return { changed: false, path: confPath, on: true, inSection };
+    if (mine && uaValueOf(mine) === value) return { result: { changed: false, path: confPath, on: true, inSection } };
     if (mine) {
       // the same line with a new value (an onion added or changed)
       const nl = mine.raw.endsWith('\r\n') ? '\r\n' : mine.raw.endsWith('\n') ? '\n' : '';
@@ -175,7 +362,7 @@ function setUaComment(confPath, on, opts = {}) {
       out = raws.join('');
     }
   } else {
-    if (!present) return { changed: false, path: confPath, on: false, inSection };
+    if (!present) return { result: { changed: false, path: confPath, on: false, inSection } };
     const drop = new Set();
     top.forEach((l, i) => {
       if (!isOurUaLine(l)) return;
@@ -186,18 +373,9 @@ function setUaComment(confPath, on, opts = {}) {
     });
     out = a.lines.filter((l, i) => !(i < topEnd && drop.has(i))).map((l) => l.raw).join('');
   }
-
-  const backup = confPath + BACKUP_SUFFIX;
-  let madeBackup = false;
-  if (!fs.existsSync(backup)) {
-    fs.writeFileSync(backup, buf, { mode: 0o600 });
-    try { const st = fs.statSync(confPath); chownIfRoot(backup, { uid: st.uid, gid: st.gid }); } catch { }
-    madeBackup = true;
-  }
-  // Written in place (not tmp + rename) so the file keeps its inode, owner,
-  // mode, ACLs, and a symlinked bitcoin.conf stays a symlink.
-  fs.writeFileSync(confPath, out);
-  return { changed: true, path: confPath, on, backup: madeBackup ? backup : null, inSection };
+  // editConf writes it in place (not tmp + rename) so the file keeps its
+  // inode, owner, mode, ACLs, and a symlinked bitcoin.conf stays a symlink.
+  return { out, result: { changed: true, path: confPath, on, inSection } };
 }
 
 /* ------------------------------------------------------------ RPC access
@@ -249,12 +427,13 @@ function rpcAccessState(confPath) {
    matches the password is left untouched, so upgrades do not force a
    bitcoind restart. Everything outside the block is preserved byte for byte;
    the first change keeps a one-time backup. A file we cannot parse with
-   confidence is refused (throws), as is a whitelist we would weaken.
+   confidence is refused (throws), as is a whitelist we would weaken. As
+   root, the edit runs as the file's owner (editConf).
    Returns { changed, created, path, on, backup, lines }. */
 function setRpcAccess(confPath, password, opts = {}) {
-  let buf = null;
-  try { buf = fs.readFileSync(confPath); }
-  catch (e) { if (e.code !== 'ENOENT') throw new Error(`cannot read ${confPath} (${e.code || e.message})`); }
+  return editConf(confPath, (buf) => rpcEdit(confPath, buf, password), opts);
+}
+function rpcEdit(confPath, buf, password) {
   const on = password != null;
   const a = buf === null ? { ok: true, text: '', lines: [], eol: IS_WIN ? '\r\n' : '\n' } : analyzeConf(buf);
   if (!a.ok) throw new Error(`refusing to edit ${confPath}: ${a.error}. Add the NodeSignal lines by hand (nodesignal rpc-access show).`);
@@ -265,8 +444,8 @@ function setRpcAccess(confPath, password, opts = {}) {
   if (on) {
     const cur = blk ? a.lines.slice(blk.begin + 1, blk.end).map((l) => l.body) : [];
     const auth = cur.find((x) => /^\s*rpcauth\s*=/.test(x));
-    if (blk && rpcAuthMatches(auth, RPC_USER, password)) return { changed: false, path: confPath, on: true, lines: cur };
-  } else if (!blk) return { changed: false, path: confPath, on: false };
+    if (blk && rpcAuthMatches(auth, RPC_USER, password)) return { result: { changed: false, path: confPath, on: true, lines: cur } };
+  } else if (!blk) return { result: { changed: false, path: confPath, on: false } };
 
   let block = '';
   let inner = [];
@@ -294,21 +473,8 @@ function setRpcAccess(confPath, password, opts = {}) {
     } else raws.splice(firstSection, 0, block + a.eol);
   }
   const out = raws.join('');
-  if (buf === null) {
-    fs.mkdirSync(path.dirname(confPath), { recursive: true });
-    fs.writeFileSync(confPath, out, { mode: 0o600, flag: 'wx' });
-    chownIfRoot(confPath, opts.owner);
-    return { changed: true, created: true, path: confPath, on, lines: inner };
-  }
-  const backup = confPath + BACKUP_SUFFIX;
-  let madeBackup = false;
-  if (!fs.existsSync(backup)) {
-    fs.writeFileSync(backup, buf, { mode: 0o600 });
-    try { const st = fs.statSync(confPath); chownIfRoot(backup, { uid: st.uid, gid: st.gid }); } catch { }
-    madeBackup = true;
-  }
-  fs.writeFileSync(confPath, out);                       // in place: keeps inode, owner, mode
-  return { changed: true, created: false, path: confPath, on, backup: madeBackup ? backup : null, lines: inner };
+  if (buf === null) return { out, result: { changed: true, created: true, path: confPath, on, lines: inner } };
+  return { out, result: { changed: true, created: false, path: confPath, on, lines: inner } };   // in place: keeps inode, owner, mode
 }
 /* NodeSignal's own login lives in its config (rpc-user / rpc-pass). An
    existing password is kept, so reinstalling does not force a bitcoind
@@ -407,6 +573,36 @@ function readPasswd(root = '') {
 function userByUid(uid, root = '') {
   return readPasswd(root).find((u) => u.uid === uid) || null;
 }
+function readGroups(root = '') {
+  const groups = [];
+  try {
+    for (const line of fs.readFileSync(path.join(root || '/', 'etc', 'group'), 'utf8').split('\n')) {
+      const p = line.split(':');
+      if (p.length < 4 || !p[0]) continue;
+      groups.push({ name: p[0], gid: Number(p[2]), members: p[3].trim() ? p[3].trim().split(',') : [] });
+    }
+  } catch { }
+  return groups;
+}
+/* Add user to, or remove it from, a supplementary group (root): usermod and
+   gpasswd. With root set (tests), that fake root's etc/group is edited
+   instead, so a test never changes the machine it runs on. */
+function setGroupMember(user, group, on, { root = '' } = {}) {
+  if (root) {
+    const f = path.join(root, 'etc', 'group');
+    const lines = fs.readFileSync(f, 'utf8').split('\n').map((l) => {
+      const p = l.split(':');
+      if (p.length < 4 || p[0] !== group) return l;
+      const m = p[3].trim() ? p[3].trim().split(',') : [];
+      p[3] = (on ? [...new Set([...m, user])] : m.filter((x) => x !== user)).join(',');
+      return p.join(':');
+    });
+    fs.writeFileSync(f, lines.join('\n'));
+    return;
+  }
+  if (on) execFileSync('usermod', ['-a', '-G', group, user], { stdio: 'ignore', timeout: 30000 });
+  else execFileSync('gpasswd', ['-d', user, group], { stdio: 'ignore', timeout: 30000 });
+}
 
 /* ------------------------------------------------------------ node detection */
 const DATADIR_MARKERS = ['blocks', 'chainstate', 'bitcoin.conf', '.cookie', 'settings.json', 'peers.dat', 'debug.log', 'wallets'];
@@ -480,7 +676,15 @@ function linuxProcesses(root = '') {
       const m = fs.readFileSync(path.join(procDir, pid, 'status'), 'utf8').match(/^Uid:\s+(\d+)/m);
       if (m) uid = Number(m[1]);
     } catch { }
-    out.push({ pid: Number(pid), name: comm, uid, datadir: argValue(args, 'datadir'), conf: argValue(args, 'conf') });
+    // Any account can start a program called bitcoind. One installed by root
+    // (owned by root, writable by nobody else) is "trusted"; null when this
+    // account may not look (another user's process, not running as root).
+    let exeTrusted = null;
+    try {
+      const st = fs.statSync(path.join(procDir, pid, 'exe'));
+      exeTrusted = st.isFile() && st.uid === 0 && !(st.mode & 0o022);
+    } catch (e) { if (e.code !== 'EACCES' && e.code !== 'EPERM' && e.code !== 'ENOENT') exeTrusted = false; }
+    out.push({ pid: Number(pid), name: comm, uid, exeTrusted, datadir: argValue(args, 'datadir'), conf: argValue(args, 'conf') });
   }
   return out;
 }
@@ -536,6 +740,36 @@ function windowsBinaries(env = process.env) {
   return [...new Set(found)];
 }
 
+/* Any local account can run a process named bitcoind with -conf= and
+   -datadir= of its own, and setup would then edit that file and point
+   NodeSignal at that "node". So: when a node runs from a program root
+   installed, processes running another program are ignored; and a -conf or
+   -datadir that belongs to neither root nor the process's own user is
+   ignored. Each is noted in how (lines starting "ignored"). */
+function trustedProcesses(processes, R, how) {
+  let list = processes;
+  if (list.some((p) => p.exeTrusted === true)) {
+    list = list.filter((p) => {
+      if (p.exeTrusted !== false) return true;
+      how.push(`ignored ${p.name} (pid ${p.pid}): its program is not a root-owned file that only root can change, and another node's is`);
+      return false;
+    });
+  }
+  return list.map((p) => {
+    const q = Object.assign({}, p);
+    for (const k of ['conf', 'datadir']) {
+      if (!q[k]) continue;
+      let st = null;
+      try { st = fs.statSync(R(q[k])); } catch { }
+      if (st && st.uid !== 0 && st.uid !== q.uid) {
+        how.push(`ignored -${k}=${q[k]} of ${q.name} (pid ${q.pid}): it belongs to uid ${st.uid}, neither root nor the node's user`);
+        q[k] = '';
+      }
+    }
+    return q;
+  });
+}
+
 /* detectBitcoinNode: is a Bitcoin node (Core or Knots) installed here, and
    where does it keep its data? Never throws.
    Returns { installed, datadirs, datadir, confPath, cookiePath, chain,
@@ -546,11 +780,12 @@ async function detectBitcoinNode(opts = {}) {
   const root = opts.root || '';
   const R = (p) => (root ? path.join(root, p) : p);
   const env = opts.env || process.env;
-  const how = [];
+  const how = [], ignored = [];
 
   let processes = [];
   try { processes = platform === 'win32' ? await windowsProcesses() : (platform === 'linux' ? linuxProcesses(root) : []); }
   catch { processes = []; }
+  if (platform === 'linux') processes = trustedProcesses(processes, R, ignored);
 
   const candidates = [];
   const confCandidates = [];
@@ -628,6 +863,7 @@ async function detectBitcoinNode(opts = {}) {
   for (const d of datadirs) how.push(`data directory ${d}`);
   if (confPath) how.push(`config ${confPath}`);
   for (const b of binaries) how.push(`program ${b}`);
+  how.push(...ignored);
 
   let owner = null;
   if (platform === 'linux') {
@@ -940,6 +1176,30 @@ function createPrompter({ input = process.stdin, output = process.stdout } = {})
     output.write(line + '\n');
     return String(line).trim();
   }
+  // A secret (a passphrase): never written back. On a terminal it is typed in
+  // raw mode with no echo; piped, the line is read and the output gets only
+  // the question and a newline.
+  async function askSecret(q) {
+    if (!tty) {
+      if (!queued) await loadPiped();
+      output.write(q + '\n');
+      return String(queued.length ? queued.shift() : '').trim();
+    }
+    if (rl) { rl.close(); rl = null; }
+    return new Promise((resolve) => {
+      output.write(q);
+      input.setRawMode(true); input.resume(); input.setEncoding('utf8');
+      let buf = '';
+      const onData = (d) => {
+        for (const ch of d) {
+          if (ch === '\r' || ch === '\n') { input.setRawMode(false); input.pause(); input.removeListener('data', onData); output.write('\n'); resolve(buf); return; }
+          if (ch === '\x03') { input.setRawMode(false); output.write('\n'); process.exit(130); }
+          if (ch === '\x7f' || ch === '\b') buf = buf.slice(0, -1); else buf += ch;
+        }
+      };
+      input.on('data', onData);
+    });
+  }
   async function askDefault(q, dflt) {
     const a = await ask(q2(q, dflt));
     return a === '' ? dflt : a;
@@ -959,7 +1219,7 @@ function createPrompter({ input = process.stdin, output = process.stdout } = {})
     await ask(st.fg('gray', msg));
   }
   function close() { if (rl) { rl.close(); rl = null; } }
-  return { ask, askDefault, askYesNo, pause, close, tty };
+  return { ask, askSecret, askDefault, askYesNo, pause, close, tty };
 }
 
 /* Text shared by every installer so the two opt-ins read the same everywhere. */
@@ -990,7 +1250,8 @@ module.exports = {
   readFileList, missingFiles,
   parseConf, readConf, analyzeConf, setUaComment, uaCommentState,
   lockDownFile, writeConfig, readConfig, chownIfRoot,
-  readPasswd, userByUid,
+  ownerIdentity, asOwner, unsafeFolder, readPlainFileSync, replaceFileSync, editConf,
+  readPasswd, userByUid, readGroups, setGroupMember,
   detectBitcoinNode, daemonDataDirs, samePath, chainOf,
   findRpcAuth, rpcCall, rpcCheck, checkNode, rpcHint,
   portFree, tailscaleAddr, httpGetJson, waitForHealth, webUrl,

@@ -11,28 +11,77 @@ R="${NODESIGNAL_TEST_ROOT:-}"
 BEGIN='# NodeSignal RPC access: begin'
 END='# NodeSignal RPC access: end'
 
+# 0 when $1 and every folder above it belong to root and no other account
+# can write to them (a sticky folder such as /tmp is fine).
+root_only_folders() {
+  d="$1"
+  while :; do
+    [ -L "$d" ] && return 1
+    o="$(stat -c '%u' -- "$d")" || return 1
+    m="$(stat -c '%a' -- "$d")" || return 1
+    [ "$o" = 0 ] || return 1
+    if [ $((0$m & 022)) -ne 0 ] && [ $((0$m & 01000)) -eq 0 ]; then return 1; fi
+    [ "$d" = / ] && return 0
+    d="$(dirname -- "$d")"
+  done
+}
+
 # Delete the lines from the begin marker to the end marker (and the blank
 # line setup put between the block and a following [section]). Rewritten in
 # place with cat so bitcoin.conf keeps its owner, mode and inode. A begin
 # marker with no end marker is left alone rather than guessed at.
+# bitcoin.conf may be a link and its folder belongs to the node's user, so
+# root never reads or writes it through a path that user controls: the work
+# runs as the real file's owner (setpriv, from util-linux), awk writing into
+# a file root opened and cat reading it back from a root-opened redirect. A
+# root-owned file is rewritten as root only when no other account can change
+# a folder above it.
 remove_rpc_block() {
   conf="$1"
-  [ -f "$conf" ] || return 0
-  grep -q "^$BEGIN" "$conf" || return 0
-  if ! grep -q "^$END" "$conf"; then
+  [ -e "$conf" ] || return 0
+  real="$(readlink -f -- "$conf")" || return 0
+  [ -f "$real" ] || return 0
+  uid="$(stat -c '%u' -- "$real")" || return 0
+  by_hand="Remove the lines from \"$BEGIN\" to \"$END\" by hand."
+  as=""
+  if [ "$(id -u)" = 0 ]; then
+    if [ "$uid" != 0 ]; then
+      # the owner's own group; root's group is never lent to another account
+      gid="$(getent passwd "$uid" | cut -d: -f4)" || gid=""
+      [ -n "$gid" ] || gid="$(stat -c '%g' -- "$real")"
+      if [ "$gid" = 0 ] || ! command -v setpriv >/dev/null 2>&1; then
+        echo "Left $conf alone: it cannot be edited as its owner (uid $uid). $by_hand"
+        return 0
+      fi
+      as="setpriv --reuid=$uid --regid=$gid --clear-groups --"
+    elif ! root_only_folders "$(dirname -- "$real")"; then
+      echo "Left $conf alone: an account other than root can change a folder above $real. $by_hand"
+      return 0
+    fi
+  fi
+  $as grep -q "^$BEGIN" "$real" || return 0
+  if ! $as grep -q "^$END" "$real"; then
     echo "Left $conf alone: its NodeSignal block has no end marker. Remove the rpcauth=nodesignal lines by hand."
     return 0
   fi
   tmp="$(mktemp)"
-  awk -v b="$BEGIN" -v e="$END" '
+  if ! $as awk -v b="$BEGIN" -v e="$END" '
     s == 0 && index($0, b) == 1 { s = 1; next }
     s == 1 { if (index($0, e) == 1) s = 2; next }
     s == 2 { s = 3; if ($0 ~ /^\r?$/) { held = $0; pend = 1; next } }
     pend == 1 { pend = 0; if ($0 !~ /^[ \t]*\[/) print held }
     { print }
     END { if (pend == 1) print held }
-  ' "$conf" > "$tmp"
-  cat "$tmp" > "$conf"
+  ' "$real" > "$tmp"; then
+    rm -f "$tmp"
+    echo "Left $conf alone: it could not be read as its owner. $by_hand"
+    return 0
+  fi
+  if ! $as sh -c 'cat > "$1"' sh "$real" < "$tmp"; then
+    rm -f "$tmp"
+    echo "Could not rewrite $conf as its owner. $by_hand"
+    return 0
+  fi
   rm -f "$tmp"
   echo "Removed NodeSignal's rpcauth and rpcwhitelist lines from $conf."
   echo "Restart your Bitcoin node for that to take effect (for example: sudo systemctl restart bitcoind)."

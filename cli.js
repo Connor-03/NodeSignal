@@ -136,6 +136,7 @@ async function cmdAdvertise(ctx, onOff) {
   else {
     say(`${onOff === 'on' ? 'Added' : 'Removed'} uacomment=${onOff === 'on' ? value : 'nodesignal'} ${onOff === 'on' ? 'to' : 'from'} ${confPath}${r.created ? ' (new file)' : ''}.`);
     if (r.backup) say(`The original was saved once as ${r.backup}.`);
+    if (r.backupError) say(`No copy of the original was kept (${r.backupError}).`);
     say('');
     say('Restart your Bitcoin node for this to take effect. NodeSignal does not do it for you.');
     say(IS_WIN ? 'Close Bitcoin Core or Knots and start it again.' : 'For example: sudo systemctl restart bitcoind');
@@ -226,7 +227,7 @@ async function cmdOnion(ctx, sub = 'show') {
     if (mode === 'auto' && !(h.ok && h.json && h.json.onion)) {
       say('         NodeSignal asks Tor\'s control port for its own onion address. Is Tor installed and running?');
       say(IS_WIN ? '         On Windows: run the Tor Expert Bundle with ControlPort 9051 and CookieAuthentication 1.'
-        : '         Linux, on the node: sudo apt install tor, then sudo systemctl restart nodesignal');
+        : '         Linux, on the node: sudo apt install tor, then sudo nodesignal onion on');
     }
     return 0;
   }
@@ -236,6 +237,9 @@ async function cmdOnion(ctx, sub = 'show') {
   try { core.writeConfig(cfgPath, cfg); }
   catch (e) { say(`Could not write ${cfgPath}: ${e.code || e.message}`); if (e.code === 'EACCES' || e.code === 'EPERM') say('Try again with sudo.'); return 1; }
   say(sub === 'on' ? 'Onion address: automatic (whenever Tor runs on this machine).' : 'Onion address: off. Peers behind NAT can then only reach you if you forward the peer port.');
+  // the debian-tor group follows the choice (Linux, the nodesignal user only)
+  const root = optValue(ctx.argv, 'root') || process.env.NODESIGNAL_TEST_ROOT || '';
+  if (!IS_WIN && core.readPasswd(root).some((u) => u.name === 'nodesignal')) syncTorGroup(core, sub === 'on', { root });
   return restartDaemon(ctx);
 }
 
@@ -290,34 +294,65 @@ function stateDir(ctx) {
   if (ctx.cfg.data) return ctx.cfg.data;
   return IS_WIN ? path.join(os.homedir(), '.nodesignal') : (fs.existsSync('/var/lib/nodesignal/state.json') ? '/var/lib/nodesignal' : path.join(os.homedir(), '.nodesignal'));
 }
-// A passphrase, typed without echo. Never taken from the command line.
-function askHidden(q) {
-  const input = process.stdin;
-  if (!input.isTTY) return ctxPrompter().ask(q);
-  return new Promise((resolve) => {
-    process.stdout.write(q);
-    input.setRawMode(true); input.resume(); input.setEncoding('utf8');
-    let buf = '';
-    const onData = (d) => {
-      for (const ch of d) {
-        if (ch === '\r' || ch === '\n') { input.setRawMode(false); input.pause(); input.removeListener('data', onData); process.stdout.write('\n'); resolve(buf); return; }
-        if (ch === '\u0003') { input.setRawMode(false); process.stdout.write('\n'); process.exit(130); }
-        if (ch === '\u007f' || ch === '\b') buf = buf.slice(0, -1); else buf += ch;
-      }
-    };
-    input.on('data', onData);
-  });
-}
+// A passphrase, never echoed (typed on a terminal, or one line of piped
+// input). Never taken from the command line.
+function askHidden(q) { return ctxPrompter().askSecret(q); }
 let promptSingleton = null;
 const ctxPrompter = () => promptSingleton || (promptSingleton = require('./setup-core.js').createPrompter());
+/* The state folder belongs to the daemon's user (nodesignal on Linux), who
+   can put links in it or swap it. So "sudo nodesignal backup / restore" does
+   every read and write in it as that user (core.asOwner), never through a
+   link; a root-owned state folder is used as root only when no other account
+   can change a folder above it. Returns the identity to act as (null: as we
+   are). A missing folder: undefined with missingOk, made with create
+   (restore onto a new machine), else an error. */
+const STATE_MAX = 256 * 1024 * 1024;
+function stateFolder(ctx, dir, { create = false, missingOk = false } = {}) {
+  const core = ctx.core, root = !IS_WIN && isRoot();
+  let st = null;
+  try { st = fs.lstatSync(dir); }
+  catch (e) {
+    if (e.code === 'ENOENT' && missingOk && !create) return undefined;
+    if (e.code !== 'ENOENT' || !create) throw new Error(`Cannot open ${dir}: ${e.code || e.message}.`);
+  }
+  if (!st) {
+    if (root) {
+      let up = path.dirname(path.resolve(dir));
+      while (!fs.existsSync(up) && path.dirname(up) !== up) up = path.dirname(up);
+      const bad = core.unsafeFolder(up);
+      if (bad) throw new Error(`Refusing to create ${dir} as root: ${bad.dir} can be changed by an account other than root (${bad.why}).`);
+    }
+    fs.mkdirSync(path.dirname(path.resolve(dir)), { recursive: true });   // parents keep the default mode
+    fs.mkdirSync(dir, { mode: 0o700 });
+    if (root) { const u = core.readPasswd('').find((x) => x.name === 'nodesignal'); if (u) fs.lchownSync(dir, u.uid, u.gid); }
+    st = fs.lstatSync(dir);
+  }
+  if (!st.isDirectory()) throw new Error(`${dir} is not a plain folder (a symbolic link?); refusing to use it.`);
+  if (!root) return null;
+  if (st.uid !== 0) return core.ownerIdentity(st.uid, st.gid);
+  const bad = core.unsafeFolder(path.dirname(path.resolve(dir)));
+  if (bad) throw new Error(`Refusing to work in ${dir} as root: ${bad.dir} can be changed by an account other than root (${bad.why}).`);
+  return null;
+}
+// Why a file the daemon's user controls was not read.
+function plainWhy(e) {
+  if (e.code === 'ELOOP') return 'it is a symbolic link';
+  if (e.code === 'ENOTPLAIN' || e.code === 'ETOOBIG') return e.message.replace(/^\S+ /, 'it ');
+  return e.code || e.message;
+}
+function readStateJson(ctx, id, file) {
+  return JSON.parse(ctx.core.asOwner(id, () => ctx.core.readPlainFileSync(file, STATE_MAX)).toString('utf8'));
+}
 async function cmdBackup(ctx, file) {
   if (!file) { say('usage: nodesignal backup <file>     (writes a passphrase-protected backup of your identity and contacts)'); return 2; }
   const backup = loadSibling('backup.js');
   const dir = stateDir(ctx);
+  let id;
+  try { id = stateFolder(ctx, dir); } catch (e) { say(e.message); return 1; }
   let st, so = null;
-  try { st = JSON.parse(fs.readFileSync(path.join(dir, 'state.json'), 'utf8')); }
-  catch (e) { say(`Cannot read ${path.join(dir, 'state.json')}: ${e.code || e.message}.${e.code === 'EACCES' ? ' Try again with sudo.' : ''}`); return 1; }
-  try { so = JSON.parse(fs.readFileSync(path.join(dir, 'social.json'), 'utf8')); } catch { }
+  try { st = readStateJson(ctx, id, path.join(dir, 'state.json')); }
+  catch (e) { say(`Cannot read ${path.join(dir, 'state.json')}: ${plainWhy(e)}.${e.code === 'EACCES' ? ' Try again with sudo.' : ''}`); return 1; }
+  try { so = readStateJson(ctx, id, path.join(dir, 'social.json')); } catch { }
   if (fs.existsSync(file)) { say(`${file} already exists; pick another name.`); return 1; }
   say('The backup holds your identity keys and contacts, not your message history.');
   const p1 = await askHidden('Passphrase for the backup (at least 8 characters): ');
@@ -331,33 +366,50 @@ async function cmdBackup(ctx, file) {
   return 0;
 }
 async function cmdRestore(ctx, file) {
-  if (!file) { say('usage: nodesignal restore <file>'); return 2; }
+  if (!file) { say('usage: nodesignal restore <file> [--yes]     (--yes: no question, for scripts)'); return 2; }
   const backup = loadSibling('backup.js');
+  const core = ctx.core;
   let text;
   try { text = fs.readFileSync(file, 'utf8'); } catch (e) { say(`Cannot read ${file}: ${e.code || e.message}`); return 1; }
+  const dir = stateDir(ctx), sf = path.join(dir, 'state.json'), soFile = path.join(dir, 'social.json');
+  let id;
+  try { id = stateFolder(ctx, dir, { missingOk: true }); } catch (e) { say(e.message); return 1; }
   const pass = await askHidden('Backup passphrase: ');
   let payload;
   try { payload = await backup.importBackupAsync(text, pass); } catch (e) { say(e.message); return 1; }
-  const dir = stateDir(ctx), sf = path.join(dir, 'state.json'), soFile = path.join(dir, 'social.json');
   let st = {}, so = null;
-  try { st = JSON.parse(fs.readFileSync(sf, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') { say(`Cannot read ${sf}: ${e.code || e.message}`); return 1; } }
-  try { so = JSON.parse(fs.readFileSync(soFile, 'utf8')); } catch { }
+  if (id !== undefined) {
+    try { st = readStateJson(ctx, id, sf); } catch (e) { if (e.code !== 'ENOENT') { say(`Cannot read ${sf}: ${plainWhy(e)}`); return 1; } }
+    try { so = readStateJson(ctx, id, soFile); } catch { }
+  }
   const merged = backup.mergePayload(st, so, payload);
   say(`This replaces this machine's NodeSignal identity with the one in the backup${payload.nick ? ` ("${payload.nick}")` : ''},`);
   say(`adds ${merged.added} contact(s), and keeps the message history that is here.`);
-  if (process.stdin.isTTY && !(await ctxPrompter().askYesNo('Go ahead?', false))) { say('Nothing changed.'); return 0; }
+  // Replacing an identity is never silent: a terminal is asked, a script
+  // must say --yes.
+  if (!ctx.argv.includes('--yes')) {
+    if (!process.stdin.isTTY) { say('Nothing changed: not run from a terminal, so confirm with --yes (nodesignal restore <file> --yes).'); return 1; }
+    if (!(await ctxPrompter().askYesNo('Go ahead?', false))) { say('Nothing changed.'); return 0; }
+  }
   // the daemon must not be running while its state is replaced
   const hooks = ctx.deps.hooks || {};
   if (hooks.stop) await hooks.stop();
   else if (!IS_WIN && isRoot() && hasSystemd()) { try { execFileSync('systemctl', ['stop', 'nodesignal'], { stdio: 'ignore', timeout: 30000 }); } catch { } }
-  const h = await ctx.core.httpGetJson(`http://127.0.0.1:${Number(ctx.cfg['web-port']) || 8789}/health`, 1500);
+  const h = await core.httpGetJson(`http://127.0.0.1:${Number(ctx.cfg['web-port']) || 8789}/health`, 1500);
   if (h.ok) { say('NodeSignal is still running. Stop it first, then restore again.'); return 1; }
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  if (fs.existsSync(sf)) { const keep = `${sf}.before-restore-${Date.now()}`; fs.copyFileSync(sf, keep); fs.chmodSync(keep, 0o600); say(`The previous state.json was kept as ${keep}.`); }
-  for (const [f, obj] of [[sf, merged.state], [soFile, merged.social]]) {
-    fs.writeFileSync(f + '.tmp', JSON.stringify(obj), { mode: 0o600 }); fs.renameSync(f + '.tmp', f);
-    if (!IS_WIN && isRoot()) { try { const u = ctx.core.readPasswd('').find((x) => x.name === 'nodesignal'); if (u) fs.chownSync(f, u.uid, u.gid); } catch { } }
-  }
+  if (id === undefined) { try { id = stateFolder(ctx, dir, { create: true }); } catch (e) { say(e.message); return 1; } }
+  let keep = null;
+  try {
+    // as the folder's owner: new files (O_EXCL) renamed into place, never a
+    // write through a link the daemon's user left there
+    core.asOwner(id, () => {
+      let prev = null;
+      try { prev = core.readPlainFileSync(sf, STATE_MAX); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+      if (prev) { keep = `${sf}.before-restore-${Date.now()}`; fs.writeFileSync(keep, prev, { mode: 0o600, flag: 'wx' }); }
+      for (const [f, obj] of [[sf, merged.state], [soFile, merged.social]]) core.replaceFileSync(f, JSON.stringify(obj));
+    });
+  } catch (e) { say(`Could not write the restored state in ${dir}: ${plainWhy(e)}.${keep ? ` The previous state.json was kept as ${keep}.` : ''}`); return 1; }
+  if (keep) say(`The previous state.json was kept as ${keep}.`);
   say('Restored. Starting NodeSignal.');
   if (hooks.start) await hooks.start();
   else if (!IS_WIN && isRoot() && hasSystemd()) { try { execFileSync('systemctl', ['start', 'nodesignal'], { stdio: 'ignore', timeout: 30000 }); } catch { } }
@@ -376,7 +428,8 @@ function loadSibling(name) {
                                 what the console asked for
    Whatever the daemon wrote is untrusted here: the package, the manifest and
    its signature are copied into a directory only root can write, and checked
-   there against release-keys.json from /opt/nodesignal (owned by root). */
+   there against release-keys.json from /opt/nodesignal (owned by root).
+   apt-get gets --no-remove: an update never removes another package. */
 // NODESIGNAL_UPDATE_DIR / NODESIGNAL_UPDATE_DRY_RUN: tests only (root's
 // systemd unit sets neither); the dry run stops before the package manager.
 const UPDATE_DIR = process.env.NODESIGNAL_UPDATE_DIR || '/var/lib/nodesignal/updates';
@@ -412,39 +465,59 @@ async function cmdUpdate(ctx, sub) {
     return installVerifiedDeb(ctx, tmp, r.version, asset);
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 }
-// A file the daemon left, copied without following links, and only if it is
-// a regular file of a sane size.
-function copyUntrusted(src, dest, max) {
-  const fd = fs.openSync(src, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-  try {
-    const st = fs.fstatSync(fd);
-    if (!st.isFile() || st.size > max) throw new Error(`${path.basename(src)} is not a plain file of a sensible size`);
-    const buf = Buffer.alloc(st.size);
-    let off = 0; while (off < st.size) { const n = fs.readSync(fd, buf, off, st.size - off, off); if (!n) break; off += n; }
-    fs.writeFileSync(dest, buf.subarray(0, off), { mode: 0o600 });
-  } finally { fs.closeSync(fd); }
-}
+/* UPDATE_DIR belongs to the daemon's user, who can swap anything in it, the
+   folder itself included, while root works. So every read, write and unlink
+   there runs as that user (core.asOwner): a link it planted can only lead
+   where it could write anyway. Its files are read into memory (no link
+   followed, no FIFO waited on, plain files of a capped size) and root writes
+   its own copies into a folder only root can write. A root-owned UPDATE_DIR
+   (tests) is used as root only when no other account can change a folder
+   above it. */
+const REQUEST_MAX = 4 * 1024;
 async function cmdUpdateApply(ctx) {
   if (IS_WIN || !isRoot()) { say('update-apply runs as root, from nodesignal-update.service'); return 2; }
   const updater = loadSibling('updater.js');
-  const reqFile = path.join(UPDATE_DIR, 'request.json');
-  let req;
-  try { req = JSON.parse(fs.readFileSync(reqFile, 'utf8')); } catch { say('No update request.'); return 0; }
-  try { fs.unlinkSync(reqFile); } catch { }
+  const core = ctx.core;
+  let dst;
+  try { dst = fs.lstatSync(UPDATE_DIR); }
+  catch (e) { if (e.code === 'ENOENT') { say('No update request.'); return 0; } say(`Cannot open ${UPDATE_DIR}: ${e.code || e.message}`); return 1; }
+  if (!dst.isDirectory()) { say(`Refused: ${UPDATE_DIR} is not a plain folder (a symbolic link?).`); return 1; }
+  let id = null;
+  try {
+    if (dst.uid !== 0) id = core.ownerIdentity(dst.uid, dst.gid);
+    else {
+      const bad = core.unsafeFolder(path.dirname(path.resolve(UPDATE_DIR)));
+      if (bad) throw new Error(`Refused: ${UPDATE_DIR} belongs to root, but ${bad.dir} can be changed by an account other than root (${bad.why}).`);
+    }
+  } catch (e) { say(e.message); return 1; }
+  const inDir = (fn) => core.asOwner(id, fn);
+  const at = (name) => path.join(UPDATE_DIR, name);
+  const unlinkAll = (names) => inDir(() => { for (const f of names) { try { fs.unlinkSync(at(f)); } catch { } } });
   const result = (o) => {
-    try {
-      const f = path.join(UPDATE_DIR, 'result.json');
-      fs.writeFileSync(f, JSON.stringify(Object.assign({ at: Date.now() }, o)), { mode: 0o600 });
-      const u = ctx.core.readPasswd('').find((x) => x.name === 'nodesignal');
-      if (u) fs.chownSync(f, u.uid, u.gid);
-    } catch { }
+    try { inDir(() => core.replaceFileSync(at('result.json'), JSON.stringify(Object.assign({ at: Date.now() }, o)))); } catch { }
   };
+  let req;
+  try { req = JSON.parse(inDir(() => core.readPlainFileSync(at('request.json'), REQUEST_MAX)).toString('utf8')); }
+  catch (e) {
+    if (e.code === 'ENOENT') { say('No update request.'); return 0; }
+    unlinkAll(['request.json']);
+    const w = e instanceof SyntaxError ? 'it is not JSON' : plainWhy(e);
+    const why = `refused the request: request.json ${/^it /.test(w) ? w.slice(3) : `could not be read (${w})`}`;
+    result({ ok: false, version: '', error: why }); say(why); return 1;
+  }
+  unlinkAll(['request.json']);
+  if (!req || typeof req !== 'object') req = {};
   const version = typeof req.version === 'string' ? req.version : '', asset = updater.platformAsset();
   if (!asset || req.asset !== asset) { result({ ok: false, version, error: 'the request names a package for another machine' }); return 1; }
+  const names = [asset, updater.MANIFEST_NAME, updater.SIG_NAME];
   const tmp = fs.mkdtempSync('/var/tmp/nodesignal-update-');
   try {
-    for (const [name, max] of [[asset, updater.MAX_ASSET_BYTES], [updater.MANIFEST_NAME, updater.MAX_META_BYTES], [updater.SIG_NAME, updater.MAX_META_BYTES]])
-      copyUntrusted(path.join(UPDATE_DIR, name), path.join(tmp, name), max);
+    for (const [name, max] of [[asset, updater.MAX_ASSET_BYTES], [updater.MANIFEST_NAME, updater.MAX_META_BYTES], [updater.SIG_NAME, updater.MAX_META_BYTES]]) {
+      let buf;
+      try { buf = inDir(() => core.readPlainFileSync(at(name), max)); }
+      catch (e) { throw new Error(`${name}: ${plainWhy(e)}`); }
+      fs.writeFileSync(path.join(tmp, name), buf, { mode: 0o600, flag: 'wx' });
+    }
     const code = await installVerifiedDeb(ctx, tmp, version, asset);
     result(code === 0 ? { ok: true, version } : { ok: false, version, error: lastApplyError || 'the install failed; see journalctl -u nodesignal-update' });
     return code;
@@ -452,7 +525,7 @@ async function cmdUpdateApply(ctx) {
     result({ ok: false, version, error: e.message }); say(e.message); return 1;
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
-    for (const f of [asset, updater.MANIFEST_NAME, updater.SIG_NAME]) { try { fs.unlinkSync(path.join(UPDATE_DIR, f)); } catch { } }
+    unlinkAll(names);
   }
 }
 let lastApplyError = '';
@@ -479,7 +552,7 @@ async function installVerifiedDeb(ctx, dir, version, asset) {
   if (process.env.NODESIGNAL_UPDATE_DRY_RUN === '1') { say('dry run: not installing'); return 0; }
   const env = Object.assign({}, process.env, { DEBIAN_FRONTEND: 'noninteractive' });
   try {
-    if (fs.existsSync('/usr/bin/apt-get')) execFileSync('apt-get', ['install', '-y', '--no-install-recommends', deb], { stdio: 'inherit', env, timeout: 540000 });
+    if (fs.existsSync('/usr/bin/apt-get')) execFileSync('apt-get', ['install', '-y', '--no-install-recommends', '--no-remove', deb], { stdio: 'inherit', env, timeout: 540000 });
     else execFileSync('dpkg', ['-i', deb], { stdio: 'inherit', env, timeout: 540000 });
   } catch (e) { return fail('the package manager failed: ' + (e.message || e)); }
   say(`NodeSignal ${version} is installed.`);
@@ -614,8 +687,9 @@ async function cmdSetup(ctx) {
   const cfgPath = optValue(argv, 'config') || '/etc/nodesignal/config.json';
   const det = await core.detectBitcoinNode({ root });
 
-  if (det.installed) say(`Bitcoin node found: ${det.how.slice(0, 3).join('; ')}`);
+  if (det.installed) say(`Bitcoin node found: ${det.how.filter((h) => !/^ignored /.test(h)).slice(0, 3).join('; ')}`);
   else say('No Bitcoin node was found on this machine.');
+  for (const h of det.how) if (/^ignored /.test(h)) say(`Note: ${h}`);
 
   // an older from-source unit (install-node.sh before 1.3) kept its settings
   // on the ExecStart line; carry them over once (but not its User=)
@@ -626,16 +700,6 @@ async function cmdSetup(ctx) {
   const user = ensureSystemUser(core, root);
   say(`Service user: ${user.name} (a dedicated system account; NodeSignal never runs as root)`);
   if (det.owner && det.owner.uid === 0) say('Note: your Bitcoin node runs as root. NodeSignal does not need to, and does not.');
-  // Tor: NodeSignal asks Tor's control socket for its own onion service (no
-  // port forwarding). On Debian that socket and its cookie belong to the
-  // debian-tor group. Membership lets NodeSignal control that Tor, which is
-  // why it is only added when Tor is installed, and said out loud.
-  if (!root && groupExists('debian-tor')) {
-    try {
-      execFileSync('usermod', ['-a', '-G', 'debian-tor', user.name], { stdio: 'ignore' });
-      say('Tor: added nodesignal to the debian-tor group, so it can create its own onion address (no port forwarding).');
-    } catch { say('Tor: could not add nodesignal to the debian-tor group; it will run without an onion address.'); }
-  }
 
   // 2. config
   let cfg = {};
@@ -647,6 +711,9 @@ async function cmdSetup(ctx) {
   if (migrated) for (const [k, v] of Object.entries(migrated.config)) if (fresh || !(k in cfg)) cfg[k] = v;
   const nickArg = optValue(argv, 'nick');
   if (nickArg) cfg.nick = nickArg.slice(0, 60);
+  // Tor's control socket, for NodeSignal's own onion; "onion": "off" in the
+  // config declines it (see syncTorGroup)
+  syncTorGroup(core, cfg.onion !== 'off', { root, user: user.name, setup: true });
   // On a server, other accounts (a game server, a web server) can reach
   // 127.0.0.1 too, so the console gets a login token. It is not printed:
   // apt keeps its output in /var/log/apt/term.log. "web-token off" stores
@@ -706,6 +773,7 @@ async function cmdSetup(ctx) {
     say(`Added NodeSignal's RPC login to ${confPath}${access.result.created ? ' (new file)' : ''}:`);
     for (const l of access.result.lines) say('  ' + l.replace(/\$[0-9a-f]{64}$/, '$<hash>'));
     if (access.result.backup) say(`The original was saved once as ${access.result.backup}.`);
+    if (access.result.backupError) say(`No copy of the original was kept (${access.result.backupError}).`);
     say('');
     for (const l of core.RPC_RESTART_TEXT.linux) say(l);
     return 0;
@@ -727,14 +795,15 @@ function printManualLines(core, cfg) {
   say(`  rpcwhitelist=${core.RPC_USER}:${core.RPC_METHODS.join(',')}`);
   say('  rpcwhitelistdefault=0      (only if bitcoin.conf has no rpcwhitelist lines of its own)');
 }
+/* Hands what root put in the state folder to the service user. The folder
+   is that user's, so it can swap entries while this runs: GNU chown -R -P
+   walks it with fts relative to each open folder and never follows a link
+   (with -R -P it changes a link itself, not its target), and --from=0 only
+   touches what root owns. */
 function chownTree(dir, user) {
   if (!isRoot()) return;
-  const walk = (p) => {
-    try { fs.lchownSync(p, user.uid, user.gid); } catch { }
-    let st; try { st = fs.lstatSync(p); } catch { return; }
-    if (st.isDirectory()) for (const e of fs.readdirSync(p)) walk(path.join(p, e));
-  };
-  walk(dir);
+  try { execFileSync('chown', ['-R', '-P', '--no-dereference', '--from=0', `${user.uid}:${user.gid}`, dir], { stdio: 'ignore', timeout: 120000 }); }
+  catch (e) { say(`Note: could not hand ${dir} to ${user.name} (${e.code || 'chown failed'}). Fix it with: sudo chown -R -P --from=0 ${user.name}: ${dir}`); }
 }
 function removeOldDropIn(P) {
   try {
@@ -801,6 +870,7 @@ async function cmdRpcAccess(ctx, sub) {
   else {
     say(`Added NodeSignal's RPC login to ${confPath}.`);
     if (access.result.backup) say(`The original was saved once as ${access.result.backup}.`);
+    if (access.result.backupError) say(`No copy of the original was kept (${access.result.backupError}).`);
     say('');
     for (const l of core.RPC_RESTART_TEXT[IS_WIN ? 'win32' : 'linux']) say(l);
   }
@@ -848,8 +918,36 @@ function oldUnitHome(core, root, name) {
   const u = core.readPasswd(root).find((x) => x.name === (name || 'root'));
   return u && u.home && u.home !== '/' ? path.posix.join(u.home, '.nodesignal') : null;
 }
-function groupExists(name) {
-  try { return fs.readFileSync('/etc/group', 'utf8').split('\n').some((l) => l.split(':')[0] === name); } catch { return false; }
+/* Tor: NodeSignal asks Tor's control socket for its own onion service (no
+   port forwarding). On Debian and Ubuntu that socket and its cookie belong
+   to the debian-tor group, and membership lets the nodesignal user control
+   that Tor. So it is held only while the onion is wanted: setup adds it when
+   Tor is installed unless the config says "onion": "off", "onion on" adds
+   it, "onion off" removes it, and each says what it did. root: a fake
+   filesystem (tests), whose etc/group is changed instead. */
+const TOR_GROUP = 'debian-tor';
+function syncTorGroup(core, want, { root = '', user = 'nodesignal', setup = false } = {}) {
+  if (IS_WIN) return;
+  const g = core.readGroups(root).find((x) => x.name === TOR_GROUP);
+  if (!g) {
+    if (want && !setup) say(`Tor: there is no ${TOR_GROUP} group here (is Tor installed? Linux, on the node: sudo apt install tor), so no group was changed.`);
+    return;
+  }
+  const member = g.members.includes(user);
+  if (member === want) {
+    say(want ? `Tor: ${user} is in the ${TOR_GROUP} group, so it can create its own onion address (no port forwarding).`
+      : (setup ? `Tor: onion is off in the config, so ${user} stays out of the ${TOR_GROUP} group.` : `Tor: ${user} is not in the ${TOR_GROUP} group.`));
+    return;
+  }
+  if (!root && !isRoot()) { say(`Tor: ${user} was not ${want ? 'added to' : 'removed from'} the ${TOR_GROUP} group: that needs sudo.`); return; }
+  try {
+    core.setGroupMember(user, TOR_GROUP, want, { root });
+    say(want ? `Tor: added ${user} to the ${TOR_GROUP} group, so it can create its own onion address (no port forwarding).`
+      : `Tor: removed ${user} from the ${TOR_GROUP} group${setup ? ' (onion is off in the config)' : ''}; NodeSignal no longer controls this machine's Tor.`);
+  } catch {
+    say(want ? `Tor: could not add ${user} to the ${TOR_GROUP} group; it will run without an onion address.`
+      : `Tor: could not remove ${user} from the ${TOR_GROUP} group. Linux, on the node: sudo gpasswd -d ${user} ${TOR_GROUP}`);
+  }
 }
 function hostnameOf(root) {
   if (root) { try { return fs.readFileSync(path.join(root, 'etc', 'hostname'), 'utf8').trim() || os.hostname(); } catch { } }
@@ -891,7 +989,9 @@ usage: nodesignal <command> [--config <file>]
   update [install]     check for a newer version now; install it (Linux, sudo)
   agent-brief [--file f]  a brief for your own AI agent to check NodeSignal and finish setup
   backup <file>        write a passphrase-protected backup of your identity and contacts
-  restore <file>       put a backup's identity on this machine (keeps the history here)
+  restore <file> [--yes]
+                       put a backup's identity on this machine (keeps the history
+                       here); --yes confirms it when not run from a terminal
   web-token [show|new|off]
                        the console's login token (Linux sets one at install,
                        so other accounts on the machine cannot use it)
