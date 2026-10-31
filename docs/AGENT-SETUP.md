@@ -103,7 +103,8 @@ fine). The installers refuse to continue without one.
    own, so other users keep their access.
 3. Tor gives NodeSignal its own onion address with no port forwarding. If Tor
    is not installed, offer to install it (Linux: `sudo apt install tor`, then
-   `sudo systemctl restart nodesignal`). `nodesignal onion` shows the address.
+   `sudo nodesignal onion on`, which adds `nodesignal` to the debian-tor group
+   and restarts it). `nodesignal onion` shows the address.
 4. Tell the operator how to open the console: it only answers on this machine
    (`http://localhost:8789`); from another computer use
    `ssh -L 8789:127.0.0.1:8789 <user>@<this machine>`. On Linux the login
@@ -149,6 +150,14 @@ described; do not report them as hidden behaviour.
   the version is newer, and the size, SHA-256 and package name match, all
   checked again by root on root-owned copies. It is how the console's
   "Install update" works without giving the daemon root.
+- **Root switches to another account for file work in that account's
+  folders.** When setup, `restore` or `update-apply` runs as root and reads or
+  writes bitcoin.conf (owned by the node's user), the state folder or the
+  update requests (owned by `nodesignal`), it does that file work with the
+  owner's uid and gid (`seteuid`), so a link planted there reaches nothing
+  the owner could not reach already. A root-owned file in a folder another
+  account can change is refused. Seeing `setegid`/`seteuid` calls in
+  `setup-core.js` and `cli.js` is expected.
 - **A daily HTTPS request to `api.github.com`** (and downloads from GitHub's
   release hosts when the operator installs an update), through Tor when Tor
   is present. No telemetry, no other servers. `nodesignal updates off` stops

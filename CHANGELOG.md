@@ -30,10 +30,12 @@ RPC methods.
 ### Reaching other operators, with no port forwarding
 
 - NodeSignal gives itself an onion address through Tor's control port, the
-  way bitcoind's `-listenonion` does: install Tor (`sudo apt install tor` on
-  Linux) and it just happens, behind any router, with no torrc editing and no
-  forwarded port. The address stays the same across restarts.
-  `nodesignal onion` shows it.
+  way bitcoind's `-listenonion` does: install Tor (Linux, on the node:
+  `sudo apt install tor`, then `sudo nodesignal onion on` if Tor came after
+  NodeSignal) and it just happens, behind any router, with no torrc editing
+  and no forwarded port. The address stays the same across restarts.
+  `nodesignal onion` shows it; `sudo nodesignal onion off` turns it off and
+  takes NodeSignal out of the debian-tor group.
 - A contact is reached at its address first and its onion second.
 - `nodesignal advertise on` now puts your onion in your node's user agent
   (`uacomment=nodesignal:<onion>`). Any operator whose node peers with yours
@@ -145,6 +147,29 @@ code. What they found and what changed:
   9051 while Tor was down and be handed NodeSignal's onion key. On Linux
   NodeSignal now talks only to Tor's control socket unless you name a TCP
   port yourself.
+- **Linux: a compromised daemon could get root.** The root helpers wrote
+  into folders the `nodesignal` account owns as root, following any link
+  planted there: `update-apply` (which the daemon can trigger on its own)
+  and `nodesignal restore` both did, which let that account have root
+  overwrite and take over any file. Root now does that file work as the
+  folder's owner, and opens nothing through a link.
+- **Linux: the node's account could do the same through bitcoin.conf.**
+  Setup, `advertise` and `rpc-access` edited bitcoin.conf and wrote its
+  backup as root through links in the node's folder, and purge rewrote it
+  the same way. Edits now run as the file's owner; a root-owned
+  bitcoin.conf in a folder another account can change is left alone with
+  instructions. The backup now sits beside the real file.
+- **Linux: any local account could pose as your node during setup** by
+  running a program named bitcoind with its own config. Setup now prefers a
+  node whose program belongs to root, and ignores a config or data folder
+  that belongs to neither root nor the node's own account.
+- `nodesignal onion off` now really takes NodeSignal out of the debian-tor
+  group, and setup leaves it out when the onion is off.
+- Backup and restore passphrases are no longer echoed when typed into a
+  pipe, and a restore without a terminal needs `--yes`.
+- Releases: the update manifest is signed only when a release is
+  published, not on dry runs, and the release workflow's token is read-only
+  except for the publishing step.
 - **The Windows build fetched a build tool's dependency by version range**,
   with install scripts on. It is now pinned exactly, scripts off.
 

@@ -7,7 +7,7 @@ onion address, the way bitcoind's -listenonion does. Nothing to edit, no
 port forwarding. Linux, on the node:
 
     sudo apt install tor
-    sudo systemctl restart nodesignal
+    sudo nodesignal onion on    (lets NodeSignal use Tor, then restarts it)
     nodesignal onion            (shows the address)
 
 On Debian and Ubuntu, setup adds the nodesignal user to the debian-tor
