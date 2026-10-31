@@ -30,6 +30,11 @@ const SEED = Number(process.env.SEED || 3);
 // Sample time shown in the images (fixture timestamps are relative to it).
 const CLOCK_AT = Date.parse(process.env.CLOCK || '2026-05-12T14:20:00Z');
 const FIXTURE = fs.readFileSync(path.join(__dirname, 'fixture-ws.js'), 'utf8');
+// The share card's QR code, drawn by NodeSignal's own encoder from the
+// fixture's made-up contact link (the same text fixture-ws.js sends).
+const qr = require(path.join(ROOT, 'qr.js'));
+const SHARE_LINK = 'nodesignal:alphaexampleonionaddressforscreenshotsxxxxxxxxxxxxxxxxxx.onion?port=8788&fp=54f42d4a9a31820cb0e17f3a62d9c855&nick=Alpha';
+const QR_SVG = `window.__QR_SVG=${JSON.stringify(qr.toSvg(qr.encode(SHARE_LINK)))};`;
 const SEEDED = `(()=>{let x=${SEED};Math.random=()=>{x=(x*1103515245+12345)%2147483648;return x/2147483648;};})();`;
 // A Date that keeps ticking from CLOCK_AT, so animations and timers still run.
 const CLOCK = `(()=>{const R=Date,off=${CLOCK_AT}-R.now();class D extends R{constructor(...a){if(a.length)super(...a);else super(R.now()+off);}static now(){return R.now()+off;}}window.Date=D;})();`;
@@ -44,9 +49,12 @@ const WEB_SET = [
   ['desktop-chat-retrying', 1280],
   ['desktop-history-locked', 1280],
   ['desktop-status', 1280],
+  ['desktop-feed', 1280],
+  ['desktop-room', 1280],
+  ['desktop-share', 1280],
   ['phone-chat', 540],
 ];
-const WEBP_Q = Number(process.env.WEBP_Q || 0.75);
+const WEBP_Q = Number(process.env.WEBP_Q || 0.7);
 
 fs.mkdirSync(OUT, { recursive: true });
 
@@ -59,7 +67,7 @@ srv.listen(0, '127.0.0.1', async () => {
   const b = await chromium.launch();
   const open = async (w, h, mode = 'ok', scale = 1.25, calm = true) => {
     const pg = await b.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: scale, timezoneId: 'UTC', locale: 'en-US' });
-    await pg.addInitScript(CLOCK); await pg.addInitScript(SEEDED); await pg.addInitScript(FIXTURE);
+    await pg.addInitScript(CLOCK); await pg.addInitScript(SEEDED); await pg.addInitScript(QR_SVG); await pg.addInitScript(FIXTURE);
     await pg.goto(base + '?mode=' + mode + (calm ? '&calm=1' : '')); await pg.waitForTimeout(1200); return pg;
   };
   const shot = (pg, name) => pg.screenshot({ path: path.join(OUT, name + '.png') }).then(() => console.log('  ' + name));
@@ -78,6 +86,12 @@ srv.listen(0, '127.0.0.1', async () => {
   await pg.evaluate(() => openChat(state.peers.find((p) => p.ns).id)); await pg.waitForTimeout(300); await shot(pg, 'desktop-advertised-peer');
   await pg.evaluate(() => toggleDrawer(true)); await pg.waitForTimeout(400); await shot(pg, 'desktop-status');
   await pg.evaluate(() => { toggleDrawer(false); switchTab('peers'); openAdd(); }); await pg.waitForTimeout(300); await shot(pg, 'desktop-add-contact');
+  await pg.close();
+  // 1.4: the feed, a room, and the share card with its QR code
+  pg = await open(1440, 900);
+  await pg.evaluate(() => switchTab('feed')); await pg.waitForTimeout(300); await shot(pg, 'desktop-feed');
+  await pg.evaluate(() => { switchTab('rooms'); openRoom(state.rooms[0].room); }); await pg.waitForTimeout(300); await shot(pg, 'desktop-room');
+  await pg.evaluate(() => { switchTab('peers'); openShare(); }); await pg.waitForTimeout(400); await shot(pg, 'desktop-share');
   await pg.close();
   pg = await open(1440, 900, 'ok', 1.25, false);
   await chat(pg, '203.0.113.88'); await pg.waitForTimeout(300); await shot(pg, 'desktop-key-change-review'); await pg.close();
