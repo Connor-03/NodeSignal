@@ -26,7 +26,9 @@
 // postject, which adds the SEA blob as a resource; afterwards the finished
 // file is checked for the version, icon, Node's manifest and the blob.
 //
-// postject is fetched by npx at BUILD time only, pinned to 1.0.0-alpha.6, and
+// postject is fetched by npm at BUILD time only, pinned to 1.0.0-alpha.6 with
+// its one dependency commander pinned to 9.5.0 (postject asks for ^9.4.0, so
+// npm would otherwise pick whatever is newest), install scripts off, and
 // resedit (the resource editor, pure JavaScript, pinned to 3.1.0 with its
 // one dependency pe-library 2.0.1) is fetched by npm into the build's scratch
 // folder, for Windows builds only. Neither is ever shipped nor becomes a
@@ -42,8 +44,26 @@ const { execFileSync, spawnSync } = require('child_process');
 const IS_WIN = process.platform === 'win32';
 const HOMEPAGE = 'https://github.com/Connor-03/NodeSignal';
 const FUSE = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
-const POSTJECT = 'postject@1.0.0-alpha.6';
+const POSTJECT = { name: 'postject', version: '1.0.0-alpha.6' };
+const COMMANDER = { name: 'commander', version: '9.5.0' };      // postject's only dependency
 
+// npm install of exact versions into dir, no install scripts, nothing saved;
+// then each package's own package.json must name the pinned version.
+function fetchPinned(dir, pkgs) {
+  fs.mkdirSync(dir, { recursive: true });
+  const specs = pkgs.map((p) => `${p.name}@${p.version}`);
+  const args = ['install', '--prefix', dir, '--no-save', '--no-package-lock', '--ignore-scripts', '--no-audit', '--no-fund', ...specs];
+  const cli = [path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
+    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')].find((p) => fs.existsSync(p));
+  const r = cli ? spawnSync(process.execPath, [cli, ...args], { stdio: 'inherit' })
+    : spawnSync(IS_WIN ? 'npm.cmd' : 'npm', args, { stdio: 'inherit', shell: IS_WIN });
+  if (r.status !== 0) fail(`could not fetch ${specs.join(' ')}` + (r.error ? ': ' + r.error.message : ''));
+  for (const p of pkgs) {
+    const got = JSON.parse(fs.readFileSync(path.join(dir, 'node_modules', p.name, 'package.json'), 'utf8')).version;
+    if (got !== p.version) fail(`${p.name} ${got} was installed, ${p.version} is pinned`);
+  }
+  return dir;
+}
 function opt(name, dflt) { const i = process.argv.indexOf('--' + name); return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : dflt; }
 function fail(msg) { console.error('\nbuild-sea: ' + msg + '\n'); process.exit(1); }
 
@@ -148,15 +168,10 @@ async function main() {
   }
 
   // 5. inject with postject (build time only, see header)
-  const npxCli = [
-    path.join(path.dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npx-cli.js'),
-    path.join(path.dirname(process.execPath), '..', 'lib', 'node_modules', 'npm', 'bin', 'npx-cli.js'),
-  ].find((p) => fs.existsSync(p));
-  const pjArgs = ['--yes', POSTJECT, OUT, 'NODE_SEA_BLOB', blob, '--sentinel-fuse', FUSE];
+  const pjCli = fetchPinned(path.join(WORK, 'postject'), [POSTJECT, COMMANDER]);
+  const pjArgs = [path.join(pjCli, 'node_modules', 'postject', 'dist', 'cli.js'), OUT, 'NODE_SEA_BLOB', blob, '--sentinel-fuse', FUSE];
   if (process.platform === 'darwin' && !PE_ARCH) pjArgs.push('--macho-segment-name', 'NODE_SEA');
-  let r;
-  if (npxCli) r = spawnSync(process.execPath, [npxCli, ...pjArgs], { stdio: 'inherit' });
-  else r = spawnSync(IS_WIN ? 'npx.cmd' : 'npx', pjArgs, { stdio: 'inherit', shell: IS_WIN });
+  const r = spawnSync(process.execPath, pjArgs, { stdio: 'inherit' });
   if (r.status !== 0) fail('postject failed' + (r.error ? ': ' + r.error.message : ''));
 
   // 6. Windows only: the resources written in 4b survived injection

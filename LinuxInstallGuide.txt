@@ -68,14 +68,33 @@ What the package does:
      lines of its own, so every other RPC user (bitcoin-cli, Electrs,
      mempool) keeps working exactly as before. The lines sit between two
      "# NodeSignal RPC access" marker comments; the first change keeps
-     the original as bitcoin.conf.nodesignal-backup. NodeSignal never
-     reads your node's cookie file.
+     the original as bitcoin.conf.nodesignal-backup beside the real file
+     (if bitcoin.conf is a link, beside the file it points to). The edit
+     is made as the file's owner, never as root, so a link in a folder
+     someone else controls cannot redirect it; if the owner cannot write
+     that folder, setup says no copy was kept. If bitcoin.conf uses
+     includeconf, or whitelists RPC users in a [section] or on bitcoind's
+     command line, setup does not edit it (it cannot see every whitelist)
+     and prints the lines to add by hand. NodeSignal never reads your
+     node's cookie file.
   5. writes /etc/nodesignal/config.json (readable by the nodesignal user
      only): your display name (the hostname), the RPC address, and the
      RPC password. An existing file keeps its settings and password.
   6. enables and starts the nodesignal service (hardened: read-only
      system, no access to /home, private /tmp, no new privileges, only
-     its state directory writable)
+     its state directory writable). The peer port listens on your
+     Tailscale address if you have one, otherwise on every interface;
+     behind a home router nobody can reach it unless you forward it.
+     `"bind": "127.0.0.1"` in the config keeps it to Tor only.
+  6b. gives the console a login token (sudo nodesignal web-token shows it)
+     and installs a root helper, nodesignal-update.path, that installs
+     an update only when the console asks and only if it is signed with
+     a release key this copy ships (1.4.0 ships none yet).
+  6c. apt also installs Tor (the package recommends it). NodeSignal then
+     makes its own onion address, so other operators can reach you
+     without port forwarding. If "nodesignal onion" shows none yet (Tor
+     was set up after NodeSignal), run: sudo nodesignal onion on.
+     sudo nodesignal onion off turns it off.
   7. checks the Bitcoin RPC and prints the result, the web address,
      and the two optional commands below
 
@@ -107,7 +126,7 @@ Advertise NodeSignal in your node's user agent. Linux, on the node:
     sudo nodesignal advertise on
 
 This adds "uacomment=nodesignal" to bitcoin.conf (a one-time backup is
-kept as bitcoin.conf.nodesignal-backup). It is PUBLIC: every peer your
+kept as bitcoin.conf.nodesignal-backup, beside the real file). It is PUBLIC: every peer your
 node connects to will see it. It takes effect after you restart your
 node; NodeSignal never restarts it for you. Linux, on the node:
 
@@ -153,6 +172,14 @@ All of these run on Linux, on the node:
 
     nodesignal status                       is it running, is the node connected?
     nodesignal logs                         how to read the log
+    nodesignal onion                        NodeSignal's own Tor onion address (1.4)
+    nodesignal update                       is a newer version out? (1.4)
+    sudo nodesignal update install          install it (only signed releases)
+    sudo nodesignal updates off             stop the daily update check
+    sudo nodesignal backup <file>           passphrase-sealed identity backup
+    sudo nodesignal restore <file>          put a backup's identity on this machine
+                                            (asks first; add --yes when not at a terminal)
+    nodesignal same-onion                   serve your node and NodeSignal on one onion
     journalctl -u nodesignal -f             live log
     sudo systemctl restart nodesignal       restart
     sudo systemctl stop nodesignal          stop

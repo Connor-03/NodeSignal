@@ -101,6 +101,8 @@ WRAP
 chmod 0755 "$PKG/usr/bin/nodesignal"
 
 install -m 0644 "$HERE/nodesignal.service" "$PKG/lib/systemd/system/nodesignal.service"
+install -m 0644 "$HERE/nodesignal-update.path" "$PKG/lib/systemd/system/nodesignal-update.path"
+install -m 0644 "$HERE/nodesignal-update.service" "$PKG/lib/systemd/system/nodesignal-update.service"
 {
   echo "NodeSignal"
   echo "Source: https://github.com/Connor-03/NodeSignal"
@@ -109,11 +111,16 @@ install -m 0644 "$HERE/nodesignal.service" "$PKG/lib/systemd/system/nodesignal.s
   echo ""
   echo "The bundled Node.js runtime (/opt/nodesignal/node) is distributed under"
   echo "its own license, included as /opt/nodesignal/node-LICENSE."
+  echo ""
+  cat "$SRC/LICENSE-fonts.txt"
 } > "$PKG/usr/share/doc/nodesignal/copyright"
 chmod 0644 "$PKG/usr/share/doc/nodesignal/copyright"
 
 for s in preinst postinst prerm postrm; do install -m 0755 "$HERE/$s" "$PKG/DEBIAN/$s"; done
 
+# md5sums, so "dpkg -V nodesignal" can show whether installed files changed
+( cd "$PKG" && find . -type f ! -path './DEBIAN/*' -printf '%P\0' | LC_ALL=C sort -z | xargs -0 md5sum ) > "$PKG/DEBIAN/md5sums"
+chmod 0644 "$PKG/DEBIAN/md5sums"
 INSTALLED_KB="$(du -sk --exclude=DEBIAN "$PKG" | cut -f1)"
 cat > "$PKG/DEBIAN/control" <<CTRL
 Package: nodesignal

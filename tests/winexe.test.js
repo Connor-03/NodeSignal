@@ -108,6 +108,11 @@ test('build-time tools: exact pins, never a runtime dependency', () => {
   assert.deepStrictEqual(pkg.dependencies || {}, {});
   assert.ok(!pkg.devDependencies || (!pkg.devDependencies.resedit && !pkg.devDependencies.postject));
   for (const p of [winres.RESEDIT, winres.PE_LIBRARY]) assert.match(p.version, /^\d+\.\d+\.\d+$/, `${p.name} pinned exactly`);
+  // postject and its one dependency too, fetched by npm without install scripts (never npx, which resolves ranges)
+  const sea = fs.readFileSync(path.join(ROOT, 'packaging', 'build-sea.js'), 'utf8');
+  assert.match(sea, /POSTJECT = \{ name: 'postject', version: '1\.0\.0-alpha\.6' \}/);
+  assert.match(sea, /COMMANDER = \{ name: 'commander', version: '\d+\.\d+\.\d+' \}/);
+  assert.ok(sea.includes("'--ignore-scripts'") && !/npx/.test(sea.replace(/^\s*\/\/.*$/gm, '')), 'pinned npm install, no npx');
   const files = JSON.parse(fs.readFileSync(path.join(ROOT, 'packaging', 'files.json'), 'utf8'));
   const shipped = [...files.daemon, ...files.tools];
   for (const f of ['packaging/windows/win-resources.js', 'packaging/windows/make-icon.js']) assert.ok(!shipped.includes(f), `${f} is not shipped`);

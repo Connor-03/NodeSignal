@@ -165,17 +165,24 @@ From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 | `noise.js` | Noise_XX_25519_ChaChaPoly_SHA256 (v3, standard, test-vector checked) plus the v1.2 handshake as `noise.legacy` for one release. |
 | `store.js` | History at rest: scrypt passphrase vault + X25519 sealed boxes per message. |
 | `portmap.js` | Opt-in UPnP IGD / NAT-PMP port mapping. |
+| `torcontrol.js` | (1.4) Tor control client: SAFECOOKIE/COOKIE/password auth and ADD_ONION, so the daemon makes its own onion service. |
+| `social.js` | (1.4) Ed25519 signing key, signed posts, rooms, room members and messages, canonical JSON, the bounded store kept in `social.json`. |
+| `mailbox.js` | (1.4) Sealed store-and-forward: X25519 + ChaCha20-Poly1305 blobs with the sender authenticated by static DH, and the bounded mailbox store (`mailbox.json`). |
+| `backup.js` | (1.4) Passphrase-sealed identity backups (scrypt + ChaCha20-Poly1305), and building and merging their payload (shared by daemon and CLI). |
+| `qr.js` | (1.4) QR encoder (checked against python-qrcode and ZXing) and SVG output, for contact links. |
+| `updater.js` + `release-keys.json` | (1.4) Update check against GitHub Releases, signed release manifests (Ed25519), verified downloads. `release-keys.json` lists the keys a copy trusts; `tools/release-key.js` and `tools/release-manifest.js` make and sign them. |
 | `nodeps.js` | Static file server + RFC 6455 WebSocket server, stdlib only. |
-| `nodesignal.html` | **Operator console.** Real data only. Goes on a node. |
+| `nodesignal.html` | **Operator console.** Real data only. Goes on a node. Self-contained: its fonts are embedded (licences in `LICENSE-fonts.txt`, shipped via `files.json`), and the daemon serves it with a Content-Security-Policy that allows no other server, so never add a CDN, web font or external script. |
 | `nodesignal-demo.html` | **Retired.** Removed from the tree in `2d479c6`; the maintainer considers it obsolete. Do not restore it. The demo-only rules below apply only if it ever returns. |
 | `packaging/` | One-download installers. `files.json` is THE list of program files (update it when adding a module). `build-sea.js` + `windows/sea-main.js` build `NodeSignal-Setup-windows-x64.exe` (Node SEA; `windows/win-resources.js` and `windows/make-icon.js` give it its version resource and icon at build time); `deb/` builds `nodesignal-linux-{amd64,arm64}.deb` with the official Node binary. Both require a Bitcoin node. |
 | `setup-core.js` + `cli.js` | Shared node detection / RPC check / config / uacomment and rpcauth editing, and the `nodesignal` command (status, advertise, port-mapping, rpc-access, setup). |
 | `.github/workflows/` | `ci.yml` (all tests, deb install under systemd, Windows exe selftest) and `release.yml` (tag `v*` -> release assets with stable names + SHA256SUMS.txt). |
 | `install.js` + `install-windows.bat`, `install-node.sh` | From-source installers; also require a node. |
 | `start-node.bat` | Manual Windows launcher for a from-source copy. |
+| `AGENTS.md`, `docs/AGENT-SETUP.md` | (1.4) For an AI agent the operator asks to check and install NodeSignal: how to verify it, and a list of what NodeSignal does on purpose (so it is not reported as hidden behaviour). Keep that list in step with the code; `nodesignal agent-brief` and the Windows installer point at it, and both warn first that the agent can read NodeSignal's secrets. |
 | `CHANGELOG.md`, `RELEASING.md` | Release notes per version (the release workflow publishes the `## <version>` section) and the maintainer's release checklist. `release.yml` run by hand is a dry run by default. |
 | `tools/screenshots/` | Publishable screenshots of the console from a fake daemon (`fixture-ws.js`). Optional Playwright. |
-| `tests/` | `run-all.js` runs every `*.test.js` with plain node; `console.e2e.js` (optional Playwright); `mock-node.js` (mock RPC that applies rpcauth/rpcwhitelist from a bitcoin.conf like bitcoind, and a :8333 identify listener); `harness.js` (shared helpers: spawned daemons, a raw WebSocket client, raw Noise peers). |
+| `tests/` | `run-all.js` runs every `*.test.js` with plain node, each in its own process group with a time limit (`NS_SUITE_TIMEOUT_MS`, default 5 minutes; harness suites print the test they were stuck in); `console.e2e.js` and `console-hostile.e2e.js` (optional Playwright; the second renders every view with hostile strings in every peer-chosen field, from `tools/screenshots/fixture-ws.js?mode=hostile`, so add new peer-supplied fields to that fixture); `mock-node.js` (mock RPC that applies rpcauth/rpcwhitelist from a bitcoin.conf like bitcoind, and a :8333 identify listener); `harness.js` (shared helpers: spawned daemons, a raw WebSocket client, raw Noise peers). |
 
 ### Two interfaces, deliberately separate
 
@@ -195,11 +202,51 @@ From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 command line), `--rpc-conf`, `--tor-proxy`, `--tor-all`,
 `--impersonate`, `--impersonate-height`, `--max-conns`, `--rl-burst`,
 `--rl-refill-ms`, `--port-mapping` (opt-in), `--checkin-ms` (default 180000,
-0 disables), `--retry-scale` (tests only).
+0 disables), `--retry-scale` (tests only). 1.4: `--onion auto|off|external`
+(default auto), `--onion-address` (with external), `--tor-control`
+(host:port or a socket path), `--tor-control-pass` (config only),
+`--public-host`, `--no-update-check` (config `"update-check": false`),
+`--update-repo`, `--mailbox` and `--discoverable` (defaults; the console's
+settings in state.json win). Tests pass `--onion off --no-update-check`.
 
 Peer protocol (v3): length-prefixed frames, Noise XX handshake (msg1 32
 bytes; a 44-byte msg1 is the v1.2 handshake), then JSON frames `hello`,
-`msg` {id, ts, text}, `ack` {id}, `ping`/`pong`. Either side of a link may
+`msg` {id, ts, text}, `ack` {id}, `ping`/`pong`. 1.4 adds to `hello`:
+`caps` (`social1`, `rooms1`, `mbox1`, `who1`), `sk` (Ed25519 signing key),
+`onion`, `pub` (public-host), `mbox` (offers a mailbox), `mbx` (its own
+mailboxes), `disc` (introductions on). New frames, sent only to peers whose
+caps list them (older daemons ignore unknown frames): `feed-req`/`posts`,
+`room-req`/`room-state`/`room-items`/`room-err`, `who-req`/`who`,
+`mb-reg`/`mb-reg-ok`/`mb-reg-err`, `mb-put`/`mb-put-ok`/`mb-put-err`,
+`mb-get`/`mb-items`/`mb-ack`. Once both hellos are exchanged, `afterHello`
+syncs whatever both sides support; the console's refresh (`sync.now`) runs
+it again on demand. Rules from the pre-release review (keep them):
+- `sk` counts only with `skp`, an Ed25519 signature by `sk` over the bytes
+  `NodeSignal signing key of <sender's own 32-hex Noise fp> v1`, checked
+  against the link's key; who entries and a sealed mail's return address
+  carry `skp` too.
+- A peer never chooses its contact key. A link from 127.0.0.1 (Tor) is
+  filed as `tor:<fp>`; mail from a new key as `mbox:<fp>`; a record made
+  from someone else's word (a room member, a mailbox, an introduction) as
+  `peer:<fp>`, with the named address kept as `c.addr`, a dial target where
+  the pinned key must answer. All use the full 32-hex fingerprint. `onion`
+  is kept as `c.onion` and dialled through Tor; `pub` files nothing. Only
+  the operator's own actions (contact.add, a room link, an accepted
+  introduction) file a contact under an address. Never pin a key onto an
+  existing record, never identify (:8333) a host a peer merely claimed.
+- Peer-keyed maps (`state.contacts`, introductions) are null-prototype,
+  and `__proto__`, `constructor` and `prototype` are refused as hosts.
+- 1.4 extras (who answers, auto-follow, passing on others' posts,
+  check-ins, mb-reg) need a contact the operator added or wrote to, with a
+  two-way exchange; one unsolicited msg from a stranger earns none of it.
+  `who` is accepted only as the answer to our who-req on that link.
+- Per link: at most 200 posts looked at, one feed-req, room-req (per room),
+  mb-get and who-req answered at a time, and the link is dropped with over
+  1 MB waiting to be sent. Batches are cut at 60 KB (Noise frames hold
+  65519 bytes); `who` and `mb-items` carry `more: true` on all but the last
+  frame, and `room-state` may hold only some members, the rest following
+  as `room-items`.
+Either side of a link may
 send `msg`; the dialling side hangs up when idle. Outgoing message status:
 `sending` -> `delivered`, or `pending` (retrying, with `error` and
 `nextTry`) -> `failed` (gave up or cancelled). The console adds its own
@@ -303,12 +350,29 @@ status table. Keep it current whenever security changes.
   authenticates the `/ws` upgrade. Never put the token in a query string.
 - Least RPC privilege (v1.3): own rpcauth user with an `rpcwhitelist` of the
   three methods, no cookie, dedicated `nodesignal` system user on Linux.
+- Reachability (v1.4): NodeSignal's own onion service through Tor's control
+  port (setup adds `nodesignal` to debian-tor only when Tor is installed);
+  peers from 127.0.0.1 are matched by key, never by address.
+- Updates (v1.4): installs only a release manifest signed by a key in
+  `release-keys.json`; on Linux the root unit `nodesignal-update.path` runs
+  `nodesignal update-apply`, which re-checks signature, version (strictly
+  newer), size, SHA-256 and package name on root-only copies. The daemon
+  never gets root. `SECURITY-CRITIQUE.md` section 9 lists every 1.4 surface.
 - Web front door (v1.3): loopback-only bind, Host and Origin checks,
   per-launch action token on every state-changing op, `no-store` and
   frame-blocking headers on the console page. A console socket error can
   no longer crash the daemon. The web server hands out the console page,
   `/health` and the login routes only: no static files from the program
   folder, where a from-source install keeps `nodesignal-config.json`.
+
+- Pre-release review (v1.4): four reviewers (AI agents told to attack one
+  area each: peer protocol, console, root-run install and update paths,
+  crypto and parsers) found a stored XSS, root escalations through links in
+  folders other accounts own, peers choosing their own contact key or
+  pinning keys for others, prototype pollution, a Tor control impostor and
+  floods; all fixed with tests. `SECURITY-CRITIQUE.md` section 10 lists
+  every finding and what is still open. This is not the outside review
+  below: the reviewers were agents run by the project.
 
 **Still open, in honest terms**
 - Without a passphrase, messages are stored in the clear in `state.json`;
@@ -378,7 +442,8 @@ status table. Keep it current whenever security changes.
 5. **[DONE v1.3]** Retire the legacy v1 PIN code path.
 6. **[DONE v1.3]** Reinstall flow for TOFU ("accept new key" with both
    fingerprints shown).
-6b. **Next release:** drop `noise.legacy` and the v2 dial/answer branches.
+6b. **1.5:** drop `noise.legacy` and the v2 dial/answer branches (promised for
+   1.4 in 1.3's notes; 1.4.0 still answers v1.2 and its CHANGELOG says so).
 6c. **Outside review** of `nodesignald.js` + `noise.js` before calling it
    reviewed anywhere.
 7. **[DONE v1.3, stronger than planned]** The installers now write
@@ -405,6 +470,29 @@ status table. Keep it current whenever security changes.
   behind NAT (8788 unreachable without Tailscale or Tor); finding which peers
   run NodeSignal at all; offline delivery (hold and retry instead of failing);
   setup friction (RPC credentials, ports, launch steps).
+
+### 1.4 (decided with the maintainer, Oct 2026: "do all")
+
+Toward a node-run social network, all built: NodeSignal's own onion (no
+port forwarding), the onion in `uacomment=nodesignal:<onion>`, mailboxes,
+contact links with QR codes, signed posts (two hops), topic rooms,
+same-onion proof, introductions, identity backup, signed in-app updates.
+Still open:
+- **The release signing key.** `release-keys.json` ships empty, so copies
+  only announce updates until the maintainer runs `tools/release-key.js new`
+  (RELEASING.md step 0). It must be in the release that should be updatable
+  from.
+- Mailbox deposits reveal the sender's key to the mailbox; a throwaway
+  identity for deposits would hide it.
+- Several Tor peers still share one map dot (127.0.0.1); they are separate
+  contacts (`tor:<fp>`).
+- From the pre-release review, still open: a room member's claimed address
+  is dialled outside Tor unless it is an onion or `--tor-all` is on (up to
+  256 such records); a trusted introducer can pair any address with any
+  key, and "add" pins it; one key can have a `tor:` conversation and one
+  under an address until the operator adds it by link; records written by
+  earlier 1.4 builds are not migrated (1.4 was unreleased).
+  contacts.
 
 ### Open questions for the maintainer (from the v1.3 installer work)
 

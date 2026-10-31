@@ -30,8 +30,9 @@ on:
         type: boolean
         default: true
 
+# Read-only by default; only the publish job may write (the release).
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -171,6 +172,8 @@ jobs:
   publish:
     needs: [version, tests, deb, windows]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
@@ -193,6 +196,21 @@ jobs:
           done
           sha256sum NodeSignal-Setup-windows-x64.exe nodesignal-linux-amd64.deb nodesignal-linux-arm64.deb > SHA256SUMS.txt
           cat SHA256SUMS.txt
+      # In-app updates (1.4) install only a release whose manifest is signed
+      # with a key listed in release-keys.json. The private key is the
+      # NODESIGNAL_RELEASE_SIGNING_KEY secret; without it the manifest is
+      # published unsigned and installed copies only announce the release.
+      # Only a publishing run signs: a signature from a dry run (any branch,
+      # any commit) would be a valid update for every installed copy.
+      - name: Release manifest
+        run: node src/tools/release-manifest.js make "$VERSION" dist
+      - name: Sign the release manifest, when the key is set (publishing runs only)
+        if: needs.version.outputs.publish == 'true'
+        env:
+          NODESIGNAL_RELEASE_SIGNING_KEY: ${{ secrets.NODESIGNAL_RELEASE_SIGNING_KEY }}
+        run: |
+          node src/tools/release-manifest.js sign dist/nodesignal-release.json
+          if [ -f dist/nodesignal-release.json.sig ]; then node src/tools/release-manifest.js verify dist/nodesignal-release.json src/release-keys.json; fi
       - name: Release notes
         run: |
           RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
@@ -233,6 +251,7 @@ jobs:
           NOTES
           cat changes.md >> notes.md
           cat notes.md
+      # never the signature: it goes out with the release only
       - name: Keep the notes and checksums (dry runs too)
         uses: actions/upload-artifact@v4
         with:
@@ -240,6 +259,8 @@ jobs:
           path: |
             notes.md
             dist/SHA256SUMS.txt
+            dist/nodesignal-release.json
+          if-no-files-found: warn
       - name: Dry run, nothing published
         if: needs.version.outputs.publish != 'true'
         run: echo "::notice::Dry run for $TAG. Built, tested and checked; no tag and no release were created. Notes and checksums are in the release-notes artifact."
@@ -253,8 +274,11 @@ jobs:
             case "$VERSION" in *-*) pre="--prerelease" ;; esac   # releases/latest skips pre-releases
             gh release create "$TAG" --target "$GITHUB_SHA" --title "NodeSignal $VERSION" --notes-file notes.md $pre
           fi
+          extra=""
+          if [ -f dist/nodesignal-release.json.sig ]; then extra="dist/nodesignal-release.json.sig"; fi
           gh release upload "$TAG" --clobber \
             dist/NodeSignal-Setup-windows-x64.exe \
             dist/nodesignal-linux-amd64.deb \
             dist/nodesignal-linux-arm64.deb \
-            dist/SHA256SUMS.txt
+            dist/SHA256SUMS.txt \
+            dist/nodesignal-release.json $extra

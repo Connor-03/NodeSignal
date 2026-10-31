@@ -190,5 +190,6 @@ fi
 echo ""
 echo "Commands: nodesignal status | nodesignal open | nodesignal logs"
 echo "          sudo nodesignal advertise on|off | sudo nodesignal port-mapping on|off"
-echo "          sudo nodesignal rpc-access show|add|remove"
+echo "          sudo nodesignal rpc-access show|add|remove|rotate"
 echo "Live log: journalctl -u nodesignal -f"
+echo "Want your own AI agent to check it? nodesignal agent-brief (read its warning first)"

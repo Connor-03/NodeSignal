@@ -24,6 +24,8 @@ const { t } = S;
   let B = await up(S.daemon('bravo', bOpts));
   let ua = await ui(A), ub = await ui(B);
   let raw = null;
+  // A dials B from 127.0.0.1, which B reads as Tor: B files A under A's key
+  const A_AT_B = 'tor:' + (await ua.state()).daemon.fingerprint;
 
   await t('an inbound hello alone does not make a contact established', async () => {
     const hellos = [];
@@ -47,12 +49,12 @@ const { t } = S;
     ua.send({ type: 'contact.add', host: '127.0.0.2', port: 24723, nick: 'bravo' });
     await ua.wait((m) => m.type === 'contact' && m.contact.host === '127.0.0.2');
     ua.send({ type: 'chat.retry', host: '127.0.0.2' });        // dials B: handshake and hellos, nothing else
-    const ev = await ub.wait((m) => m.type === 'contact' && m.contact.host === '127.0.0.1');
+    const ev = await ub.wait((m) => m.type === 'contact' && m.contact.host === A_AT_B);
     assert.strictEqual(ev.contact.established, false);
     const a = await until(async () => { const x = contactOf(await ua.state(), '127.0.0.2'); return x.peerFp && x; });
     assert.strictEqual(a.proto, 3);
     assert.strictEqual(a.established, false, 'A calls B established after hellos only');
-    const b = contactOf(await ub.state(), '127.0.0.1');
+    const b = contactOf(await ub.state(), A_AT_B);
     assert(b.peerFp, 'B pinned A');
     assert.strictEqual(b.established, false, 'B calls A established after hellos only');
     assert(!b.online && !a.online);
@@ -82,7 +84,7 @@ const { t } = S;
     const id = await sent(ua, '127.0.0.2', 24723, 'first real message');
     await status(ua, id, 'delivered');
     await ub.wait((m) => m.type === 'chat.recv' && m.msg.from === 'them' && m.msg.text === 'first real message');
-    const a = contactOf(await ua.state(), '127.0.0.2'), b = contactOf(await ub.state(), '127.0.0.1');
+    const a = contactOf(await ua.state(), '127.0.0.2'), b = contactOf(await ub.state(), A_AT_B);
     assert.strictEqual(a.established, true, 'acked: established');
     assert.strictEqual(a.online, true);
     assert.strictEqual(b.established, true, 'received: established');

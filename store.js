@@ -33,10 +33,13 @@ const unb64 = (s) => Buffer.from(String(s || ''), 'base64');
 const b64url = (b) => Buffer.from(b).toString('base64url');
 
 /* ---- raw X25519 helpers ---- */
+// From random bytes, not generateKeyPairSync, which can deadlock on Node 18
+// when its key is exported (see freshX25519 in noise.js).
 function keypair() {
-  const { privateKey, publicKey } = crypto.generateKeyPairSync('x25519');
-  const jwk = privateKey.export({ format: 'jwk' });
-  return { priv: Buffer.from(jwk.d, 'base64url'), pub: Buffer.from(jwk.x, 'base64url') };
+  const priv = crypto.randomBytes(32);
+  priv[0] &= 248; priv[31] &= 127; priv[31] |= 64;
+  const jwk = crypto.createPublicKey(privKeyObj(priv)).export({ format: 'jwk' });
+  return { priv, pub: Buffer.from(jwk.x, 'base64url') };
 }
 const pubKeyObj = (pub) => crypto.createPublicKey({ key: { kty: 'OKP', crv: 'X25519', x: b64url(pub) }, format: 'jwk' });
 function privKeyObj(priv) {

@@ -1,9 +1,9 @@
 # CI: syntax, conventions and tests on every push and pull request, plus the
 # two installers built and exercised against tests/mock-node.js.
 # NodeSignal has no npm dependencies, so there is no install step; the only
-# packages fetched are postject (by npx) and, for the Windows executable's
-# version resource and icon, resedit with pe-library (by npm), all pinned and
-# all at build time only.
+# packages fetched are postject with commander and, for the Windows
+# executable's version resource and icon, resedit with pe-library, all by npm
+# at exact versions with install scripts off, and all at build time only.
 name: CI
 
 on:

@@ -1,0 +1,15 @@
+# Watches for an update the NodeSignal console asked for. The daemon (user
+# nodesignal) can only download and check a release and write a request
+# file; installing needs root, so this path unit starts
+# nodesignal-update.service, which checks everything again itself before it
+# installs anything. Installed by the nodesignal .deb.
+[Unit]
+Description=NodeSignal: watch for an update request from the console
+Documentation=https://github.com/Connor-03/NodeSignal
+
+[Path]
+PathChanged=/var/lib/nodesignal/updates/request.json
+Unit=nodesignal-update.service
+
+[Install]
+WantedBy=multi-user.target

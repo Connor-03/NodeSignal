@@ -7,6 +7,7 @@ if [ -d /run/systemd/system ]; then
     remove|deconfigure)
       systemctl stop nodesignal.service >/dev/null 2>&1 || true
       systemctl disable nodesignal.service >/dev/null 2>&1 || true
+      systemctl disable --now nodesignal-update.path >/dev/null 2>&1 || true
       ;;
     upgrade)
       systemctl stop nodesignal.service >/dev/null 2>&1 || true

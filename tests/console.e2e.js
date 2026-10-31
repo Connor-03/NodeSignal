@@ -16,7 +16,7 @@ const ROOT = path.join(__dirname, '..');
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ns-e2e-'));
 const kids = [];
 const daemon = (name, args) => {
-  const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--nick', name, '--data', path.join(tmp, name), ...args],
+  const c = spawn(process.execPath, [path.join(ROOT, 'nodesignald.js'), '--onion', 'off', '--no-update-check', '--nick', name, '--data', path.join(tmp, name), ...args],
     { stdio: ['ignore', 'pipe', 'pipe'] });
   c.log = ''; c.stdout.on('data', (d) => (c.log += d)); c.stderr.on('data', (d) => (c.log += d));
   kids.push(c); return c;
@@ -75,7 +75,8 @@ const t = async (name, fn) => { try { await fn(); console.log('  ok   ' + name);
   await t('no page errors', async () => assert.deepStrictEqual(errs, []));
 
   await b.close(); rpc.close(); p2p.close();
-  for (const k of kids) { try { k.kill(); } catch { } }
+  // wait for each daemon to save and exit before its folder is removed
+  await Promise.all([...kids].map((k) => new Promise((r) => { if (k.exitCode != null || k.signalCode != null) return r(); k.once('exit', r); try { k.kill(); } catch { r(); } })));
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log(failed ? `\n${failed} failed` : '\nall passed');
   process.exit(failed ? 1 : 0);
