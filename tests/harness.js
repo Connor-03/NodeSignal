@@ -25,7 +25,14 @@ function suite(prefix) {
   const TMP = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   const kids = new Set();
   let failed = 0, passed = 0;
+  let current = '(between tests)';
+  process.once('SIGTERM', () => {
+    console.log(`\n  STOPPED from outside while running: ${current}`);
+    for (const k of kids) { console.log(`--- ${k.name} (last 30 lines)\n` + k.log.split('\n').slice(-30).join('\n')); try { process.kill(k.pid, 'SIGKILL'); } catch { } }
+    process.exit(1);
+  });
   const t = async (name, fn) => {
+    current = name;
     try { await fn(); passed++; console.log('  ok   ' + name); }
     catch (e) {
       failed++;
@@ -61,18 +68,33 @@ function suite(prefix) {
   }
   return { TMP, kids, t, daemon, finish, abort };
 }
-// By PID, through the child handle: never pkill -f.
-const stop = (c) => new Promise((r) => { if (c.exitCode != null || c.signalCode != null) return r(); c.once('exit', r); c.kill('SIGTERM'); });
+// By PID, through the child handle: never pkill -f. A daemon that ignores
+// SIGTERM for 5 s is killed, so a suite can never wait on one forever.
+const stop = (c) => new Promise((r) => {
+  if (c.exitCode != null || c.signalCode != null) return r();
+  const hard = setTimeout(() => { try { c.kill('SIGKILL'); } catch { } }, 5000);
+  c.once('exit', () => { clearTimeout(hard); r(); });
+  c.kill('SIGTERM');
+});
 
 /* ---- HTTP: the console only answers as 127.0.0.1:<port> or localhost:<port> ---- */
+// Always settles within 5 s. The socket timeout alone is not enough: once
+// response headers have arrived, destroying the request no longer emits
+// 'error' on it, and the response swallows its own error when nobody
+// listens, so a reply cut off mid-body would leave the promise pending.
 function get(port, p, { host } = {}) {
   return new Promise((resolve, reject) => {
+    let done = false;
+    const settle = (fn, v) => { if (!done) { done = true; clearTimeout(hard); fn(v); } };
     const r = http.request({ host: '127.0.0.1', port, path: p, method: 'GET', setHost: false,
       headers: { Host: host || `127.0.0.1:${port}` }, timeout: 3000 }, (res) => {
       const chunks = []; res.on('data', (d) => chunks.push(d));
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
+      res.on('end', () => settle(resolve, { status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
+      res.on('error', (e) => settle(reject, e));
+      res.on('close', () => settle(reject, new Error('response cut off')));
     });
-    r.on('error', reject); r.on('timeout', () => r.destroy(new Error('timeout'))); r.end();
+    const hard = setTimeout(() => { r.destroy(); settle(reject, new Error('no answer in 5 s')); }, 5000);
+    r.on('error', (e) => settle(reject, e)); r.on('timeout', () => r.destroy(new Error('timeout'))); r.end();
   });
 }
 async function health(c) {
