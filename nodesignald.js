@@ -423,7 +423,7 @@ function rpcAuth() {
     if (conf.rpcport) rpcDiag.port = conf.rpcport;
     if (conf.rpcuser && conf.rpcpassword) {
       tried[tried.length - 1].result = 'rpcuser/rpcpassword';
-      rpcDiag.source = 'rpcuser/rpcpassword in ' + cp; rpcDiag.tried = tried;
+      rpcDiag.source = 'rpcuser/rpcpassword from --rpc-conf'; rpcDiag.tried = tried;
       return conf.rpcuser + ':' + conf.rpcpassword;
     }
   }
@@ -1930,8 +1930,15 @@ const ALLOWED_HOSTS = new Set([`localhost:${CFG.webPort}`, `127.0.0.1:${CFG.webP
 const ALLOWED_ORIGINS = new Set([`http://localhost:${CFG.webPort}`, `http://127.0.0.1:${CFG.webPort}`]);
 const hostOk = (req) => ALLOWED_HOSTS.has(String(req.headers.host || '').toLowerCase());
 const originOk = (req) => req.headers.origin === undefined || ALLOWED_ORIGINS.has(String(req.headers.origin).toLowerCase());
+// The console is one self-contained page (its fonts included), so the policy
+// lets it reach nothing but this daemon: if a peer's text ever slipped past
+// esc(), the injected code could not load more code or send anything away.
+// Inline script stays allowed because the page is one file with onclick handlers.
+const CSP = ["default-src 'none'", "script-src 'unsafe-inline'", "style-src 'unsafe-inline'", 'font-src data:', 'img-src data:',
+  `connect-src 'self' ws://localhost:${CFG.webPort} ws://127.0.0.1:${CFG.webPort}`, "base-uri 'none'", "form-action 'self'",
+  "frame-ancestors 'none'"].join('; ');
 const SECURITY_HEADERS = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer',
-  'X-Frame-Options': 'DENY', 'Content-Security-Policy': "frame-ancestors 'none'" };
+  'X-Frame-Options': 'DENY', 'Content-Security-Policy': CSP };
 function sendConsole(res, file) {
   // The token goes into the served page only: never a URL, a cookie or a log.
   const meta = `<meta name="ns-action-token" content="${ACTION_TOKEN}">\n<meta name="ns-instance" content="${INSTANCE}">\n`;
@@ -1957,14 +1964,14 @@ async function handleRequest(req, res) {
 
   if (pathname === '/login') {
     if (!AUTH_ON) return redirect(res, '/');
-    if (method === 'GET') return W.sendHtml(res, LOGIN_PAGE.replace('__ERR__', ''));
+    if (method === 'GET') return W.sendHtml(res, LOGIN_PAGE.replace('__ERR__', ''), 200, SECURITY_HEADERS);
     if (method === 'POST') {
       const body = await W.readForm(req);
       if (timingSafeEq(body.token || '', CFG.webToken)) {
         return redirect2(res, '/',
           `ns_session=${newSession()}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_MS / 1000)}`);
       }
-      return W.sendHtml(res, LOGIN_PAGE.replace('__ERR__', 'wrong token'), 401);
+      return W.sendHtml(res, LOGIN_PAGE.replace('__ERR__', 'wrong token'), 401, SECURITY_HEADERS);
     }
   }
   if (pathname === '/logout' && method === 'POST') {

@@ -13,7 +13,8 @@
     "qr.js",
     "torcontrol.js",
     "updater.js",
-    "release-keys.json"
+    "release-keys.json",
+    "LICENSE-fonts.txt"
   ],
   "tools": [
     "setup-core.js",

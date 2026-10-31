@@ -111,6 +111,8 @@ install -m 0644 "$HERE/nodesignal-update.service" "$PKG/lib/systemd/system/nodes
   echo ""
   echo "The bundled Node.js runtime (/opt/nodesignal/node) is distributed under"
   echo "its own license, included as /opt/nodesignal/node-LICENSE."
+  echo ""
+  cat "$SRC/LICENSE-fonts.txt"
 } > "$PKG/usr/share/doc/nodesignal/copyright"
 chmod 0644 "$PKG/usr/share/doc/nodesignal/copyright"
 

@@ -3,7 +3,9 @@
 // scene with ?mode= : ok (default) | locked (history passphrase not yet typed)
 // | norpc | slow (connecting) | down (never
 // connects) | drop (connects, then loses the daemon; set window.__allow=true
-// to let it reconnect). Add &calm=1 to leave out osprey's pending key change
+// to let it reconnect) | hostile (every string a peer, a node or a release
+// note could choose ends in quotes and markup that would count a hit in
+// window.__xss if it ever ran; tests/console-hostile.e2e.js uses it). Add &calm=1 to leave out osprey's pending key change
 // (and so the red security banner) in scenes that are about something else.
 // All addresses are documentation ranges and all fingerprints are made up,
 // so the images are safe to publish.
@@ -55,7 +57,7 @@ const ROOMS=[{room:'4f1c2a9e7b3d5a60c8e2f1a9b7d3c5e1',name:'relay policy',creato
     {id:'r3',a:ME_SK,nick:'Alpha',ts:m(25),text:'Same, Knots 29.1. I will post my settings tonight.',mine:true}]}];
 const INTROS=[{fp:'b3a9c1e7d2f04a6895c3e1b7a2d9f0c4',nick:'mempool-watcher',host:'watcherexampleonionaddressforscreenshotsxxxxxxxxxxxxxx.onion',port:8788,via:['kiwi-relay'],at:m(12)},
   {fp:'0c2d4e6f8a1b3c5d7e9f0a2b4c6d8e1f',nick:'node-in-a-closet',host:'198.51.100.140',port:8788,via:['kiwi-relay','osprey'],at:m(90)}];
-const STATE=()=>({type:'state',daemon:{nick:'Alpha',ua:'/NodeSignal:1.4/',peerPort:8788,webPort:8789,proto:3,fingerprint:'54f42d4a9a31820cb0e17f3a62d9c855',secure:true,
+let STATE=()=>({type:'state',daemon:{nick:'Alpha',ua:'/NodeSignal:1.4/',peerPort:8788,webPort:8789,proto:3,fingerprint:'54f42d4a9a31820cb0e17f3a62d9c855',secure:true,
     vault:{set:true,unlocked:!locked},portMapping:null,
     onion:ONION,onionMode:'auto',tor:{state:'up',onion:ONION,via:'/run/tor/control'},reach:{host:ONION,port:8788},
     share:'nodesignal:'+ONION+'?port=8788&fp=54f42d4a9a31820cb0e17f3a62d9c855&nick=Alpha',
@@ -66,6 +68,29 @@ const STATE=()=>({type:'state',daemon:{nick:'Alpha',ua:'/NodeSignal:1.4/',peerPo
   node:MODE==='norpc'?{self:null,peers:[],error:'connect ECONNREFUSED 127.0.0.1:8332'}:{self,peers},
   contacts:MODE==='norpc'?[]:[kiwi,ember,quiet,osprey],
   feed:FEED,follows:[KIWI_SK,FAN_SK],rooms:ROOMS,introductions:INTROS});
+// mode=hostile: append quotes and markup to everything someone else chose.
+// Identity keys (host of a contact, ids, fingerprints) are left alone so the
+// page can still find things; the daemon validates those to a fixed charset.
+const EVIL=`'"><img src=x onerror="window.__xss=(window.__xss||0)+1"><b x='`;
+const PEER_TEXT=new Set(['nick','text','error','heldAt','via','name','notes','ua','version','impl','declared','supports','services','how','title']);
+function taint(o,inside){
+  if(Array.isArray(o))return o.map((x)=>typeof x==='string'?(inside?x+EVIL:x):taint(x,inside));
+  if(!o||typeof o!=='object')return o;
+  const out={};
+  for(const [k,v] of Object.entries(o)){
+    const hit=PEER_TEXT.has(k)||(k==='host'&&inside==='member');
+    if(typeof v==='string')out[k]=hit?v+EVIL:v;
+    else if(Array.isArray(v)&&hit)out[k]=taint(v,true);
+    else out[k]=taint(v,k==='members'||k==='introductions'?'member':inside==='member'?'member':undefined);
+  }
+  return out;
+}
+if(MODE==='hostile'){
+  ember.msgs.push({id:'b2',from:'me',ts:m(2),text:'waiting at a mailbox',status:'held',heldAt:'mailbox-operator'},
+    {id:'b3',from:'me',ts:m(1),text:'gave up',status:'failed',error:'refused'});
+  const base=STATE;
+  STATE=()=>{const st=taint(base());st.type='state';st.daemon.tor.error='tor said no';st.daemon.tor=taint(st.daemon.tor,true);return st;};
+}
 class FakeWS{
   constructor(){this.readyState=0;window.__ws=this;
     if(MODE==='drop'){window.__n=(window.__n||0)+1;

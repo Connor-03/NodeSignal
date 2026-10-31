@@ -116,6 +116,18 @@ let d;
     assert(!(await req()).body.includes(token), 'token not in /health');
   });
 
+  await t('the console page may reach nothing but this daemon (Content-Security-Policy), and asks no other server for fonts', async () => {
+    const r = await req({ path: '/' });
+    const csp = Object.fromEntries(String(r.headers['content-security-policy']).split(';').map((x) => x.trim().split(/\s+/)).map(([k, ...v]) => [k, v]));
+    assert.deepStrictEqual(csp['default-src'], ["'none'"]);
+    assert.deepStrictEqual(csp['connect-src'], ["'self'", `ws://localhost:${WEB}`, `ws://127.0.0.1:${WEB}`]);
+    assert.deepStrictEqual(csp['font-src'], ['data:']);
+    assert.deepStrictEqual(csp['img-src'], ['data:']);
+    assert.deepStrictEqual(csp['frame-ancestors'], ["'none'"]);
+    assert(!/https?:\/\/(?!localhost|127\.0\.0\.1|www\.w3\.org)[a-z]/i.test(r.body.replace(/https:\/\/github\.com\/Connor-03\/NodeSignal[^"'<\s]*/g, '')),
+      'the page names no outside server except the project page');
+  });
+
   if (typeof WebSocket === 'undefined') console.log('  skip WebSocket token checks: needs Node 22+');
   else {
     await t('state-changing actions without the token are refused; reads still work', async () => {
