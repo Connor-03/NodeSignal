@@ -69,5 +69,8 @@ Optional, both off by default (run on this machine):
                                     NAT-PMP); exposes your node's IP on clearnet
 
 Other commands: nodesignal status | nodesignal open | nodesignal logs
+
+Want your own AI agent (Claude Code, Codex, Goose...) to check NodeSignal and
+finish the setup? Run: nodesignal agent-brief   (it says what the agent can see)
 MSG
 exit 0

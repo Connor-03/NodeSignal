@@ -13,11 +13,13 @@ RPC methods.
 
 ### Before you upgrade
 
-- **This is the last update you install by hand.** From 1.4 on, NodeSignal
-  tells you in the console when a newer version is out and can install it
-  for you, but only a release signed with the NodeSignal release key built
-  into your copy (see Updates below). 1.3 has no updater, so 1.4 itself is
-  installed the usual way.
+- **Install 1.4.0 by hand, and the next release too.** From 1.4 on,
+  NodeSignal tells you in the console when a newer version is out and can
+  install it for you, but only a release signed with a NodeSignal release key
+  built into your copy (see Updates below). 1.3 has no updater, and 1.4.0
+  ships with no release key yet, so it announces the next release without
+  installing it. Once a release carries the key, the ones after it install
+  from the console.
 - **Linux: NodeSignal joins the debian-tor group when Tor is installed**, so
   it can ask Tor for its own onion address. That lets it control the local
   Tor. Turn the onion off with `sudo nodesignal onion off` (Linux, on the
@@ -100,6 +102,27 @@ RPC methods.
   "Press Enter". Errors (no node found, started as administrator) get a red
   panel. Without a terminal, or with NO_COLOR set, the output is plain text
   with the same words.
+
+### Check it with your own AI agent
+
+- If you would rather not take NodeSignal on trust, hand the setup to an AI
+  coding agent you choose (Claude Code, Codex, or an open-source one).
+  `docs/AGENT-SETUP.md` tells it how to run the tests, read the code and the
+  self-audit, verify the download, install, finish setup and report, and
+  lists what NodeSignal does on purpose so it is not mistaken for something
+  hidden. The Windows installer offers this first and writes
+  `NodeSignal-agent-brief.txt` beside itself; elsewhere,
+  `nodesignal agent-brief` prints the brief with this machine's details.
+- Both say plainly, before anything else, that the agent **will** be able to
+  read NodeSignal's secrets (the RPC password, the console token, the
+  identity, signing and onion keys, and unlocked history), and that a cloud
+  agent sends what it reads to its provider.
+- `nodesignal rpc-access rotate` makes a new RPC password for NodeSignal's
+  own login (restart bitcoind afterwards), for when someone else may have
+  read the old one. `nodesignal web-token new` already did this for the
+  console token.
+- The .deb now carries `md5sums`, so `dpkg -V nodesignal` can check the
+  installed files.
 
 ### Fixes
 

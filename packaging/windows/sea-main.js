@@ -807,6 +807,52 @@ async function performInstall(L, answers, opts) {
   return { cfg, ports, url, health, launcher, launcherWorked };
 }
 
+function onPath(name) {
+  try {
+    const r = spawnSync(IS_WIN ? 'where.exe' : 'which', [name], { encoding: 'utf8', timeout: 5000, windowsHide: true });
+    return r.status === 0 ? r.stdout.split(/\r?\n/)[0].trim() : null;
+  } catch { return null; }
+}
+async function offerAgent(L, P) {
+  say('');
+  note('Prefer to have your own AI agent (Claude Code, Codex, or an open-source one');
+  note('such as Goose or Aider) check NodeSignal independently and do this setup for you?');
+  if (!(await P.askYesNo('Hand the setup to your agent instead', false))) return false;
+  const cli = loadAssetModule('cli.js');
+  await panel('action', 'Your agent will be able to see NodeSignal\'s secrets', [cli.AGENT_WARNING.slice(1, -1).join(' '), cli.AGENT_WARNING[cli.AGENT_WARNING.length - 1].trim()]);
+  if (!(await P.askYesNo('Go ahead with your agent', true))) return false;
+  // beside the installer (the Downloads folder, normally), else the home folder
+  const brief = cli.agentBrief({ version: VERSION, cfgPath: L.config, cfg: {} }, { installer: IN_SEA ? process.execPath : __filename });
+  let file = null;
+  for (const dir of [IN_SEA ? path.dirname(process.execPath) : process.cwd(), os.homedir()]) {
+    try { file = path.join(dir, 'NodeSignal-agent-brief.txt'); fs.writeFileSync(file, brief); break; } catch { file = null; }
+  }
+  if (!file) { warn('Could not write the brief anywhere; run "nodesignal agent-brief" after installing instead.'); return false; }
+  ok('Brief for your agent', file);
+  const agents = [['claude', 'Claude Code'], ['codex', 'Codex']].map(([bin, name]) => ({ bin, name, path: onPath(bin) })).filter((a) => a.path);
+  const prompt = `Read ${file} and do what it says`;
+  // A path with characters cmd.exe would interpret is never put on a command line.
+  const safe = !/[%^"!&|<>]/.test(file);
+  for (const a of safe ? agents : []) {
+    if (!(await P.askYesNo(`Start ${a.name} with it now`, true))) continue;
+    // its own window, in the installer's folder, so it can read and run it
+    if (IS_WIN) spawn('cmd.exe', ['/d', '/c', `start "NodeSignal check" /D "${path.dirname(file)}" cmd /k ${a.bin} "${prompt}"`],
+      { detached: true, stdio: 'ignore', windowsVerbatimArguments: true }).unref();
+    else spawn(a.bin, [prompt], { cwd: path.dirname(file), detached: true, stdio: 'ignore' }).unref();
+    ok(`${a.name} started`, 'in its own window. This window can close.');
+    say('');
+    await P.pause();
+    return true;
+  }
+  note('Give the brief to your agent, for example:');
+  note(`  claude "${prompt}"`);
+  note(`  codex "${prompt}"`);
+  note('or paste the file into any other agent. Nothing was installed yet: your agent runs');
+  note('this installer itself once it has checked NodeSignal.');
+  say('');
+  await P.pause();
+  return true;
+}
 async function refuseNoNode() {
   await panel('error', 'No Bitcoin node found on this computer', [
     'NodeSignal runs beside a Bitcoin node, and none was found.',
@@ -837,6 +883,10 @@ async function cmdInstall(L) {
     await P.pause(); P.close();
     return 1;
   }
+
+  // Optional: hand the whole job to the operator's own AI agent, which checks
+  // NodeSignal independently and then runs this installer itself.
+  if (P.tty && await offerAgent(L, P)) { P.close(); return 0; }
 
   section(1, 'Your Bitcoin node');
   const look = spinner('Looking for your Bitcoin node...');

@@ -116,6 +116,9 @@ chmod 0644 "$PKG/usr/share/doc/nodesignal/copyright"
 
 for s in preinst postinst prerm postrm; do install -m 0755 "$HERE/$s" "$PKG/DEBIAN/$s"; done
 
+# md5sums, so "dpkg -V nodesignal" can show whether installed files changed
+( cd "$PKG" && find . -type f ! -path './DEBIAN/*' -printf '%P\0' | LC_ALL=C sort -z | xargs -0 md5sum ) > "$PKG/DEBIAN/md5sums"
+chmod 0644 "$PKG/DEBIAN/md5sums"
 INSTALLED_KB="$(du -sk --exclude=DEBIAN "$PKG" | cut -f1)"
 cat > "$PKG/DEBIAN/control" <<CTRL
 Package: nodesignal

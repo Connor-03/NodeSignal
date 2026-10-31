@@ -99,6 +99,21 @@ Details, troubleshooting and installing from source: `WindowsInstallGuide.txt`,
 
 Tor (recommended for privacy): `TorSetupGuide.txt`.
 
+### Install with your own AI agent
+
+If you would rather have an AI coding agent of your choice (Claude Code, Codex,
+or an open-source one such as Goose or Aider) check NodeSignal and set it up,
+`docs/AGENT-SETUP.md` is written for it: run the tests, read the code and the
+self-audit, verify the download, install, and report back. On Windows the
+installer offers this as its first question; on Linux run
+`nodesignal agent-brief` (on the node) for a brief with this machine's details.
+
+Be aware that the agent runs commands as you (and with `sudo` on Linux), so it
+**will** be able to read NodeSignal's secrets: the RPC password it uses with
+your node, the console login token, your identity keys and your history unless
+a passphrase locks it. A cloud agent sends what it reads to its provider. The
+guide explains this and how to replace the token and RPC password afterwards.
+
 ## Files
 
 | File | Purpose |
@@ -157,6 +172,7 @@ contacts, who will see a fingerprint mismatch.
 | `CHANGELOG.md` | what changed in each release |
 | `RELEASING.md` | how a release is built, dry-run and published |
 | `Troubleshooting.txt` | when something does not work |
+| `docs/AGENT-SETUP.md` | for an AI agent you ask to check and install NodeSignal |
 
 ## Honest limitations
 

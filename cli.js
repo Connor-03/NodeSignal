@@ -8,7 +8,8 @@
 //   nodesignal logs                   where the log is and how to follow it
 //   nodesignal uninstall              Windows; on Linux use apt
 //   nodesignal version
-//   nodesignal rpc-access show|add|remove   NodeSignal's rpcauth in bitcoin.conf
+//   nodesignal rpc-access show|add|remove|rotate   NodeSignal's rpcauth in bitcoin.conf
+//   nodesignal agent-brief            a brief for an AI agent the operator asks to check NodeSignal
 //   nodesignal setup                  Linux, root: used by the .deb postinst
 //
 // Options: --config <file>  (default: /etc/nodesignal/config.json on Linux,
@@ -34,7 +35,7 @@ function optValue(argv, name) {
 function positional(argv) {
   const out = [];
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith('--')) { if (['--config', '--root', '--wait', '--bitcoin-conf', '--nick', '--migrate-unit'].includes(argv[i])) i++; continue; }
+    if (argv[i].startsWith('--')) { if (['--config', '--root', '--wait', '--bitcoin-conf', '--nick', '--migrate-unit', '--file'].includes(argv[i])) i++; continue; }
     out.push(argv[i]);
   }
   return out;
@@ -485,6 +486,67 @@ async function installVerifiedDeb(ctx, dir, version, asset) {
   return 0;
 }
 
+/* ------------------------------------------------------------ agent-brief
+   A paste-ready brief for an AI coding agent (Claude Code, Codex, Goose,
+   Aider...) that the operator asks to check NodeSignal and finish setting it
+   up: this machine's paths and versions, docs/AGENT-SETUP.md for the rest,
+   and a plain warning about what the agent will be able to read. It never
+   includes a secret. */
+function agentBrief(ctx, { installer = null } = {}) {
+  const version = ctx.version || installedVersion();
+  const kind = installer ? `not yet: the installer is ${installer}; check it, then run it (answers can be piped, see the guide)`
+    : IS_WIN ? 'Windows (NodeSignal-Setup-windows-x64.exe)' : (__dirname === '/opt/nodesignal' ? 'Linux .deb package' : 'from source');
+  const prog = installer ? '(after install) ' + path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'NodeSignal', 'app')
+    : IS_WIN ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'NodeSignal', 'app') : __dirname;
+  const tag = /^\d+\.\d+\.\d+/.test(version) ? 'v' + version : 'main';
+  const cmd = IS_WIN ? '& "$env:LOCALAPPDATA\\NodeSignal\\nodesignal.exe"' : 'sudo nodesignal';
+  return [
+    'Please check NodeSignal on this machine and finish setting it up, as an independent reviewer.',
+    `Follow https://github.com/Connor-03/NodeSignal/blob/${tag}/docs/AGENT-SETUP.md ("For the agent").`,
+    '',
+    'This machine:',
+    `- NodeSignal ${version}, installed: ${kind}`,
+    `- program files: ${prog}`,
+    `- config file: ${ctx.cfgPath} (holds secrets: do not open or print it)`,
+    `- state directory: ${stateDir(ctx)} (identity keys and history: do not open it)`,
+    `- operating system: ${os.type()} ${os.release()} (${process.arch})`,
+    `- status: run "nodesignal status"; the release to compare with is tag ${tag}`,
+    '',
+    'Rules: never print or upload NodeSignal\'s config, state.json, backups or bitcoin.conf passwords; ask before restarting',
+    'bitcoind, changing a firewall, installing anything besides NodeSignal and Tor, or turning on anything that is off by',
+    'default. Report what you checked, what passed, every problem with evidence, and what you could not check.',
+  ].join('\n') + '\n';
+}
+const SECRETS_CMD = IS_WIN ? 'nodesignal.exe' : 'sudo nodesignal';
+const AGENT_WARNING = [
+  'Before you hand this to an agent: it will be able to see NodeSignal\'s secrets.',
+  'It runs commands with your permissions' + (IS_WIN ? '' : ' (and sudo)') + ', so it can read the RPC password NodeSignal',
+  'uses with your node, the console login token, your NodeSignal identity, signing and onion keys,',
+  'and your message history unless a passphrase locks it. The brief tells it not to, and it does',
+  'not need to, but it can. A cloud agent (Claude Code, Codex) sends whatever it reads to its',
+  'provider; an open-source agent with a local model keeps it on this machine. With sudo it can',
+  'read everything else here too, your node\'s files included. Afterwards, if you like:',
+  `  ${SECRETS_CMD} web-token new    and    ${SECRETS_CMD} rpc-access rotate   (then restart bitcoind)`,
+];
+async function cmdAgentBrief(ctx) {
+  const file = optValue(ctx.argv, 'file');
+  const text = agentBrief(ctx);
+  for (const l of AGENT_WARNING) say(l);
+  say('');
+  if (file) {
+    fs.writeFileSync(file, text, { mode: 0o600 });
+    say(`Wrote the brief to ${file}. Give it to your agent, for example:`);
+    say(`  claude "Read ${file} and do what it says"`);
+    say(`  codex "Read ${file} and do what it says"`);
+    return 0;
+  }
+  say('Paste this into your agent (Claude Code, Codex, Goose, Aider, ...):');
+  say('------------------------------------------------------------------------');
+  process.stdout.write(text);
+  say('------------------------------------------------------------------------');
+  return 0;
+}
+
 /* ------------------------------------------------------------ open / logs */
 async function cmdOpen(ctx) {
   const url = ctx.core.webUrl(ctx.cfg);
@@ -685,11 +747,11 @@ function removeOldDropIn(P) {
 }
 
 /* ------------------------------------------------------------ rpc-access
-   show | add | remove: NodeSignal's rpcauth + rpcwhitelist block in
+   show | add | remove | rotate: NodeSignal's rpcauth + rpcwhitelist block in
    bitcoin.conf. The password is never printed. */
 async function cmdRpcAccess(ctx, sub) {
   const { core, cfgPath, cfgError } = ctx;
-  if (!['show', 'add', 'remove'].includes(sub)) { say('usage: nodesignal rpc-access show|add|remove [--bitcoin-conf <file>]'); return 2; }
+  if (!['show', 'add', 'remove', 'rotate'].includes(sub)) { say('usage: nodesignal rpc-access show|add|remove|rotate [--bitcoin-conf <file>]'); return 2; }
   let confPath = optValue(ctx.argv, 'bitcoin-conf') || core.readRpcRecord(cfgPath);
   let det = null;
   if (!confPath) { det = await core.detectBitcoinNode(); confPath = core.nodeConfPath(det); }
@@ -720,9 +782,11 @@ async function cmdRpcAccess(ctx, sub) {
     say('Restart your Bitcoin node for this to take effect. NodeSignal does not do it for you.');
     return 0;
   }
-  // add
+  // add, or rotate: a new random password (and so a new rpcauth hash), for
+  // example after someone else (an AI agent, a helper) could read the config
   if (cfgError) { say(`Cannot read ${cfgPath}: ${cfgError}.`); if (cfgError === 'permission denied') say(sudo); return 1; }
   const cfg = Object.assign({}, ctx.cfg);
+  if (sub === 'rotate') { delete cfg['rpc-pass']; say('Making a new password for NodeSignal\'s RPC login.'); }
   if (!det) det = await core.detectBitcoinNode();
   let access;
   try {
@@ -816,15 +880,16 @@ usage: nodesignal <command> [--config <file>]
   status               is the daemon up, is the Bitcoin node connected
   advertise on|off     add/remove uacomment=nodesignal in bitcoin.conf (public)
   port-mapping on|off  ask the router to forward the peer port (exposes your IP)
-  rpc-access show|add|remove
+  rpc-access show|add|remove|rotate
                        NodeSignal's own RPC login (rpcauth + rpcwhitelist) in
-                       bitcoin.conf; restart the node after add or remove
+                       bitcoin.conf; restart the node after add, remove or rotate
   open [--browser]     open NodeSignal (on Windows: its own window; --browser
                        for a normal browser tab) and print its address
   onion [show|on|off]  NodeSignal's own Tor onion address (automatic when Tor runs here)
   same-onion           how to serve your node and NodeSignal on one onion (proves you run it)
   updates on|off       the daily check for a newer version (on by default)
   update [install]     check for a newer version now; install it (Linux, sudo)
+  agent-brief [--file f]  a brief for your own AI agent to check NodeSignal and finish setup
   backup <file>        write a passphrase-protected backup of your identity and contacts
   restore <file>       put a backup's identity on this machine (keeps the history here)
   web-token [show|new|off]
@@ -864,6 +929,7 @@ async function main(argv = process.argv.slice(2), deps = {}) {
     case 'update': return cmdUpdate(ctx, pos[1]);
     case 'update-apply': return cmdUpdateApply(ctx);
     case 'backup': return cmdBackup(ctx, pos[1]);
+    case 'agent-brief': return cmdAgentBrief(ctx);
     case 'restore': return cmdRestore(ctx, pos[1]);
     case 'rpc-check': {
       const det = await core.detectBitcoinNode();
@@ -889,7 +955,7 @@ function readVersion(core) {
   return core.VERSION_FALLBACK;
 }
 
-module.exports = { main, cmdSetup };
+module.exports = { main, cmdSetup, agentBrief, AGENT_WARNING };
 
 if (require.main === module) {
   main().then((code) => process.exit(code || 0), (e) => { console.error('nodesignal: ' + (e && e.message ? e.message : e)); process.exit(1); });

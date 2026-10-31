@@ -400,6 +400,40 @@ t('cli setup on a fresh machine writes a new config', async () => {
   assert(fs.statSync(path.join(r, 'var/lib/nodesignal')).isDirectory());
 });
 
+t('agent-brief warns about secrets and never contains one; rpc-access rotate makes a new password', async () => {
+  const { r } = fakeRoot('agent', { conf: 'server=1\n' });
+  const setup = spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), 'setup', '--root', r, '--nick', 'brief'], { encoding: 'utf8', timeout: 30000 });
+  assert.strictEqual(setup.status, 0, setup.stdout + setup.stderr);
+  const cfgFile = path.join(r, 'etc/nodesignal/config.json');
+  const confFile = path.join(r, 'home/alice/.bitcoin/bitcoin.conf');
+  const cfg = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  const cli = (...a) => spawnSync(process.execPath, [path.join(ROOT, 'cli.js'), ...a, '--config', cfgFile], { encoding: 'utf8', timeout: 30000 });
+  const out = cli('agent-brief');
+  assert.strictEqual(out.status, 0, out.stdout + out.stderr);
+  assert(/will be able to see NodeSignal's secrets/.test(out.stdout), 'the warning comes first');
+  assert(/RPC password/.test(out.stdout) && /identity, signing and onion keys/.test(out.stdout) && /sends whatever it reads to its/.test(out.stdout));
+  assert(/docs\/AGENT-SETUP\.md/.test(out.stdout) && /do not open or print it/.test(out.stdout));
+  for (const secret of [cfg['rpc-pass'], cfg['web-token']]) assert(!out.stdout.includes(secret), 'no secret in the brief');
+  const file = path.join(r, 'brief.txt');
+  const toFile = cli('agent-brief', '--file', file);
+  assert.strictEqual(toFile.status, 0, toFile.stdout + toFile.stderr);
+  const brief = fs.readFileSync(file, 'utf8');
+  assert(brief.startsWith('Please check NodeSignal'), brief);
+  assert(!brief.includes(cfg['rpc-pass']) && !brief.includes(cfg['web-token']));
+  if (process.platform !== 'win32') assert.strictEqual(fs.statSync(file).mode & 0o777, 0o600);
+  // rotate: a new password in the config and a matching rpcauth hash, the old one no longer works
+  const rot = cli('rpc-access', 'rotate', '--bitcoin-conf', confFile);
+  assert.strictEqual(rot.status, 0, rot.stdout + rot.stderr);
+  const cfg2 = JSON.parse(fs.readFileSync(cfgFile, 'utf8'));
+  assert(cfg2['rpc-pass'] && cfg2['rpc-pass'] !== cfg['rpc-pass'], 'a new password');
+  assert(!rot.stdout.includes(cfg2['rpc-pass']), 'never printed');
+  const st = core.rpcAccessState(confFile);
+  assert(core.rpcAuthMatches(st.rpcauth, 'nodesignal', cfg2['rpc-pass']));
+  assert(!core.rpcAuthMatches(st.rpcauth, 'nodesignal', cfg['rpc-pass']));
+  assert(/restart/i.test(rot.stdout), 'tells the operator to restart the node');
+  assert.strictEqual(cfg2['web-token'], cfg['web-token'], 'rotate leaves everything else alone');
+});
+
 (async () => {
   for (const [name, fn] of tests) {
     try { await fn(); console.log('  ok   ' + name); }
