@@ -629,6 +629,19 @@ t('setup hands the state folder to nodesignal without following a link planted i
   assert.strictEqual(fs.statSync(tmp).uid, 0, 'so does a linked folder');
 });
 
+t('install.js hands paths to PowerShell through the environment, never inside the script text', () => {
+  // Root cause it guards: the Desktop shortcut script put the folder paths
+  // inside single-quoted PowerShell strings, so a quote in a folder name
+  // ended the string and the rest ran as code.
+  const src = fs.readFileSync(path.join(ROOT, 'install.js'), 'utf8');
+  const scripts = [...src.matchAll(/const ps = ([\s\S]*?);\n/g)].map((m) => m[1]);
+  assert(scripts.length >= 1 && /powershell/.test(src));
+  for (const s of scripts) {
+    assert(!/\$\{/.test(s), 'no value interpolated into the script: ' + s);
+    assert(/\$env:NS_/.test(s), 'values come from $env:NS_*');
+  }
+});
+
 t('purge (postrm) rewrites bitcoin.conf as its owner, and leaves a root-owned one in another account\'s folder alone', () => {
   if (!asRoot) return 'skip needs root (setpriv)';
   const block = `${core.RPC_BEGIN}\nrpcauth=nodesignal:00$${'0'.repeat(64)}\n${core.RPC_END}\n`;

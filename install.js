@@ -361,9 +361,13 @@ async function main() {
   if (IS_WIN && await askYesNo('Create a Desktop shortcut?', true)) {
     try {
       const desktop = path.join(os.homedir(), 'Desktop');
-      const ps = `$s=(New-Object -COM WScript.Shell).CreateShortcut('${path.join(desktop, 'NodeSignal.lnk')}');`
-        + `$s.TargetPath='${LAUNCHER}';$s.WorkingDirectory='${HERE}';$s.Description='NodeSignal';$s.Save()`;
-      execFileSync('powershell', ['-NoProfile', '-Command', ps], { stdio: 'ignore' });
+      // the paths reach PowerShell as environment variables, never inside the
+      // script text, so a quote in a folder name cannot end a string and run
+      // as code (as packaging/windows/sea-main.js does)
+      const ps = '$s=(New-Object -COM WScript.Shell).CreateShortcut($env:NS_LNK);'
+        + "$s.TargetPath=$env:NS_TARGET;$s.WorkingDirectory=$env:NS_DIR;$s.Description='NodeSignal';$s.Save()";
+      execFileSync('powershell', ['-NoProfile', '-Command', ps], { stdio: 'ignore',
+        env: Object.assign({}, process.env, { NS_LNK: path.join(desktop, 'NodeSignal.lnk'), NS_TARGET: LAUNCHER, NS_DIR: HERE }) });
       ok('Desktop shortcut created');
     } catch { warn('Could not create the shortcut.'); }
   }
