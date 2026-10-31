@@ -124,6 +124,30 @@ RPC methods.
 - The .deb now carries `md5sums`, so `dpkg -V nodesignal` can check the
   installed files.
 
+### Security fixes from a review before release
+
+Before 1.4.0 went out, four independent reviewers (AI agents told to attack
+it, each on one area: the peer protocol, the console, the root-run install
+and update paths, and the cryptography and parsers) went through the new
+code. What they found and what changed:
+
+- **Console: a mailbox operator could run script in your console.** A
+  message waiting at a contact's mailbox showed "held at <name>" with that
+  operator's chosen name not escaped, so a hostile name ran in the
+  console's page, which can act as you. Fixed, and a new test renders every
+  view with hostile text in every field a peer chooses.
+- **The console now loads nothing from the internet.** It used to fetch its
+  fonts from Google Fonts each time it opened; they are now inside the page
+  (`LICENSE-fonts.txt`). A Content-Security-Policy lets the page talk to
+  your daemon and nothing else, so even an escaping bug could not send
+  anything away.
+- **Tor: another account on the machine could pose as Tor** on TCP port
+  9051 while Tor was down and be handed NodeSignal's onion key. On Linux
+  NodeSignal now talks only to Tor's control socket unless you name a TCP
+  port yourself.
+- **The Windows build fetched a build tool's dependency by version range**,
+  with install scripts on. It is now pinned exactly, scripts off.
+
 ### Fixes
 
 - A peer that connected to your node through Tor shows on the map as

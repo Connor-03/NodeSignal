@@ -12,8 +12,14 @@ port forwarding. Linux, on the node:
 
 On Debian and Ubuntu, setup adds the nodesignal user to the debian-tor
 group so it can use Tor's control socket. That lets it control the local
-Tor; "sudo nodesignal onion off" declines it. Windows: run the Tor Expert
-Bundle with "ControlPort 9051" and "CookieAuthentication 1" in its torrc.
+Tor; "sudo nodesignal onion off" turns the onion off and takes nodesignal
+out of that group again. On Linux NodeSignal talks to Tor only through its
+control socket (/run/tor/control), which no other account can stand in
+for. To use a TCP control port instead, name it in NodeSignal's config
+("tor-control": "127.0.0.1:9051"), and only on a machine where no other
+account could open that port while Tor is down. Windows: run the Tor
+Expert Bundle with "ControlPort 9051" and "CookieAuthentication 1" in its
+torrc.
 The manual hidden service below still works (set "onion": "external" and
 "onion-address" in NodeSignal's config), and is how you serve your node
 and NodeSignal on one onion: see "nodesignal same-onion".

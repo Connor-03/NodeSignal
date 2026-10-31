@@ -172,16 +172,17 @@ From another computer: `ssh -L 8789:127.0.0.1:8789 <node>`.
 | `qr.js` | (1.4) QR encoder (checked against python-qrcode and ZXing) and SVG output, for contact links. |
 | `updater.js` + `release-keys.json` | (1.4) Update check against GitHub Releases, signed release manifests (Ed25519), verified downloads. `release-keys.json` lists the keys a copy trusts; `tools/release-key.js` and `tools/release-manifest.js` make and sign them. |
 | `nodeps.js` | Static file server + RFC 6455 WebSocket server, stdlib only. |
-| `nodesignal.html` | **Operator console.** Real data only. Goes on a node. |
+| `nodesignal.html` | **Operator console.** Real data only. Goes on a node. Self-contained: its fonts are embedded (licences in `LICENSE-fonts.txt`, shipped via `files.json`), and the daemon serves it with a Content-Security-Policy that allows no other server, so never add a CDN, web font or external script. |
 | `nodesignal-demo.html` | **Retired.** Removed from the tree in `2d479c6`; the maintainer considers it obsolete. Do not restore it. The demo-only rules below apply only if it ever returns. |
 | `packaging/` | One-download installers. `files.json` is THE list of program files (update it when adding a module). `build-sea.js` + `windows/sea-main.js` build `NodeSignal-Setup-windows-x64.exe` (Node SEA; `windows/win-resources.js` and `windows/make-icon.js` give it its version resource and icon at build time); `deb/` builds `nodesignal-linux-{amd64,arm64}.deb` with the official Node binary. Both require a Bitcoin node. |
 | `setup-core.js` + `cli.js` | Shared node detection / RPC check / config / uacomment and rpcauth editing, and the `nodesignal` command (status, advertise, port-mapping, rpc-access, setup). |
 | `.github/workflows/` | `ci.yml` (all tests, deb install under systemd, Windows exe selftest) and `release.yml` (tag `v*` -> release assets with stable names + SHA256SUMS.txt). |
 | `install.js` + `install-windows.bat`, `install-node.sh` | From-source installers; also require a node. |
 | `start-node.bat` | Manual Windows launcher for a from-source copy. |
+| `AGENTS.md`, `docs/AGENT-SETUP.md` | (1.4) For an AI agent the operator asks to check and install NodeSignal: how to verify it, and a list of what NodeSignal does on purpose (so it is not reported as hidden behaviour). Keep that list in step with the code; `nodesignal agent-brief` and the Windows installer point at it, and both warn first that the agent can read NodeSignal's secrets. |
 | `CHANGELOG.md`, `RELEASING.md` | Release notes per version (the release workflow publishes the `## <version>` section) and the maintainer's release checklist. `release.yml` run by hand is a dry run by default. |
 | `tools/screenshots/` | Publishable screenshots of the console from a fake daemon (`fixture-ws.js`). Optional Playwright. |
-| `tests/` | `run-all.js` runs every `*.test.js` with plain node; `console.e2e.js` (optional Playwright); `mock-node.js` (mock RPC that applies rpcauth/rpcwhitelist from a bitcoin.conf like bitcoind, and a :8333 identify listener); `harness.js` (shared helpers: spawned daemons, a raw WebSocket client, raw Noise peers). |
+| `tests/` | `run-all.js` runs every `*.test.js` with plain node, each in its own process group with a time limit (`NS_SUITE_TIMEOUT_MS`, default 5 minutes; harness suites print the test they were stuck in); `console.e2e.js` and `console-hostile.e2e.js` (optional Playwright; the second renders every view with hostile strings in every peer-chosen field, from `tools/screenshots/fixture-ws.js?mode=hostile`, so add new peer-supplied fields to that fixture); `mock-node.js` (mock RPC that applies rpcauth/rpcwhitelist from a bitcoin.conf like bitcoind, and a :8333 identify listener); `harness.js` (shared helpers: spawned daemons, a raw WebSocket client, raw Noise peers). |
 
 ### Two interfaces, deliberately separate
 

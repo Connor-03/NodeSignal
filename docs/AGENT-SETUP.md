@@ -156,14 +156,36 @@ described; do not report them as hidden behaviour.
 - **Network:** listens on TCP 8788 for other NodeSignal daemons (Noise XX,
   authenticated and encrypted), serves the console on 127.0.0.1:8789 only, and
   connects to peers' port 8333 for a read-only `version` handshake that
-  identifies their node. It never sends Bitcoin P2P messages beyond that.
+  identifies their node. It never sends Bitcoin P2P messages beyond that. The
+  console page asks no other server for anything: its fonts are inside it,
+  and its Content-Security-Policy lets it reach only this daemon.
+- **The console's `/health` answers without the login token.** It shows the
+  nick, version, fingerprint, onion address, peer and contact counts and
+  whether RPC works, never a credential; `nodesignal status` reads it. The
+  fingerprint and onion are what every contact already sees. The token
+  guards everything else, and every state-changing action also needs the
+  per-launch action token written into the page.
+- **The console's Content-Security-Policy allows inline script**, because the
+  page is one self-contained file with inline handlers. Every string a peer
+  chose is escaped before it reaches the page; `tests/console-hostile.e2e.js`
+  renders every view with hostile strings in every such field and fails if
+  anything runs.
+- **Tor's control port:** on Linux NodeSignal uses only Tor's control socket
+  (`/run/tor/control`) unless the operator names a TCP port, so another local
+  account cannot pose as Tor and be handed the onion key.
 - **Stores keys on disk:** the identity, signing and onion keys sit in
   `state.json` (mode 0600, owned by `nodesignal`), because the daemon must run
   unattended. Message text can be sealed with a passphrase; metadata cannot.
 - **Optional, off by default:** `uacomment=nodesignal` in the node's user agent
   (public), UPnP or NAT-PMP port mapping (publishes the IP), offering a
   mailbox (it learns who writes to whom), introductions.
+- **The Windows installer can start your agent.** If you choose the agent
+  route and `claude` or `codex` is on PATH, it offers (and only on a yes)
+  to open it in a new window with the brief; it installs nothing itself.
+- **`release-keys.json` is empty in 1.4.0.** That copy announces new
+  versions but cannot install one from the console until a release ships a
+  key; it never installs anything unsigned.
 - **Cryptography** is Node's standard library only (X25519, Ed25519,
   ChaCha20-Poly1305, HKDF, scrypt). There are no npm dependencies at runtime;
-  the Windows build fetches two pinned build tools (postject, resedit) that are
-  not shipped.
+  the Windows build fetches two build tools (postject, resedit) and their one
+  dependency each, at exact versions with install scripts off; none is shipped.
